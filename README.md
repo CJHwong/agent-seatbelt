@@ -83,6 +83,12 @@ Pick based on what you want. If you want something you can read in 10 minutes an
 
 `my.sb` is standard [SBPL](https://reverse.put.as/wp-content/uploads/2011/09/Apple-Sandbox-Guide-v1.0.pdf). The wrapper injects three params: `_HOME`, `_PROJECT_DIR`, `_TMPDIR`. Edit the file to match your setup. Add cache dirs your tools need, block paths specific to your machine.
 
+## Roadmap
+
+- **Auth proxy.** A reverse proxy running outside the sandbox that injects API keys into outbound requests. The sandboxed agent only talks to `localhost`, never sees the real keys. [mitmproxy](https://mitmproxy.org/) with header injection can do this in one line. Most SDKs (OpenAI, Anthropic, etc.) already support custom `base_url`, and the `*_BASE_URL` passthrough in `--clean-env` is there for this.
+- **Per-service routing.** Proxy routes by path prefix: `/openai/*` to `api.openai.com`, `/anthropic/*` to `api.anthropic.com`, etc. Each with its own key.
+- **Default to clean env.** Once the proxy handles auth, `-c` becomes safe to flip on by default. API keys no longer need to be in the environment at all.
+
 ## Caveats
 
 - macOS only. For Linux, look at [bubblewrap](https://github.com/containers/bubblewrap).
