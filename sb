@@ -1,0 +1,114 @@
+#!/usr/bin/env bash
+# sb — Run any command inside a macOS sandbox-exec jail
+#
+# Usage: sb [options] <command> [args...]
+#   -c, --clean-env   Sanitize environment (strip secrets, pass only essentials)
+#
+# Examples:
+#   sb npm install          # sandbox with full env passthrough
+#   sb -c claude            # sandbox with sanitized env
+#   sb --clean-env bash     # sandbox with sanitized env
+#
+# Policy (defined in my.sb):
+#   - Writes blocked outside: project dir, ~/.claude/, tmpdir, /dev/
+#   - Reads blocked on: private keys, auth tokens, etc.
+#   - Network, exec, IPC: all allowed
+#
+# Safety: refuses to run from $HOME (would allowlist writes to entire home dir)
+
+set -euo pipefail
+
+CLEAN_ENV=false
+
+# Parse sb-specific flags (before the command)
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        -c|--clean-env) CLEAN_ENV=true; shift ;;
+        -h|--help)
+            echo "Usage: sb [options] <command> [args...]"
+            echo "Options:"
+            echo "  -c, --clean-env   Sanitize environment (strip secrets)"
+            exit 0 ;;
+        -*) echo "error: unknown option: $1" >&2; exit 1 ;;
+        *)  break ;;
+    esac
+done
+
+# Find the profile in the home directory
+PROFILE="${HOME}/my.sb"
+
+if [[ ! -f "$PROFILE" ]]; then
+    echo "error: sandbox profile not found: ${PROFILE}" >&2
+    exit 1
+fi
+
+if [[ $# -eq 0 ]]; then
+    echo "Usage: sb [options] <command> [args...]" >&2
+    echo "Example: sb bash" >&2
+    echo "Example: sb -c claude" >&2
+    exit 1
+fi
+
+# Resolve real paths
+RESOLVED_HOME="$(cd "$HOME" && pwd -P)"
+PROJECT_DIR="$(pwd -P)"
+
+# Walk up to git root if inside a repo (so the full project is writable)
+GIT_ROOT="$(git -C "$PROJECT_DIR" rev-parse --show-toplevel 2>/dev/null || true)"
+if [[ -n "$GIT_ROOT" ]]; then
+    PROJECT_DIR="$(cd "$GIT_ROOT" && pwd -P)"
+fi
+
+# Safety guard: refuse to run from $HOME directly
+if [[ "$PROJECT_DIR" == "$RESOLVED_HOME" ]]; then
+    echo "error: refusing to run from \$HOME ($RESOLVED_HOME)" >&2
+    echo "" >&2
+    echo "Running from \$HOME would grant write access to your entire" >&2
+    echo "home directory, defeating the purpose of the sandbox." >&2
+    echo "" >&2
+    echo "Instead, cd into a project directory first:" >&2
+    echo "  cd ~/my-project && sb <command>" >&2
+    exit 1
+fi
+
+# Resolve TMPDIR (macOS sets this to a per-user path like /var/folders/xx/...)
+RESOLVED_TMPDIR="$(cd "${TMPDIR:-/tmp}" && pwd -P)"
+
+SANDBOX_ARGS=(
+    sandbox-exec -f "$PROFILE"
+    -D "_HOME=${RESOLVED_HOME}"
+    -D "_PROJECT_DIR=${PROJECT_DIR}"
+    -D "_TMPDIR=${RESOLVED_TMPDIR}"
+)
+
+if [[ "$CLEAN_ENV" == true ]]; then
+    # Build sanitized environment: only essentials, no secrets
+    ENV_ARGS=(
+        /usr/bin/env -i
+        "HOME=${RESOLVED_HOME}"
+        "USER=${USER:-}"
+        "SHELL=${SHELL:-/bin/zsh}"
+        "TERM=${TERM:-xterm-256color}"
+        "LANG=${LANG:-en_US.UTF-8}"
+        "PATH=${PATH}"
+        "TMPDIR=${RESOLVED_TMPDIR}"
+    )
+    # Passthrough SSH agent socket (for git-over-SSH; not keys, just the socket)
+    [[ -n "${SSH_AUTH_SOCK:-}" ]] && ENV_ARGS+=("SSH_AUTH_SOCK=${SSH_AUTH_SOCK}")
+    # Passthrough editor preferences
+    [[ -n "${EDITOR:-}" ]] && ENV_ARGS+=("EDITOR=${EDITOR}")
+    [[ -n "${VISUAL:-}" ]] && ENV_ARGS+=("VISUAL=${VISUAL}")
+    # Passthrough XDG dirs (tools rely on these)
+    [[ -n "${XDG_CONFIG_HOME:-}" ]] && ENV_ARGS+=("XDG_CONFIG_HOME=${XDG_CONFIG_HOME}")
+    [[ -n "${XDG_DATA_HOME:-}" ]] && ENV_ARGS+=("XDG_DATA_HOME=${XDG_DATA_HOME}")
+    [[ -n "${XDG_CACHE_HOME:-}" ]] && ENV_ARGS+=("XDG_CACHE_HOME=${XDG_CACHE_HOME}")
+    [[ -n "${XDG_RUNTIME_DIR:-}" ]] && ENV_ARGS+=("XDG_RUNTIME_DIR=${XDG_RUNTIME_DIR}")
+    # Passthrough *_BASE_URL vars (for future proxy support)
+    while IFS='=' read -r key val; do
+        [[ "$key" == *_BASE_URL ]] && ENV_ARGS+=("${key}=${val}")
+    done < <(env)
+
+    exec "${SANDBOX_ARGS[@]}" "${ENV_ARGS[@]}" "$@"
+else
+    exec "${SANDBOX_ARGS[@]}" "$@"
+fi

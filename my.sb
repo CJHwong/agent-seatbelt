@@ -1,0 +1,138 @@
+;; my.sb — Personalized Seatbelt profile for macOS
+;;
+;; Policy: deny-default → allow reads globally → deny reads on secrets → allowlist writes only
+;;
+;; Parameters (injected by wrapper):
+;;   _HOME        — user home directory
+;;   _PROJECT_DIR — resolved project working directory
+;;   _TMPDIR      — macOS per-user temp directory
+
+(version 1)
+(deny default)
+
+;; ---------------------------------------------------------------------------
+;; Process & system essentials
+;; ---------------------------------------------------------------------------
+(allow process-exec)
+(allow process-fork)
+(allow process-info*)
+(allow signal)
+(allow mach*)
+(allow sysctl*)
+(allow ipc-posix-shm*)
+(allow ipc-posix-sem*)
+(allow iokit-open)
+(allow system-socket)
+(allow system-fsctl)
+(allow pseudo-tty)
+(allow user-preference-read)
+(allow file-ioctl)
+
+;; ---------------------------------------------------------------------------
+;; Network — fully allowed
+;; ---------------------------------------------------------------------------
+(allow network*)
+
+;; ---------------------------------------------------------------------------
+;; Read access — global allow, then deny secrets
+;; ---------------------------------------------------------------------------
+(allow file-read*)
+
+;; -- Cryptographic keys --
+;; Allows ssh config, known_hosts, and public keys; blocks private keys.
+(deny file-read*
+  (require-all
+    (subpath (string-append (param "_HOME") "/.ssh"))
+    (require-not (literal (string-append (param "_HOME") "/.ssh/config")))
+    (require-not (literal (string-append (param "_HOME") "/.ssh/known_hosts")))
+    (require-not (literal (string-append (param "_HOME") "/.ssh/known_hosts.old")))
+    (require-not (regex (string-append "^" (regex-quote (param "_HOME")) "/\\.ssh/.*\\.pub$")))
+  ))
+
+(deny file-read* (subpath (string-append (param "_HOME") "/.gnupg")))
+
+;; -- Cloud providers (Reasonable Access) --
+;; Allow reading configs (profiles/regions) but deny credentials.
+(deny file-read*
+  (require-all
+    (subpath (string-append (param "_HOME") "/.aws"))
+    (require-not (literal (string-append (param "_HOME") "/.aws/config")))
+  ))
+(deny file-read* (literal (string-append (param "_HOME") "/.aws/credentials")))
+
+;; -- Container & orchestration --
+(deny file-read* (subpath (string-append (param "_HOME") "/.docker")))
+(deny file-read* (subpath (string-append (param "_HOME") "/.kube")))
+
+;; -- Version control tokens (Reasonable Access) --
+;; Allow reading gh settings but deny authentication hosts.
+(deny file-read*
+  (require-all
+    (subpath (string-append (param "_HOME") "/.config/gh"))
+    (require-not (literal (string-append (param "_HOME") "/.config/gh/config.yml")))
+  ))
+(deny file-read* (literal (string-append (param "_HOME") "/.config/gh/hosts.yml")))
+
+;; -- Package manager tokens --
+(deny file-read* (literal (string-append (param "_HOME") "/.pypirc")))
+(deny file-read* (literal (string-append (param "_HOME") "/.npmrc")))
+(deny file-read* (literal (string-append (param "_HOME") "/.cargo/credentials.toml")))
+(deny file-read* (literal (string-append (param "_HOME") "/.netrc")))
+
+;; -- Privacy & Secrets --
+;; Simplified history block using regex
+(deny file-read* (regex (string-append "^" (regex-quote (param "_HOME")) "/\\..*_history$")))
+(deny file-read* (literal (string-append (param "_HOME") "/.env")))
+(deny file-read* (literal (string-append (param "_HOME") "/.zhistory")))
+(deny file-read* (subpath (string-append (param "_HOME") "/.zsh")))
+
+;; -- macOS Sensitive Data --
+;; Allowed to enable macOS Security framework (Keychain) for tool authentication (e.g., Claude login)
+(allow file-read* (subpath (string-append (param "_HOME") "/Library/Keychains")))
+(deny file-read* (subpath (string-append (param "_HOME") "/Library/Safari")))
+
+;; -- Browser profiles --
+(deny file-read* (subpath (string-append (param "_HOME") "/Library/Application Support/Google/Chrome")))
+(deny file-read* (subpath (string-append (param "_HOME") "/Library/Application Support/Zen")))
+
+;; ---------------------------------------------------------------------------
+;; Write access — deny-default, explicit allowlist only
+;; ---------------------------------------------------------------------------
+(allow file-write* (subpath (string-append (param "_HOME") "/.claude")))
+(allow file-write* (literal (string-append (param "_HOME") "/.claude.json")))
+;; uv: Needed for caching packages and metadata
+(allow file-write* (subpath (string-append (param "_HOME") "/.cache/uv")))
+;; Ollama: Needed to sync aliases, save configurations, and manage models/temporary files
+(allow file-write* (subpath (string-append (param "_HOME") "/.ollama")))
+(allow file-write* (subpath (string-append (param "_HOME") "/.Trash")))
+(allow file-write* (subpath (param "_PROJECT_DIR")))
+(allow file-write* (subpath (param "_TMPDIR")))
+(allow file-write* (subpath "/private/var/folders/"))
+(allow file-write* (subpath "/private/tmp/"))
+(allow file-write* (subpath "/dev/"))
+
+;; ---------------------------------------------------------------------------
+;; Mandatory write denies — defense-in-depth (HOME)
+;; ---------------------------------------------------------------------------
+(deny file-write* (subpath (string-append (param "_HOME") "/.ssh")))
+(deny file-write* (subpath (string-append (param "_HOME") "/.gnupg")))
+(deny file-write* (literal (string-append (param "_HOME") "/.gitconfig")))
+(deny file-write* (literal (string-append (param "_HOME") "/.zshrc")))
+(deny file-write* (literal (string-append (param "_HOME") "/.bashrc")))
+(deny file-write* (literal (string-append (param "_HOME") "/.profile")))
+(deny file-write* (literal (string-append (param "_HOME") "/.zprofile")))
+(deny file-write* (literal (string-append (param "_HOME") "/.zshenv")))
+(deny file-write* (literal (string-append (param "_HOME") "/.zlogout")))
+(deny file-write* (literal (string-append (param "_HOME") "/.bash_profile")))
+
+;; ---------------------------------------------------------------------------
+;; Mandatory write denies — defense-in-depth (PROJECT)
+;; ---------------------------------------------------------------------------
+(deny file-write* (subpath (string-append (param "_PROJECT_DIR") "/.git/hooks")))
+(deny file-write* (literal (string-append (param "_PROJECT_DIR") "/.git/config")))
+(deny file-write* (literal (string-append (param "_PROJECT_DIR") "/.bashrc")))
+(deny file-write* (literal (string-append (param "_PROJECT_DIR") "/.zshrc")))
+(deny file-write* (literal (string-append (param "_PROJECT_DIR") "/.gitconfig")))
+(deny file-write* (literal (string-append (param "_PROJECT_DIR") "/.mcp.json")))
+(deny file-write* (subpath (string-append (param "_PROJECT_DIR") "/.vscode")))
+(deny file-write* (subpath (string-append (param "_PROJECT_DIR") "/.idea")))
