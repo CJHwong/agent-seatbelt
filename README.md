@@ -1,8 +1,11 @@
 # agent-seatbelt
 
-macOS sandbox wrapper for AI coding agents. Two files, no dependencies.
+Defense-in-depth for AI coding agents on macOS.
 
-Wraps `sandbox-exec` (Apple's Seatbelt) around your agent so it can't read your secrets or write outside your project, even if you run it with `--dangerously-skip-permissions`.
+- **Sandbox (`sb`)** — Apple Seatbelt wrapper that blocks reads of your secrets and writes outside your project, even with `--dangerously-skip-permissions`. Two files, no dependencies.
+- **OPF hooks (`hooks-opf/`)** — Userland PII detector powered by [`openai/privacy-filter`](https://huggingface.co/openai/privacy-filter). Catches secrets and personal data flowing into prompts or out of tool responses before the LLM sees them.
+
+The sandbox is a file-level gate. The hooks are a content-level filter. Each closes a hole the other can't.
 
 ## Background
 
@@ -11,6 +14,10 @@ I ran Claude Code in unrestricted mode for months. One day it couldn't read an e
 Claude apologized, told me to revoke everything, and suggested better practices. That's nice. But "the AI felt bad about it" isn't a security boundary.
 
 Built-in sandboxes (Claude's `/sandbox`, Codex's approval policies) only gate their own tools. An agent that shells out via Bash or Python bypasses all of it. OS-level enforcement can't be bypassed. The kernel doesn't care what the agent thinks it's allowed to do.
+
+# Sandbox (`sb`)
+
+Wraps `sandbox-exec` (Apple's Seatbelt) around your agent so it can't read your secrets or write outside your project, even if you run it with `--dangerously-skip-permissions`.
 
 ## Install
 
@@ -83,15 +90,32 @@ Pick based on what you want. If you want something you can read in 10 minutes an
 
 `my.sb` is standard [SBPL](https://reverse.put.as/wp-content/uploads/2011/09/Apple-Sandbox-Guide-v1.0.pdf). The wrapper injects three params: `_HOME`, `_PROJECT_DIR`, `_TMPDIR`. Edit the file to match your setup. Add cache dirs your tools need, block paths specific to your machine.
 
-## Roadmap
+# OPF hooks (`hooks-opf/`)
+
+Content-level filter that runs alongside the sandbox. The sandbox stops the agent from *reading* your secrets; OPF hooks stop secrets and PII from *flowing through prompts or tool responses* even when they enter the process some other way (env vars, credential helpers, paste).
+
+Powered by [`openai/privacy-filter`](https://huggingface.co/openai/privacy-filter), see [OpenAI's introduction](https://openai.com/index/introducing-openai-privacy-filter/). int8 ONNX model, runs locally, ~30MB.
+
+## Install
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/CJHwong/agent-seatbelt/main/hooks-opf/install.sh | bash
+```
+
+Auto-detects Claude Code (`~/.claude/`) and Codex (`~/.codex/`) and wires both `UserPromptSubmit` and `PostToolUse` on each. Pass `-s -- --prompt-only` to skip PostToolUse, or `-s -- --no-codex` to ignore Codex.
+
+Full docs, block-level tuning, test fixture, known limitations: see [`hooks-opf/README.md`](hooks-opf/README.md).
+
+# Roadmap
 
 - **Auth proxy.** A reverse proxy running outside the sandbox that injects API keys into outbound requests. The sandboxed agent only talks to `localhost`, never sees the real keys. [mitmproxy](https://mitmproxy.org/) with header injection can do this in one line. Most SDKs (OpenAI, Anthropic, etc.) already support custom `base_url`, and the `*_BASE_URL` passthrough in `--clean-env` is there for this.
 - **Per-service routing.** Proxy routes by path prefix: `/openai/*` to `api.openai.com`, `/anthropic/*` to `api.anthropic.com`, etc. Each with its own key.
 - **Default to clean env.** Once the proxy handles auth, `-c` becomes safe to flip on by default. API keys no longer need to be in the environment at all.
 
-## Caveats
+# Caveats
 
-- macOS only. For Linux, look at [bubblewrap](https://github.com/containers/bubblewrap).
+- macOS only for the sandbox. For Linux, look at [bubblewrap](https://github.com/containers/bubblewrap). The OPF hooks work on Linux too.
 - `sandbox-exec` is technically deprecated by Apple. Still works on Sequoia, no replacement exists for third-party use.
-- Network is wide open. If a secret enters the process (env var without `-c`, or fetched via credential helper), it can be exfiltrated. The sandbox operates at file paths, not content.
+- The sandbox is a hard file-level boundary. OPF hooks are a probabilistic ML filter that fails open on any error — treat them as high-recall filtering, not a hard gate.
+- The sandbox has no network restrictions. If a secret enters the process via env vars (without `-c`) or credential helpers, OPF hooks are the layer that catches it on the way out.
 - Keychain access is allowed by design so credential helpers (git, AWS) work without the agent seeing raw tokens. But the agent can still perform authenticated actions like `git push`.
