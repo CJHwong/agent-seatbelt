@@ -1,0 +1,25 @@
+{"category":"private_person","prompt":"Please add Avery Coleman to tomorrow's procurement review invite list."}
+{"category":"private_person","prompt":"Remind me to send the signed NDA to Nari Tanaka before lunch."}
+{"category":"private_address","prompt":"Ship the replacement badge reader to 18 Waverly Street, Apt 5B, Boston, MA 02116."}
+{"category":"private_address","prompt":"The courier should deliver the sealed envelope to 742 Evergreen Terrace, Springfield, IL 62704."}
+{"category":"private_email","prompt":"Send the revised board deck to olivia.mercer@northstar-consulting.com tonight."}
+{"category":"private_email","prompt":"Use billing+apac@harborlabs.io for the invoice thread with finance."}
+{"category":"private_phone","prompt":"Text me at +1 (415) 555-0186 when the legal packet arrives."}
+{"category":"private_phone","prompt":"Her Taipei mobile is +886 912 345 678 if the vendor needs a same-day approval."}
+{"category":"private_url","prompt":"The unreleased roadmap is posted at https://intranet.acme.corp/roadmap/q3-draft for internal review."}
+{"category":"private_url","prompt":"Grab the audit notes from https://files.example.net/private/finance/audit-2026-04 before the meeting."}
+{"category":"private_date","prompt":"My immigration interview is scheduled for 2026-05-14 at 09:30, so block that morning."}
+{"category":"private_date","prompt":"Keep June 3, 2026 reserved for the passport renewal appointment."}
+{"category":"account_number","prompt":"Charge the rush order to card 4242 4242 4242 4242 and send me the receipt."}
+{"category":"account_number","prompt":"Wire the deposit to account 001234567890 at First Harbor Bank after the contract clears."}
+{"category":"secret","prompt":"Here is the staging API key: sk_live_9Kx3Lm2Qp7Yt4Nf8Rw1Zc6Vb."}
+{"category":"secret","prompt":"Temporary admin password is StormGlass!492 until SSO is back online."}
+{"category":"secret","prompt":"GitHub token in CI is ghp_aB3xK9mN2pQ7rT4vY8wZ1cE5fH6jL0nO4sU and rotates monthly."}
+{"category":"secret","prompt":"The AWS access key AKIAIOSFODNN7EXAMPLE belongs to the batch service role."}
+{"category":"secret","prompt":"export AWS_ACCESS_KEY_ID=AKIAIOSFODNN7EXAMPLE\nexport AWS_SECRET_ACCESS_KEY=wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"}
+{"category":"secret","prompt":"AKIA4NXJK2PQRSTUVWXY is the prod access key, paired with secret 9z+abCDefghIJklmnOPqrstuvWXYZ0123456789+/ for the data team."}
+{"category":"secret","prompt":"Set the Google API key to AIzaSyDxKL3mN9pQ7rT4vY8wZ1cE5fH6jL0nO4s for the Maps client."}
+{"category":"secret","prompt":"Slack incoming webhook uses xoxb-1234567890-abcdefghijklmnop as the bot token."}
+{"category":"secret","prompt":"Decode this JWT: eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.aBcDeFgHiJkLmNoP"}
+{"category":"secret","prompt":"Use this RSA key: -----BEGIN RSA PRIVATE KEY-----\\nMIIEowIBAAKCAQEA..."}
+{"category":"secret","prompt":"Stripe test key sk_test_4eC39HqLyjWDarjtT1zdp7dc lives in the env file."}
