@@ -127,50 +127,70 @@ esac
 blocked_json=$(printf '%s\n' "${blocked_labels[@]}" | jq -R . | jq -s .)
 processing_ms=$(printf '%s' "$response" | jq -r '.processing_ms // "?"')
 
-# Split spans
-blocked_spans=$(printf '%s' "$response" | jq -c --argjson labels "$blocked_json" \
-    '[.spans[] | select(.label as $l | $labels | index($l))]')
-warned_spans=$(printf '%s' "$response" | jq -c --argjson labels "$blocked_json" \
-    '[.spans[] | select(.label as $l | $labels | index($l) | not)]')
+# Tier map derived from the CRITICAL/MODERATE/LOW arrays — single source of truth.
+tier_map=$(jq -cn \
+    --argjson crit "$(printf '%s\n' "${CRITICAL[@]}" | jq -R . | jq -s .)" \
+    --argjson mod  "$(printf '%s\n' "${MODERATE[@]}" | jq -R . | jq -s .)" \
+    --argjson low_ "$(printf '%s\n' "${LOW[@]}"      | jq -R . | jq -s .)" \
+    '($crit | map({(.):"critical"}) | add) +
+     ($mod  | map({(.):"moderate"}) | add) +
+     ($low_ | map({(.):"low"})      | add)')
 
-# Print warnings for non-blocked spans
-printf '%s' "$warned_spans" | jq -r '.[] | "PII warn: [\(.label)] \(.text)"' >&2 || true
+# Split spans into blocked vs warned, then tier-annotate both.
+blocked_spans=$(printf '%s' "$response" | jq -c --argjson labels "$blocked_json" --argjson tm "$tier_map" \
+    '[.spans[] | select(.label as $l | $labels | index($l)) | . + {tier: ($tm[.label] // "unknown")}]')
+warned_spans=$(printf '%s' "$response" | jq -c --argjson labels "$blocked_json" --argjson tm "$tier_map" \
+    '[.spans[] | select(.label as $l | $labels | index($l) | not) | . + {tier: ($tm[.label] // "unknown")}]')
+
+# Stderr: tier-annotated warnings for non-blocked spans.
+printf '%s' "$warned_spans" | jq -r '.[] | "PII warn: [\(.label)(\(.tier))] \(.text)"' >&2 || true
 
 blocked_count=$(printf '%s' "$blocked_spans" | jq -r 'length' 2>/dev/null)
 [ "${blocked_count:-0}" -eq 0 ] && exit 0
 
-# Print blocked spans
-printf '%s' "$blocked_spans" | jq -r '.[] | "PII block: [\(.label)] \(.text)"' >&2
+# Stderr: tier-annotated blocked spans + one-line summary with processing_ms.
+printf '%s' "$blocked_spans" | jq -r '.[] | "PII block: [\(.label)(\(.tier))] \(.text)"' >&2
+echo "pii-check: blocked $blocked_count span(s) in ${processing_ms}ms at level=$BLOCK_LEVEL" >&2
 
-blocked_labels_str=$(printf '%s' "$blocked_spans" | jq -r '[.[].label] | unique | join(", ")')
+# Tier-annotated label list for the model-facing reason, e.g. "secret(critical), private_email(moderate)".
+blocked_labels_annotated=$(printf '%s' "$blocked_spans" | jq -r \
+    '[.[] | "\(.label)(\(.tier))"] | unique | join(", ")')
 
-# --- Output decision based on mode ---
-case "$MODE" in
-    prompt|claude-posttool)
-        printf '%s' "$blocked_spans" | jq -c --arg ms "$processing_ms" --arg level "$BLOCK_LEVEL" --arg labels "$blocked_labels_str" '{
-            decision: "block",
-            reason: ("PII [level=\($level)]: " + ($ms + "ms") + " — " + $labels + ". Prefix with pii:off to bypass, or set PII_BLOCK_LEVEL=off.")
-        }'
+# Highest tier that fired determines the remediation hint.
+highest_tier=$(printf '%s' "$blocked_spans" | jq -r '
+    [.[].tier] |
+    if any(. == "critical") then "critical"
+    elif any(. == "moderate") then "moderate"
+    elif any(. == "low") then "low"
+    else "unknown" end')
+
+case "$highest_tier" in
+    critical) hint="Only PII_BLOCK_LEVEL=off would allow this." ;;
+    moderate) hint="Drop to PII_BLOCK_LEVEL=relaxed to allow moderate categories (emails/phones/addresses)." ;;
+    low)      hint="Drop to PII_BLOCK_LEVEL=standard to allow low categories (names/urls/dates)." ;;
+    *)        hint="" ;;
+esac
+
+# Detect prompt-vs-tool-output for auto mode.
+emit_mode="$MODE"
+if [ "$emit_mode" = "auto" ]; then
+    if printf '%s' "$payload" | jq -e '.prompt' >/dev/null 2>&1; then
+        emit_mode="prompt"
+    else
+        emit_mode="claude-posttool"
+    fi
+fi
+
+case "$emit_mode" in
+    prompt)
+        reason="PII in prompt: ${blocked_labels_annotated}. Blocked at PII_BLOCK_LEVEL=${BLOCK_LEVEL}. ${hint} One-shot bypass: prefix prompt with 'pii:off '."
         ;;
-    codex-posttool)
-        printf '%s' "$blocked_spans" | jq -c --arg ms "$processing_ms" --arg level "$BLOCK_LEVEL" --arg labels "$blocked_labels_str" '{
-            decision: "block",
-            reason: ("PII in tool output [level=\($level)]: " + ($ms + "ms") + " — " + $labels + ". Set PII_BLOCK_LEVEL=off to disable.")
-        }'
+    claude-posttool|codex-posttool)
+        reason="PII in tool output: ${blocked_labels_annotated}. Blocked at PII_BLOCK_LEVEL=${BLOCK_LEVEL}. ${hint} Do not retry the same command. The model has not seen the output."
         ;;
     *)
-        # Auto: check if prompt-like or tool-output-like
-        if printf '%s' "$payload" | jq -e '.prompt' >/dev/null 2>&1; then
-            printf '%s' "$blocked_spans" | jq -c --arg ms "$processing_ms" --arg level "$BLOCK_LEVEL" --arg labels "$blocked_labels_str" '{
-                decision: "block",
-                reason: ("PII [level=\($level)]: " + ($ms + "ms") + " — " + $labels + ". Prefix with pii:off to bypass, or set PII_BLOCK_LEVEL=off.")
-            }'
-        else
-            # Tool output: block so model doesn't see content
-            printf '%s' "$blocked_spans" | jq -c --arg ms "$processing_ms" --arg level "$BLOCK_LEVEL" --arg labels "$blocked_labels_str" '{
-                decision: "block",
-                reason: ("PII in tool output [level=\($level)]: " + ($ms + "ms") + " — " + $labels + ". Set PII_BLOCK_LEVEL=off.")
-            }'
-        fi
+        reason="PII detected: ${blocked_labels_annotated}. Blocked at PII_BLOCK_LEVEL=${BLOCK_LEVEL}. ${hint}"
         ;;
 esac
+
+jq -cn --arg reason "$reason" '{decision: "block", reason: $reason}'
