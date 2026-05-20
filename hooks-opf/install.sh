@@ -20,6 +20,12 @@ CHECK_DEST="$HOOKS_DIR/pii-check.sh"
 CLAUDE_SETTINGS="$HOME/.claude/settings.json"
 CODEX_HOOKS="$HOME/.codex/hooks.json"
 
+# Tools whose output can carry external PII. Edit/Write/Glob/LS/Todo etc. only
+# emit structural metadata, so scanning them is wasted work. Codex aliases file
+# edits to apply_patch; both Claude's Edit/Write and Codex's apply_patch fall
+# outside this pattern and are skipped.
+POSTTOOL_MATCHER='^(Bash|Read|NotebookRead|WebFetch|WebSearch|Agent|Task|mcp__.*)$'
+
 PROMPT_ONLY=0
 SKIP_CODEX=0
 while [[ $# -gt 0 ]]; do
@@ -54,7 +60,10 @@ chmod +x "$CHECK_DEST"
 echo "Installed: $SERVER_DEST"
 echo "Installed: $CHECK_DEST"
 
-# Add an entry to a hooks-shaped JSON file, idempotent on the command string.
+# Add or update an entry in a hooks-shaped JSON file.
+# Idempotent on command string: if an entry already references $cmd, replace it
+# with $entry (this is how matcher changes propagate to existing installs);
+# otherwise append.
 # Args: $1 = target file, $2 = event key, $3 = entry JSON, $4 = command string to match.
 add_entry() {
     local target="$1" event="$2" entry="$3" cmd="$4"
@@ -72,8 +81,9 @@ add_entry() {
         .hooks = (.hooks // {}) |
         .hooks[$event] = (
           (.hooks[$event] // []) as $entries |
-          if any($entries[]?; any(.hooks[]?; .command == $cmd)) then $entries
-          else $entries + [$entry] end
+          ($entries | map(if any(.hooks[]?; .command == $cmd) then $entry else . end)) as $mapped |
+          if any($mapped[]?; any(.hooks[]?; .command == $cmd)) then $mapped
+          else $mapped + [$entry] end
         )
         ' "$target" > "$tmp"
     mv "$tmp" "$target"
@@ -93,10 +103,10 @@ wire_agent() {
 
     if [ "$PROMPT_ONLY" -eq 0 ]; then
         local posttool_entry
-        posttool_entry=$(jq -cn --arg cmd "$posttool_cmd" \
-            '{matcher:"*",hooks:[{type:"command",command:$cmd,timeout:20}]}')
+        posttool_entry=$(jq -cn --arg cmd "$posttool_cmd" --arg matcher "$POSTTOOL_MATCHER" \
+            '{matcher:$matcher,hooks:[{type:"command",command:$cmd,timeout:20}]}')
         add_entry "$target" "PostToolUse" "$posttool_entry" "$posttool_cmd"
-        echo "  [$label] PostToolUse (*) -> $posttool_cmd"
+        echo "  [$label] PostToolUse ($POSTTOOL_MATCHER) -> $posttool_cmd"
     else
         echo "  [$label] PostToolUse skipped (--prompt-only)"
     fi

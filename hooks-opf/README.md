@@ -12,7 +12,7 @@ This is the content-level companion to `agent-seatbelt`'s file-level sandbox. Th
 - `~/.claude/hooks/pii-server.py` — local HTTP server that loads the ONNX model and returns labeled spans
 - For each detected agent, two entries in its hooks config:
   - `UserPromptSubmit` → blocks prompts containing PII before they're sent to the model provider
-  - `PostToolUse (*)` → blocks tool responses containing PII before they're fed back to the LLM next turn
+  - `PostToolUse` → blocks tool responses containing PII before they're fed back to the LLM next turn. The matcher is scoped to tools whose output can carry external data — `Bash`, `Read`, `NotebookRead`, `WebFetch`, `WebSearch`, `Agent`/`Task` (subagent results), and MCP tools. File edits, todo writes, glob, and ls only emit structural metadata, so scanning them is wasted work.
 
 Supported agents (auto-detected by directory presence):
 
@@ -36,7 +36,7 @@ Flags:
 ... | bash -s -- --no-codex      # ignore Codex even if ~/.codex/ exists
 ```
 
-The installer is idempotent — running it again won't duplicate hook entries.
+The installer is idempotent — running it again won't duplicate hook entries, and will migrate any older `*` matchers to the current keep-list.
 
 ## Requirements
 
