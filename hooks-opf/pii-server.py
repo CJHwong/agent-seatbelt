@@ -200,12 +200,15 @@ class Model:
         self.tokenizer = Tokenizer.from_file(str(cache_dir / "tokenizer.json"))
         so = ort.SessionOptions()
         so.intra_op_num_threads = max(1, (os.cpu_count() or 4) // 2)
+        so.enable_cpu_mem_arena = False
+        so.enable_mem_pattern = False
         self.session = ort.InferenceSession(
             str(cache_dir / "onnx" / "model_quantized.onnx"),
             sess_options=so,
             providers=["CPUExecutionProvider"],
         )
-        self.max_len = config.get("max_position_embeddings", 131072)
+        model_max = config.get("max_position_embeddings", 131072)
+        self.max_len = min(model_max, int(os.environ.get("OPF_MAX_TOKENS", "4096")))
 
     def predict(self, text: str) -> list[dict]:
         if not text:
