@@ -49,27 +49,33 @@ command -v curl >/dev/null 2>&1 || { echo "pii-check: curl not found, skipping" 
 payload=$(cat)
 
 # --- Extract text based on mode ---
+# Tool responses vary in shape per tool: Bash uses .stdout, Read uses .file.content,
+# WebFetch/MCP tools use .text or nested fields. Rather than chase each shape, we
+# recursively collect every leaf string under .tool_response — the NER labels
+# patterns, so incidental strings (paths, type markers) are inert.
 extract_text() {
     case "$MODE" in
         prompt)
             printf '%s' "$payload" | jq -r '.prompt // empty'
             ;;
-        claude-posttool)
-            printf '%s' "$payload" | jq -r '.tool_response.stdout // empty'
-            ;;
-        codex-posttool)
-            # Codex sends tool_response as a bare string for shell tools,
-            # and as an object (e.g. with .stdout) for MCP tools. Handle both.
+        claude-posttool|codex-posttool)
             printf '%s' "$payload" | jq -r '
-                if (.tool_response | type) == "string" then .tool_response
-                elif (.tool_response | type) == "object" then (.tool_response.stdout // .tool_response.text // empty)
+                (.tool_response // empty) |
+                if type == "string" then .
+                elif type == "object" then [.. | strings] | join("\n")
                 else empty end
             '
             ;;
         *)
-            # Auto-detect: try fields in order
+            # Auto-detect: prompt field first, then tool_response in either shape.
             printf '%s' "$payload" | jq -r '
-                .prompt // .tool_response.stdout // .aggregated_output // .tool_output // empty
+                if has("prompt") then (.prompt // empty)
+                else
+                    (.tool_response // empty) |
+                    if type == "string" then .
+                    elif type == "object" then [.. | strings] | join("\n")
+                    else empty end
+                end
             '
             ;;
     esac
