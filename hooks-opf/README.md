@@ -34,7 +34,10 @@ Flags:
 ```bash
 ... | bash -s -- --prompt-only   # skip PostToolUse wiring on both agents
 ... | bash -s -- --no-codex      # ignore Codex even if ~/.codex/ exists
+... | bash -s -- --no-pilot      # skip the pilot warm-up run
 ```
+
+Before wiring, the installer does a pilot run: it starts the server once so the uv dep resolution and ~30MB model download happen now (cached to `~/.cache/opf/`), smoke-tests it, and leaves it warm. The first agent session then skips the cold start. Pass `--no-pilot` to skip it; the model will download lazily on the first hook instead.
 
 The installer is idempotent — running it again won't duplicate hook entries, and will migrate any older `*` matchers to the current keep-list.
 
