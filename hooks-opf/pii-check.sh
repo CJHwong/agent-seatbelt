@@ -3,10 +3,15 @@
 # Auto-starts the local ONNX int8 server on first call, fail-open on any error.
 #
 # Usage: pii-check.sh --mode <mode>
-#   prompt           UserPromptSubmit — blocks with decision:block
+#   prompt           UserPromptSubmit (Claude Code + Codex) — blocks with decision:block
 #   claude-posttool  Claude Code PostToolUse — blocks with decision:block
-#   codex-posttool   Codex PostToolUse — blocks with continue:false
+#   codex-posttool   Codex PostToolUse — blocks with decision:block
 #   (default)        Auto-detect from stdin (prompt vs tool_output)
+#
+# Claude Code and Codex share one hook contract: input carries .prompt or
+# .tool_response, and {decision:"block",reason} blocks. The two posttool modes
+# are identical in behavior; the split is kept only so each agent's hooks.json
+# reads self-documenting. Verified against codex-cli 0.142.x.
 #
 # PII_BLOCK_LEVEL (default: standard):
 #   off      — disable all PII checks
