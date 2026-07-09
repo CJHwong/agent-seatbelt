@@ -18,6 +18,8 @@
 #   relaxed  — block only critical (secrets, account numbers)
 #   standard — block critical + moderate (emails, phones, addresses)
 #   strict   — block all categories including low (names, URLs, dates)
+# PII_ALLOW_LABELS (default: empty):
+#   comma-separated labels to allow even when included by PII_BLOCK_LEVEL
 
 set -euo pipefail
 export PATH="$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"
@@ -45,6 +47,7 @@ MODERATE=('private_email' 'private_phone' 'private_address')
 LOW=('private_person' 'private_url' 'private_date')
 
 BLOCK_LEVEL="${PII_BLOCK_LEVEL:-standard}"
+ALLOW_LABELS="${PII_ALLOW_LABELS:-}"
 
 mkdir -p "$(dirname "$SERVER_LOG")"
 
@@ -136,6 +139,10 @@ case "$BLOCK_LEVEL" in
 esac
 
 blocked_json=$(printf '%s\n' "${blocked_labels[@]}" | jq -R . | jq -s .)
+if [ -n "$ALLOW_LABELS" ]; then
+    allow_json=$(printf '%s' "$ALLOW_LABELS" | jq -R 'split(",") | map(gsub("^\\s+|\\s+$"; "")) | map(select(length > 0))')
+    blocked_json=$(printf '%s' "$blocked_json" | jq -c --argjson allow "$allow_json" 'map(select(. as $l | $allow | index($l) | not))')
+fi
 processing_ms=$(printf '%s' "$response" | jq -r '.processing_ms // "?"')
 
 # Tier map derived from the CRITICAL/MODERATE/LOW arrays — single source of truth.
@@ -147,25 +154,36 @@ tier_map=$(jq -cn \
      ($mod  | map({(.):"moderate"}) | add) +
      ($low_ | map({(.):"low"})      | add)')
 
-# Split spans into blocked vs warned, then tier-annotate both.
-blocked_spans=$(printf '%s' "$response" | jq -c --argjson labels "$blocked_json" --argjson tm "$tier_map" \
-    '[.spans[] | select(.label as $l | $labels | index($l)) | . + {tier: ($tm[.label] // "unknown")}]')
-warned_spans=$(printf '%s' "$response" | jq -c --argjson labels "$blocked_json" --argjson tm "$tier_map" \
-    '[.spans[] | select(.label as $l | $labels | index($l) | not) | . + {tier: ($tm[.label] // "unknown")}]')
+mask_jq='
+    def mask_value:
+        (.text // "" | tostring | gsub("[\r\n\t]+"; " ") | gsub(" +"; " ")) as $s |
+        ($s | length) as $n |
+        if $n == 0 then "[empty]"
+        elif $n <= 6 then "[redacted]"
+        elif $n <= 14 then ($s[0:2] + "..." + $s[-2:])
+        else ($s[0:4] + "..." + $s[-4:])
+        end;
+'
 
-# Stderr: tier-annotated warnings for non-blocked spans.
-printf '%s' "$warned_spans" | jq -r '.[] | "PII warn: [\(.label)(\(.tier))] \(.text)"' >&2 || true
+# Split spans into blocked vs warned, then tier-annotate and mask both.
+blocked_spans=$(printf '%s' "$response" | jq -c --argjson labels "$blocked_json" --argjson tm "$tier_map" \
+    "$mask_jq [.spans[] | select(.label as \$l | \$labels | index(\$l)) | . + {tier: (\$tm[.label] // \"unknown\"), masked: mask_value}]")
+warned_spans=$(printf '%s' "$response" | jq -c --argjson labels "$blocked_json" --argjson tm "$tier_map" \
+    "$mask_jq [.spans[] | select(.label as \$l | \$labels | index(\$l) | not) | . + {tier: (\$tm[.label] // \"unknown\"), masked: mask_value}]")
+
+# Stderr: tier-annotated masked warnings for non-blocked spans.
+printf '%s' "$warned_spans" | jq -r '.[] | "PII warn: [\(.label)(\(.tier))] \(.masked)"' >&2 || true
 
 blocked_count=$(printf '%s' "$blocked_spans" | jq -r 'length' 2>/dev/null)
 [ "${blocked_count:-0}" -eq 0 ] && exit 0
 
-# Stderr: tier-annotated blocked spans + one-line summary with processing_ms.
-printf '%s' "$blocked_spans" | jq -r '.[] | "PII block: [\(.label)(\(.tier))] \(.text)"' >&2
+# Stderr: tier-annotated masked blocked spans + one-line summary with processing_ms.
+printf '%s' "$blocked_spans" | jq -r '.[] | "PII block: [\(.label)(\(.tier))] \(.masked)"' >&2
 echo "pii-check: blocked $blocked_count span(s) in ${processing_ms}ms at level=$BLOCK_LEVEL" >&2
 
-# Tier-annotated label list for the model-facing reason, e.g. "secret(critical), private_email(moderate)".
-blocked_labels_annotated=$(printf '%s' "$blocked_spans" | jq -r \
-    '[.[] | "\(.label)(\(.tier))"] | unique | join(", ")')
+# Tier-annotated, masked span list for the model-facing reason, e.g. "secret(critical): sk_t...p7dc".
+blocked_spans_masked=$(printf '%s' "$blocked_spans" | jq -r \
+    '[.[] | "\(.label)(\(.tier)): \(.masked)"] | unique | join(", ")')
 
 # Highest tier that fired determines the remediation hint.
 highest_tier=$(printf '%s' "$blocked_spans" | jq -r '
@@ -194,13 +212,13 @@ fi
 
 case "$emit_mode" in
     prompt)
-        reason="PII in prompt: ${blocked_labels_annotated}. Blocked at PII_BLOCK_LEVEL=${BLOCK_LEVEL}. ${hint} One-shot bypass: prefix prompt with 'pii:off '."
+        reason="PII in prompt: ${blocked_spans_masked}. Blocked at PII_BLOCK_LEVEL=${BLOCK_LEVEL}. ${hint} One-shot bypass: prefix prompt with 'pii:off '."
         ;;
     claude-posttool|codex-posttool)
-        reason="PII in tool output: ${blocked_labels_annotated}. Blocked at PII_BLOCK_LEVEL=${BLOCK_LEVEL}. ${hint} Do not retry the same command. The model has not seen the output."
+        reason="PII in tool output: ${blocked_spans_masked}. Blocked at PII_BLOCK_LEVEL=${BLOCK_LEVEL}. ${hint} Do not retry the same command. The model has not seen the output."
         ;;
     *)
-        reason="PII detected: ${blocked_labels_annotated}. Blocked at PII_BLOCK_LEVEL=${BLOCK_LEVEL}. ${hint}"
+        reason="PII detected: ${blocked_spans_masked}. Blocked at PII_BLOCK_LEVEL=${BLOCK_LEVEL}. ${hint}"
         ;;
 esac
 

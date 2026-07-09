@@ -49,16 +49,41 @@ The installer is idempotent — running it again won't duplicate hook entries, a
 
 ## Block levels
 
-Tune via `PII_BLOCK_LEVEL`:
+Tune via `PII_BLOCK_LEVEL`. Each level blocks the labels listed below; detected labels outside the blocked set are still printed to stderr as warnings.
 
-| Level | Blocks |
+| Level | Blocked labels |
 |---|---|
 | `off` | nothing |
-| `relaxed` | secrets, account numbers |
-| `standard` (default) | + emails, phones, addresses |
-| `strict` | + names, urls, dates |
+| `relaxed` | `secret`, `account_number` |
+| `standard` (default) | `secret`, `account_number`, `private_email`, `private_phone`, `private_address` |
+| `strict` | `secret`, `account_number`, `private_email`, `private_phone`, `private_address`, `private_person`, `private_url`, `private_date` |
 
-Categories outside the blocked tier are still printed to stderr as warnings, so you see what the model flagged without it derailing the request.
+`PII_ALLOW_LABELS` accepts these label names:
+
+| Label | Tier | Typical data |
+|---|---|---|
+| `secret` | critical | API keys, tokens, passwords, private keys |
+| `account_number` | critical | bank accounts, card numbers, account IDs |
+| `private_email` | moderate | personal or private email addresses |
+| `private_phone` | moderate | phone numbers |
+| `private_address` | moderate | street addresses |
+| `private_person` | low | people's names |
+| `private_url` | low | private or internal URLs |
+| `private_date` | low | personal or sensitive dates |
+
+To carve out specific categories from a tier, set `PII_ALLOW_LABELS` to a comma-separated list:
+
+```bash
+PII_BLOCK_LEVEL=strict PII_ALLOW_LABELS=private_url,private_date
+```
+
+That keeps `strict` blocking enabled for secrets, account numbers, emails, phones, addresses, and names, but allows URLs and dates through as warnings.
+
+When a request is blocked, the hook includes masked snippets in the block message so you can identify what fired without exposing the full value to the agent transcript:
+
+```text
+PII in prompt: secret(critical): sk_t...p7dc. Blocked at PII_BLOCK_LEVEL=strict.
+```
 
 ## Per-prompt bypass
 
@@ -132,6 +157,7 @@ All env vars override defaults; set them in your shell or the hook's env:
 | Var | Default | Purpose |
 |---|---|---|
 | `PII_BLOCK_LEVEL` | `standard` | tier (off/relaxed/standard/strict) |
+| `PII_ALLOW_LABELS` | empty | comma-separated labels to allow within the selected tier |
 | `PII_PORT` | `9123` | local server port |
 | `PII_SERVER_SCRIPT` | `~/.claude/hooks/pii-server.py` | server script path |
 | `PII_SERVER_LOG` | `~/.cache/opf/server.log` | server log path |
