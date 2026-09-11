@@ -13,8 +13,8 @@ This is the content-level companion to `agent-seatbelt`'s file-level sandbox. Th
 - `~/.claude/hooks/pii-check.sh` — the hook binary, called on prompt submit and tool response
 - `~/.claude/hooks/pii-server.py` — local HTTP server that loads the selected model and returns labeled spans
 - For each detected agent, two entries in its hooks config:
-  - `UserPromptSubmit` → blocks prompts containing PII before they're sent to the model provider
-  - `PostToolUse` → blocks tool responses containing PII before they're fed back to the LLM next turn. The matcher is scoped to tools whose output can carry external data — `Bash`, `Read`, `NotebookRead`, `WebFetch`, `WebSearch`, `Agent`/`Task` (subagent results), and MCP tools. File edits, todo writes, glob, and ls only emit structural metadata, so scanning them is wasted work.
+  - `UserPromptSubmit` → blocks or warns on prompts containing PII before they reach the model provider
+  - `PostToolUse` → blocks or warns on tool responses containing PII before the next LLM turn. The matcher is scoped to tools whose output can carry external data — `Bash`, `Read`, `NotebookRead`, `WebFetch`, `WebSearch`, `Agent`/`Task` (subagent results), and MCP tools. File edits, todo writes, glob, and ls only emit structural metadata, so scanning them is wasted work.
 
 Supported agents (auto-detected by directory presence):
 
@@ -87,6 +87,28 @@ When a request is blocked, the hook includes masked snippets in the block messag
 PII in prompt: secret(critical): sk_t...p7dc. Blocked at PII_BLOCK_LEVEL=strict.
 ```
 
+## Enforcement actions
+
+The default `PII_ACTION_MODE=block` rejects input when a span matches the selected `PII_BLOCK_LEVEL`.
+
+Set `PII_ACTION_MODE=warn` to allow the input. The hook then adds a masked detector summary to the agent context. It also tells the agent to check whether each detection is valid. If valid, the agent must avoid repeating the value and use a redacted form. The warning recommends secret rotation or revocation when applicable.
+
+Unless `PII_BLOCK_LEVEL=off`, the warning mode reports every detected span. It does not expose the full value. The `PII_BLOCK_LEVEL` setting still controls blocked and warned classifications in stderr. `PII_ALLOW_LABELS` still removes labels from the block set, but warning mode still reports those detector spans.
+
+The hook returns `continue: true` and keeps the current block response unchanged:
+
+```json
+{
+  "continue": true,
+  "hookSpecificOutput": {
+    "hookEventName": "UserPromptSubmit",
+    "additionalContext": "PII detector warning: ..."
+  }
+}
+```
+
+Use `PII_ACTION_MODE=warn` for observation or agent-assisted remediation. Use `PII_ACTION_MODE=block` for the hard boundary.
+
 ## Per-prompt bypass
 
 Prefix a single prompt with `pii:off ` to skip the check for that submission:
@@ -103,6 +125,7 @@ The fixture at `tests/test-cases.jsonl` covers 25 cases across all label categor
 
 ```bash
 ./tests/run-tests.py
+python3 tests/test_hook_modes.py
 ```
 
 Current pass rate against `openai/privacy-filter` (int8 quantized): **24/25**.
@@ -130,7 +153,7 @@ This is a high-recall filter, not a hard gate. Three failure modes worth knowing
 
 1. **Adversarial reformatting bypass.** A motivated agent (or a model trying to satisfy a "show me the file" prompt) can reshape tool output past the NER's pattern matching: `od -c file`, `base64 file`, `xxd file`, `tr a-z A-Z < file`, splitting bytes across lines, etc. Observed empirically — given a blocked `cat secrets.txt`, a model adapted within one turn to `od -c` and the byte-spread output flowed through unblocked. The NER labels patterns it recognizes; spread-out or re-encoded versions of the same content are not labeled. Content-based filtering can't close this gap without semantic execution; treat the hook as defense-in-depth alongside the file-level sandbox, not a perimeter.
 
-2. **Codex trust mechanism is required.** Codex CLI gates external hooks behind a per-hook trust list — until you trust each command, the hook is registered in `~/.codex/hooks.json` but never invoked. Trust lives in `~/.codex/config.toml` under `[hooks.state]`, keyed by `<hooks.json path>:<event>:<group>:<index>`, as `enabled = true` plus a `trusted_hash` (sha256 of the hook). Review and trust via the `/hooks` command in the Codex TUI. Because `trusted_hash` binds to the exact command string, re-running the installer (any matcher or path change) invalidates trust and you must re-trust. If hooks aren't firing, check this first. Claude Code has no trust gate, so it runs the hooks immediately. Once trusted (verified on codex-cli 0.142.5), Codex blocks identically to Claude Code on both `UserPromptSubmit` and `PostToolUse` — same `{decision:"block",reason}` contract, tool output withheld from the model on a PostToolUse block.
+2. **Codex trust mechanism is required.** Codex CLI gates external hooks behind a per-hook trust list — until you trust each command, the hook is registered in `~/.codex/hooks.json` but never invoked. Trust lives in `~/.codex/config.toml` under `[hooks.state]`, keyed by `<hooks.json path>:<event>:<group>:<index>`, as `enabled = true` plus a `trusted_hash` (sha256 of the hook). Review and trust via the `/hooks` command in the Codex TUI. Because `trusted_hash` binds to the exact command string, re-running the installer (any matcher or path change) invalidates trust and you must re-trust. If hooks aren't firing, check this first. Claude Code has no trust gate, so it runs the hooks immediately. Once trusted, Codex accepts the block contract on both `UserPromptSubmit` and `PostToolUse`. Warning mode uses `continue: true` plus `hookSpecificOutput.additionalContext`, so the model receives the masked reminder without a block decision.
 
 3. **Fail-open posture.** The hook returns success (exit 0, empty stdout) on any internal error — server down, jq parse failure, curl timeout. A probabilistic model with a hard fail-closed posture would brick your agent. The tradeoff: missed detections during transient failures are silent. If you need certainty, layer a deterministic regex or block the data source upstream.
 
@@ -139,12 +162,12 @@ This is a high-recall filter, not a hard gate. Three failure modes worth knowing
 ```
 prompt ──> UserPromptSubmit ──> pii-check.sh --mode prompt ──> pii-server.py
                                        │
-                                       └── blocks if any PII at current level
+                                       └── blocks or warns based on PII_ACTION_MODE
                                        └── prompt sent to Anthropic if clean
 
 tool runs ──> PostToolUse ──> pii-check.sh --mode claude-posttool ──> pii-server.py
                                        │
-                                       └── blocks if any PII at current level
+                                       └── blocks or warns based on PII_ACTION_MODE
                                        └── response fed to LLM next turn if clean
 ```
 
@@ -160,6 +183,7 @@ All env vars override defaults; set them in your shell or the hook's env:
 |---|---|---|
 | `PII_BLOCK_LEVEL` | `standard` | tier (off/relaxed/standard/strict) |
 | `PII_ALLOW_LABELS` | empty | comma-separated labels to allow within the selected tier |
+| `PII_ACTION_MODE` | `block` | `block` to reject input or `warn` to allow input with agent context |
 | `PII_SERVER_MODE` | `redact` | `redact` or `openai` |
 | `PII_PORT` | `9123` | local server port |
 | `PII_SERVER_SCRIPT` | `~/.claude/hooks/pii-server.py` | server script path |

@@ -3,9 +3,9 @@
 # Auto-starts the local ONNX int8 server on first call, fail-open on any error.
 #
 # Usage: pii-check.sh --mode <mode>
-#   prompt           UserPromptSubmit (Claude Code + Codex) — blocks with decision:block
-#   claude-posttool  Claude Code PostToolUse — blocks with decision:block
-#   codex-posttool   Codex PostToolUse — blocks with decision:block
+#   prompt           UserPromptSubmit (Claude Code + Codex)
+#   claude-posttool  Claude Code PostToolUse
+#   codex-posttool   Codex PostToolUse
 #   (default)        Auto-detect from stdin (prompt vs tool_output)
 #
 # Claude Code and Codex share one hook contract: input carries .prompt or
@@ -13,6 +13,9 @@
 # are identical in behavior; the split is kept only so each agent's hooks.json
 # reads self-documenting. Verified against codex-cli 0.142.x.
 #
+# PII_ACTION_MODE (default: block):
+#   block    reject input when a span matches PII_BLOCK_LEVEL
+#   warn     allow input and add a masked warning to agent context
 # PII_BLOCK_LEVEL (default: standard):
 #   off      — disable all PII checks
 #   relaxed  — block only critical (secrets, account numbers)
@@ -41,10 +44,16 @@ HEALTH="http://$HOST:$PORT/health"
 PREDICT="http://$HOST:$PORT/"
 LOCK="/tmp/pii-server.starting"
 SERVER_LOG="${PII_SERVER_LOG:-$HOME/.cache/opf/server.log}"
+ACTION_MODE="${PII_ACTION_MODE:-block}"
 
 case "$SERVER_MODE" in
     redact|openai) ;;
     *) echo "pii-check: PII_SERVER_MODE must be redact or openai" >&2; exit 0 ;;
+esac
+
+case "$ACTION_MODE" in
+    block|warn) ;;
+    *) echo "pii-check: PII_ACTION_MODE must be block or warn" >&2; exit 0 ;;
 esac
 
 # --- Category tiers ---
@@ -187,9 +196,51 @@ blocked_spans=$(printf '%s' "$response" | jq -c --argjson labels "$blocked_json"
     "$mask_jq [.spans[] | select(.label as \$l | \$labels | index(\$l)) | . + {tier: (\$tm[.label] // \"unknown\"), masked: mask_value}]")
 warned_spans=$(printf '%s' "$response" | jq -c --argjson labels "$blocked_json" --argjson tm "$tier_map" \
     "$mask_jq [.spans[] | select(.label as \$l | \$labels | index(\$l) | not) | . + {tier: (\$tm[.label] // \"unknown\"), masked: mask_value}]")
+detected_spans=$(printf '%s' "$response" | jq -c --argjson tm "$tier_map" \
+    "$mask_jq [.spans[] | . + {tier: (\$tm[.label] // \"unknown\"), masked: mask_value}]")
+detected_spans_masked=$(printf '%s' "$detected_spans" | jq -r \
+    '[.[] | "\(.label)(\(.tier)): \(.masked)"] | unique | join(", ")')
 
 # Stderr: tier-annotated masked warnings for non-blocked spans.
 printf '%s' "$warned_spans" | jq -r '.[] | "PII warn: [\(.label)(\(.tier))] \(.masked)"' >&2 || true
+
+# Detect prompt-vs-tool-output for auto mode.
+emit_mode="$MODE"
+if [ "$emit_mode" = "auto" ]; then
+    if printf '%s' "$payload" | jq -e '.prompt' >/dev/null 2>&1; then
+        emit_mode="prompt"
+    else
+        emit_mode="claude-posttool"
+    fi
+fi
+
+if [ "$ACTION_MODE" = "warn" ]; then
+    case "$emit_mode" in
+        prompt)
+            event_name="UserPromptSubmit"
+            detected_location="in the user prompt"
+            allowed_subject="The user prompt"
+            ;;
+        claude-posttool|codex-posttool)
+            event_name="PostToolUse"
+            detected_location="in tool output"
+            allowed_subject="The tool output"
+            ;;
+        *)
+            event_name="UserPromptSubmit"
+            detected_location="in the input"
+            allowed_subject="The input"
+            ;;
+    esac
+    warning_context="PII detector warning: possible sensitive data was identified ${detected_location}: ${detected_spans_masked}. ${allowed_subject} was allowed because PII_ACTION_MODE=warn. Check whether each detection is valid. If the detection is valid, do not repeat or expose the value. Use a redacted form. Rotate or revoke a valid secret."
+    warning_message="PII detector warning: possible sensitive data was identified ${detected_location}. ${allowed_subject} was allowed because PII_ACTION_MODE=warn. Check the agent context for masked findings."
+    jq -cn \
+        --arg message "$warning_message" \
+        --arg context "$warning_context" \
+        --arg event "$event_name" \
+        '{continue: true, systemMessage: $message, hookSpecificOutput: {hookEventName: $event, additionalContext: $context}}'
+    exit 0
+fi
 
 blocked_count=$(printf '%s' "$blocked_spans" | jq -r 'length' 2>/dev/null)
 [ "${blocked_count:-0}" -eq 0 ] && exit 0
@@ -216,16 +267,6 @@ case "$highest_tier" in
     low)      hint="Drop to PII_BLOCK_LEVEL=standard to allow low categories (names/urls/dates)." ;;
     *)        hint="" ;;
 esac
-
-# Detect prompt-vs-tool-output for auto mode.
-emit_mode="$MODE"
-if [ "$emit_mode" = "auto" ]; then
-    if printf '%s' "$payload" | jq -e '.prompt' >/dev/null 2>&1; then
-        emit_mode="prompt"
-    else
-        emit_mode="claude-posttool"
-    fi
-fi
 
 case "$emit_mode" in
     prompt)
