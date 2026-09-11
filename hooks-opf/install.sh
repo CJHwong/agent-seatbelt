@@ -22,6 +22,8 @@ REPO_BASE="${HOOKS_OPF_BASE_URL:-https://raw.githubusercontent.com/CJHwong/agent
 HOOKS_DIR="$HOME/.claude/hooks"
 SERVER_DEST="$HOOKS_DIR/pii-server.py"
 REDACT_DEST="$HOOKS_DIR/redact_server.py"
+RULES_DEST="$HOOKS_DIR/pii_rules.py"
+OPF_DEST="$HOOKS_DIR/pii_opf.py"
 CHECK_DEST="$HOOKS_DIR/pii-check.sh"
 CLAUDE_SETTINGS="$HOME/.claude/settings.json"
 CODEX_HOOKS="$HOME/.codex/hooks.json"
@@ -63,11 +65,15 @@ need_cmd() {
 
 need_cmd curl
 need_cmd jq
-need_cmd uv
+if [ "$SERVER_MODE" = "rules" ]; then
+    need_cmd python3
+else
+    need_cmd uv
+fi
 
 case "$SERVER_MODE" in
-    redact|openai) ;;
-    *) echo "Error: PII_SERVER_MODE must be redact or openai." >&2; exit 1 ;;
+    redact|openai|rules) ;;
+    *) echo "Error: PII_SERVER_MODE must be redact, openai, or rules." >&2; exit 1 ;;
 esac
 
 case "$ACTION_MODE" in
@@ -80,10 +86,14 @@ mkdir -p "$HOOKS_DIR"
 echo "Downloading hook files..."
 curl -fsSL "$REPO_BASE/pii-server.py" -o "$SERVER_DEST"
 curl -fsSL "$REPO_BASE/redact_server.py" -o "$REDACT_DEST"
+curl -fsSL "$REPO_BASE/pii_rules.py" -o "$RULES_DEST"
+curl -fsSL "$REPO_BASE/pii_opf.py" -o "$OPF_DEST"
 curl -fsSL "$REPO_BASE/pii-check.sh"  -o "$CHECK_DEST"
 chmod +x "$CHECK_DEST"
 echo "Installed: $SERVER_DEST"
 echo "Installed: $REDACT_DEST"
+echo "Installed: $RULES_DEST"
+echo "Installed: $OPF_DEST"
 echo "Installed: $CHECK_DEST"
 
 # Add or update an entry in a hooks-shaped JSON file.
@@ -165,7 +175,12 @@ pilot_run() {
     fi
     echo "  resolving deps + loading the $SERVER_MODE model (one-time)..."
     mkdir -p "$(dirname "$SERVER_LOG")"
-    nohup uv run "$SERVER_DEST" --port "$PORT" --mode "$SERVER_MODE" >"$SERVER_LOG" 2>&1 </dev/null &
+    if [ "$SERVER_MODE" = "rules" ]; then
+        # Rules mode needs no dependencies, so it runs on the system python3.
+        nohup python3 "$SERVER_DEST" --port "$PORT" --mode "$SERVER_MODE" >"$SERVER_LOG" 2>&1 </dev/null &
+    else
+        nohup uv run "$SERVER_DEST" --port "$PORT" --mode "$SERVER_MODE" >"$SERVER_LOG" 2>&1 </dev/null &
+    fi
     disown
     local i
     for i in $(seq 1 120); do   # up to ~60s for a cold download
@@ -237,6 +252,7 @@ echo
 echo "Tuning:"
 echo "  PII_SERVER_MODE=redact  use GPU-backed Redact with deterministic rules (default)"
 echo "  PII_SERVER_MODE=openai  use the OpenAI Privacy Filter on CPU"
+echo "  PII_SERVER_MODE=rules   use the deterministic rules only; no model, no accelerator"
 echo "  PII_ACTION_MODE=warn    allow input and warn the agent about detected PII (default)"
 echo "  PII_ACTION_MODE=block   reject detected PII"
 echo "  PII_BLOCK_LEVEL=off       disable all checks"

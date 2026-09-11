@@ -218,7 +218,7 @@ All env vars override defaults; set them in your shell or the hook's env:
 | `PII_BLOCK_LEVEL` | `standard` | tier (off/relaxed/standard/strict) |
 | `PII_ALLOW_LABELS` | empty | comma-separated labels to allow within the selected tier |
 | `PII_ACTION_MODE` | `warn` | `warn` to allow input with agent context or `block` to reject input |
-| `PII_SERVER_MODE` | `redact` | `redact` or `openai` |
+| `PII_SERVER_MODE` | `redact` | `redact`, `openai`, or `rules` |
 | `PII_PORT` | `9123` | local server port |
 | `PII_SERVER_SCRIPT` | `~/.claude/hooks/pii-server.py` | server script path |
 | `PII_SERVER_LOG` | `~/.cache/opf/server.log` | server log path |
@@ -257,6 +257,16 @@ Select OpenAI as the secondary mode. Stop the existing server before changing mo
 ```bash
 PII_SERVER_MODE=openai uv run hooks-opf/pii-server.py --mode openai --port 9123
 ```
+
+Select the rules-only mode on a machine with no accelerator, or one too slow for the model:
+
+```bash
+PII_SERVER_MODE=rules uv run hooks-opf/pii-server.py --mode rules --port 9123
+```
+
+Rules mode runs the deterministic checks only. It loads no checkpoint and uses no accelerator. It reports `{"status":"ok","mode":"rules","device":"cpu"}`. It finds secrets, account numbers, emails, phone numbers, URLs, IP addresses, and dates. It does not find person names or postal addresses, because those need the neural model. On the 25-case fixture it scores 21 of 25; the four misses are the two person-name and two address cases.
+
+Rules mode needs no dependencies. `pii-server.py` imports the standard library alone, so the hook starts it with the system `python3` instead of `uv run`. That avoids resolving the script's declared model dependencies, which include torch. The other two modes still start under `uv run`.
 
 The neural model runs on the selected accelerator. Tokenization, deterministic checks, and span cleanup run on the CPU. Configure the mode with `REDACT_CACHE_DIR`, `REDACT_MIN_SCORE`, `REDACT_BATCH_SIZE`, `REDACT_MAX_TOKENS`, `REDACT_CHUNK_OVERLAP_TOKENS`, and `REDACT_MAX_INPUT_TOKENS`.
 

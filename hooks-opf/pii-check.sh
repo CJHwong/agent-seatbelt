@@ -46,8 +46,8 @@ SERVER_LOG="${PII_SERVER_LOG:-$HOME/.cache/opf/server.log}"
 ACTION_MODE="${PII_ACTION_MODE:-warn}"
 
 case "$SERVER_MODE" in
-    redact|openai) ;;
-    *) echo "pii-check: PII_SERVER_MODE must be redact or openai" >&2; exit 0 ;;
+    redact|openai|rules) ;;
+    *) echo "pii-check: PII_SERVER_MODE must be redact, openai, or rules" >&2; exit 0 ;;
 esac
 
 case "$ACTION_MODE" in
@@ -174,15 +174,27 @@ if ! health_ok; then
     fi
 
     if mkdir "$LOCK" 2>/dev/null; then
-        command -v uv >/dev/null 2>&1 || {
-            rmdir "$LOCK" 2>/dev/null || true
-            detector_failure "uv is not available"
-        }
+        # Rules mode imports the standard library only, so it runs on the system
+        # python3. uv would resolve the script's declared model dependencies and
+        # install torch for a mode that never loads it.
+        if [ "$SERVER_MODE" = "rules" ]; then
+            command -v python3 >/dev/null 2>&1 || {
+                rmdir "$LOCK" 2>/dev/null || true
+                detector_failure "python3 is not available"
+            }
+            launcher=(python3)
+        else
+            command -v uv >/dev/null 2>&1 || {
+                rmdir "$LOCK" 2>/dev/null || true
+                detector_failure "uv is not available"
+            }
+            launcher=(uv run)
+        fi
         [ -f "$SERVER_SCRIPT" ] || {
             rmdir "$LOCK" 2>/dev/null || true
             detector_failure "$SERVER_SCRIPT was not found"
         }
-        nohup uv run "$SERVER_SCRIPT" --port "$PORT" --mode "$SERVER_MODE" >"$SERVER_LOG" 2>&1 </dev/null &
+        nohup "${launcher[@]}" "$SERVER_SCRIPT" --port "$PORT" --mode "$SERVER_MODE" >"$SERVER_LOG" 2>&1 </dev/null &
         disown
     fi
 
