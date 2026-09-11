@@ -42,6 +42,16 @@ WINDOW_STRIDE = 64
 NEG_INF = -1e9
 DEFAULT_MAX_TOKENS = 4096
 DEFAULT_CHUNK_OVERLAP_TOKENS = 128
+DEFAULT_MAX_INPUT_TOKENS = 32768
+
+
+class InputTooLargeError(ValueError):
+    """Raised when a request exceeds REDACT_MAX_INPUT_TOKENS.
+
+    Subclasses ValueError so a caller that already maps ValueError to 413 keeps
+    its behavior.
+    """
+
 
 REQUIRED_FILES = [
     "config.json",
@@ -820,10 +830,17 @@ class RedactModel:
                 str(DEFAULT_CHUNK_OVERLAP_TOKENS),
             )
         )
+        self.max_input_tokens = int(
+            os.environ.get("REDACT_MAX_INPUT_TOKENS", str(DEFAULT_MAX_INPUT_TOKENS))
+        )
         if not 0.0 <= self.min_score <= 1.0:
             raise ValueError("REDACT_MIN_SCORE must be between 0 and 1")
         if self.batch_size <= 0 or self.max_tokens <= 0:
             raise ValueError("REDACT_BATCH_SIZE and REDACT_MAX_TOKENS must be positive")
+        if self.max_input_tokens < self.max_tokens:
+            raise ValueError(
+                "REDACT_MAX_INPUT_TOKENS must be at least REDACT_MAX_TOKENS"
+            )
         if self.chunk_overlap < 0 or self.chunk_overlap >= self.max_tokens:
             raise ValueError(
                 "REDACT_CHUNK_OVERLAP_TOKENS must be non-negative and smaller "
@@ -872,13 +889,18 @@ class RedactModel:
         if not text:
             return []
         encoding = self.tokenizer.encode(text, add_special_tokens=False)
+        token_count = len(encoding.ids)
+        if token_count > self.max_input_tokens:
+            raise InputTooLargeError(
+                f"input has {token_count} tokens, exceeds max {self.max_input_tokens}"
+            )
         rule_spans = deterministic_spans(text)
-        if len(encoding.ids) == 0:
+        if token_count == 0:
             return rule_spans
 
         model_spans: list[dict[str, object]] = []
         for token_start, token_end in chunk_token_ranges(
-            len(encoding.ids), self.max_tokens, self.chunk_overlap
+            token_count, self.max_tokens, self.chunk_overlap
         ):
             chunk_char_start = encoding.offsets[token_start][0]
             chunk_char_end = encoding.offsets[token_end - 1][1]
@@ -1070,7 +1092,7 @@ class Handler(BaseHTTPRequestHandler):
         try:
             with self.inference_lock:
                 spans = self.model.predict(request_text)
-        except ValueError as exc:
+        except InputTooLargeError as exc:
             self._send_json(413, {"error": str(exc)})
             return
         except RuntimeError as exc:

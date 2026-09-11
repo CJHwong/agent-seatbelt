@@ -26,6 +26,7 @@ from redact_server import (
     chunk_token_ranges,
     deterministic_spans,
     ensure_assets,
+    InputTooLargeError,
     map_model_label,
     merge_spans,
     RedactModel,
@@ -268,6 +269,7 @@ class ChunkingTests(unittest.TestCase):
                 )
                 self.max_tokens = 4
                 self.chunk_overlap = 1
+                self.max_input_tokens = 32
                 self.chunk_sizes = []
 
             def _predict_model_spans(self, token_ids, offsets, text):
@@ -293,6 +295,32 @@ class ChunkingTests(unittest.TestCase):
                 (12, "private_person"),
             ],
         )
+
+    def test_input_above_the_cap_is_rejected_before_inference(self):
+        class StubRedactModel(RedactModel):
+            def __init__(self):
+                self.tokenizer = SimpleNamespace(
+                    encode=lambda text, add_special_tokens=False: SimpleNamespace(
+                        ids=list(range(8)),
+                        offsets=[(index * 2, index * 2 + 1) for index in range(8)],
+                    )
+                )
+                self.max_tokens = 4
+                self.chunk_overlap = 1
+                self.max_input_tokens = 4
+                self.chunk_sizes = []
+
+            def _predict_model_spans(self, token_ids, offsets, text):
+                self.chunk_sizes.append(len(token_ids))
+                return []
+
+        model = StubRedactModel()
+        with patch("redact_server.deterministic_spans") as scan:
+            with self.assertRaisesRegex(InputTooLargeError, "exceeds max 4"):
+                model.predict("a " * 8)
+
+        scan.assert_not_called()
+        self.assertEqual(model.chunk_sizes, [])
 
 
 if __name__ == "__main__":

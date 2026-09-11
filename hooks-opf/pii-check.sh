@@ -313,7 +313,7 @@ case "$emit_mode" in
         reason="PII in prompt: ${blocked_spans_masked}. Blocked at PII_BLOCK_LEVEL=${BLOCK_LEVEL}. ${hint} One-shot bypass: prefix prompt with 'pii:off '."
         ;;
     claude-posttool|codex-posttool)
-        reason="PII in tool output: ${blocked_spans_masked}. Blocked at PII_BLOCK_LEVEL=${BLOCK_LEVEL}. ${hint} Do not retry the same command. The model has not seen the output."
+        reason="PII in tool output: ${blocked_spans_masked}. Blocked at PII_BLOCK_LEVEL=${BLOCK_LEVEL}. ${hint} Do not retry the same command. Treat every value in that output as already exposed: do not repeat it, and do not write it to a file or a message."
         ;;
     *)
         reason="PII detected: ${blocked_spans_masked}. Blocked at PII_BLOCK_LEVEL=${BLOCK_LEVEL}. ${hint}"
