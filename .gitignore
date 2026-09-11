@@ -1,0 +1,30 @@
+# Python bytecode and test caches
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.pyright/
+.coverage
+.coverage.*
+htmlcov/
+
+# Local Python environments and build output
+.venv/
+venv/
+env/
+ENV/
+*.egg-info/
+build/
+dist/
+
+# Local model caches and runtime files
+.cache/
+*.log
+
+# Local configuration and secrets
+.env
+.env.*
+
+# Operating system files
+.DS_Store

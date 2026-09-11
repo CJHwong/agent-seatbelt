@@ -2,14 +2,16 @@
 
 Userland PII detector for AI coding agents. Catches secrets and personal data flowing **into** the agent's prompt or **out of** its tool responses, before the LLM ever sees the bytes.
 
-Powered by [`openai/privacy-filter`](https://huggingface.co/openai/privacy-filter), an int8 ONNX model OpenAI released alongside [their blog post on privacy filtering](https://openai.com/index/introducing-openai-privacy-filter/). Runs entirely locally — the only network call is the one-time model download from Hugging Face on first use.
+The default mode uses Desert Ant Redact on the local GPU. It adds deterministic rules for secrets and private data. OpenAI Privacy Filter remains available as a CPU-only secondary mode.
+
+Both modes run locally. The OpenAI mode downloads its model from Hugging Face on first use. The Redact mode requires a compatible PyTorch cache because the public Redact release does not publish the `redact.pt` checkpoint used by this server.
 
 This is the content-level companion to `agent-seatbelt`'s file-level sandbox. The sandbox stops the agent from reading your secrets; if a secret enters the process anyway (env var, fetched via credential helper, pasted into a prompt), this hook catches it on the way to the LLM.
 
 ## What gets installed
 
 - `~/.claude/hooks/pii-check.sh` — the hook binary, called on prompt submit and tool response
-- `~/.claude/hooks/pii-server.py` — local HTTP server that loads the ONNX model and returns labeled spans
+- `~/.claude/hooks/pii-server.py` — local HTTP server that loads the selected model and returns labeled spans
 - For each detected agent, two entries in its hooks config:
   - `UserPromptSubmit` → blocks prompts containing PII before they're sent to the model provider
   - `PostToolUse` → blocks tool responses containing PII before they're fed back to the LLM next turn. The matcher is scoped to tools whose output can carry external data — `Bash`, `Read`, `NotebookRead`, `WebFetch`, `WebSearch`, `Agent`/`Task` (subagent results), and MCP tools. File edits, todo writes, glob, and ls only emit structural metadata, so scanning them is wasted work.
@@ -37,7 +39,7 @@ Flags:
 ... | bash -s -- --no-pilot      # skip the pilot warm-up run
 ```
 
-Before wiring, the installer does a pilot run: it starts the server once so the uv dep resolution and ~30MB model download happen now (cached to `~/.cache/opf/`), smoke-tests it, and leaves it warm. The first agent session then skips the cold start. Pass `--no-pilot` to skip it; the model will download lazily on the first hook instead.
+Before wiring, the installer does a pilot run: it starts the selected server once, smoke-tests it, and leaves it warm. The OpenAI model downloads to `~/.cache/opf/`. The Redact cache must already exist. Pass `--no-pilot` to skip the pilot.
 
 The installer is idempotent — running it again won't duplicate hook entries, and will migrate any older `*` matchers to the current keep-list.
 
@@ -158,10 +160,74 @@ All env vars override defaults; set them in your shell or the hook's env:
 |---|---|---|
 | `PII_BLOCK_LEVEL` | `standard` | tier (off/relaxed/standard/strict) |
 | `PII_ALLOW_LABELS` | empty | comma-separated labels to allow within the selected tier |
+| `PII_SERVER_MODE` | `redact` | `redact` or `openai` |
 | `PII_PORT` | `9123` | local server port |
 | `PII_SERVER_SCRIPT` | `~/.claude/hooks/pii-server.py` | server script path |
 | `PII_SERVER_LOG` | `~/.cache/opf/server.log` | server log path |
 | `OPF_CACHE_DIR` | `~/.cache/opf` | model assets cache (server-side) |
+| `REDACT_CACHE_DIR` | `~/.cache/redact` | converted Redact assets cache |
+| `REDACT_DEVICE` | `auto` | `cuda`, `mps`, or explicit `cpu` |
+
+## Redact GPU mode
+
+The shared server uses Desert Ant Redact by default. It selects NVIDIA `cuda` first, then Apple Metal Performance Shaders (`mps`). It fails if no accelerator exists. Set `REDACT_DEVICE=cpu` only for an explicit CPU run.
+
+Select the default mode on this Apple Silicon machine:
+
+```bash
+PII_SERVER_MODE=redact REDACT_DEVICE=mps uv run hooks-opf/pii-server.py --port 9123
+```
+
+Check the selected device:
+
+```bash
+curl -sS http://127.0.0.1:9123/health
+```
+
+The health response identifies the active mode and device:
+
+```json
+{"status":"ok","mode":"redact","device":"mps"}
+```
+
+Select OpenAI as the secondary mode. Stop the existing server before changing modes on the same port:
+
+```bash
+PII_SERVER_MODE=openai uv run hooks-opf/pii-server.py --mode openai --port 9123
+```
+
+The neural model runs on the selected accelerator. Tokenization, deterministic checks, and span cleanup run on the CPU. Configure the mode with `REDACT_CACHE_DIR`, `REDACT_MIN_SCORE`, `REDACT_BATCH_SIZE`, and `REDACT_MAX_TOKENS`.
+
+Review the [Redact release](https://huggingface.co/desert-ant-labs/redact/resolve/v0.4.0/README.md) and its [source-available license](https://license.desertant.com/1.0) before distribution. The published release contains Core ML and TFLite assets. Create or provide the PyTorch cache separately.
+
+Measure resource use on the final holdout corpus:
+
+```bash
+uv run hooks-opf/tests/run-resource-comparison.py --mode local
+uv run hooks-opf/tests/run-resource-comparison.py --mode openai
+```
+
+The report includes process CPU time, wall latency, peak resident memory, and accelerator allocation. PyTorch MPS does not expose a reliable GPU utilization percentage.
+
+## Expanded comparison corpus
+
+The [false-positive corpus](tests/false-positive-cases.jsonl) has 102 cases. It contains 50 strict clean cases, 32 required detections, and 20 policy-ambiguous cases.
+
+Strict clean cases contain no intended PII. Any returned span counts as a false positive. Required detections check label recall. Ambiguous cases cover public examples, test values, and business data. They are reported but not scored as false positives.
+
+The [comparison runner](tests/run-comparison.py) accepts any server with the shared `POST /` contract:
+
+```bash
+uv run hooks-opf/tests/run-comparison.py \
+  --server redact=http://127.0.0.1:9124 \
+  --server openai=http://127.0.0.1:9123
+```
+
+Exclude labels that a model documents as unsupported. For example, Rampart does not model dates or catch-all secrets:
+
+```bash
+--unsupported rampart=private_date,secret
+```
 
 ## Uninstall
 

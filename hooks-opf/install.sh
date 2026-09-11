@@ -9,8 +9,8 @@
 #   curl -fsSL .../install.sh | bash -s -- --no-codex      # skip Codex even if present
 #   curl -fsSL .../install.sh | bash -s -- --no-pilot      # skip the model warm-up run
 #
-# Before wiring, a pilot run resolves uv deps and downloads the ~30MB model, then
-# leaves the server warm — so the first agent session skips the cold start. The
+# Before wiring, a pilot run resolves uv deps and starts the selected model, then
+# leaves the server warm so the first agent session skips the cold start. The
 # server is a shared singleton on 127.0.0.1:9123 that both agents reuse.
 #
 # Scripts are installed to ~/.claude/hooks/ regardless of agent. Both agents reference that path.
@@ -26,6 +26,7 @@ CLAUDE_SETTINGS="$HOME/.claude/settings.json"
 CODEX_HOOKS="$HOME/.codex/hooks.json"
 PORT="${PII_PORT:-9123}"
 SERVER_LOG="${PII_SERVER_LOG:-$HOME/.cache/opf/server.log}"
+SERVER_MODE="${PII_SERVER_MODE:-redact}"
 
 # Tools whose output can carry external PII. Edit/Write/Glob/LS/Todo etc. only
 # emit structural metadata, so scanning them is wasted work. Codex aliases file
@@ -59,6 +60,11 @@ need_cmd() {
 need_cmd curl
 need_cmd jq
 need_cmd uv
+
+case "$SERVER_MODE" in
+    redact|openai) ;;
+    *) echo "Error: PII_SERVER_MODE must be redact or openai." >&2; exit 1 ;;
+esac
 
 mkdir -p "$HOOKS_DIR"
 
@@ -121,29 +127,39 @@ wire_agent() {
     fi
 }
 
-# Start the server once so uv deps + the ~30MB model download happen now, not in
-# the user's first agent turn. Waits far longer than the hook's 10s (a cold
-# download can take ~30s), then smoke-tests one known-PII string. Leaves the
+# Start the server once so uv deps and model loading happen now, not in the
+# user's first agent turn. Waits far longer than the hook's 10s, then smoke-tests
+# one known-PII string. Leaves the
 # server running — it's the same 127.0.0.1:$PORT singleton the hooks reuse.
 # Sets PILOT_OK on success. Fail-soft: a miss here just means the first real
 # prompt pays the cold start, same as before this step existed.
 pilot_run() {
     local health="http://127.0.0.1:$PORT/health"
-    if curl -sSf --max-time 1 "$health" >/dev/null 2>&1; then
-        echo "  server already warm on 127.0.0.1:$PORT — nothing to do"
-        PILOT_OK=1
+    local existing_health existing_status existing_mode
+    existing_health=$(curl -sSf --max-time 1 "$health" 2>/dev/null || true)
+    existing_status=$(printf '%s' "$existing_health" | jq -r '.status // empty' 2>/dev/null || true)
+    if [ "$existing_status" = "ok" ]; then
+        existing_mode=$(printf '%s' "$existing_health" | jq -r '.mode // "unknown"' 2>/dev/null || true)
+        if [ "$existing_mode" = "$SERVER_MODE" ]; then
+            echo "  server already warm on 127.0.0.1:$PORT — nothing to do"
+            PILOT_OK=1
+        else
+            echo "  server mode is $existing_mode, requested $SERVER_MODE; restart the server" >&2
+        fi
         return
     fi
-    echo "  resolving deps + downloading the ~30MB model (one-time)..."
+    echo "  resolving deps + loading the $SERVER_MODE model (one-time)..."
     mkdir -p "$(dirname "$SERVER_LOG")"
-    nohup uv run "$SERVER_DEST" --port "$PORT" >"$SERVER_LOG" 2>&1 </dev/null &
+    nohup uv run "$SERVER_DEST" --port "$PORT" --mode "$SERVER_MODE" >"$SERVER_LOG" 2>&1 </dev/null &
     disown
     local i
     for i in $(seq 1 120); do   # up to ~60s for a cold download
-        curl -sSf --max-time 1 "$health" >/dev/null 2>&1 && break
+        curl -sSf --max-time 1 "$health" | jq -e --arg mode "$SERVER_MODE" \
+            '.status == "ok" and .mode == $mode' >/dev/null 2>&1 && break
         sleep 0.5
     done
-    if ! curl -sSf --max-time 1 "$health" >/dev/null 2>&1; then
+    if ! curl -sSf --max-time 1 "$health" | jq -e --arg mode "$SERVER_MODE" \
+        '.status == "ok" and .mode == $mode' >/dev/null 2>&1; then
         echo "  server not up after ~60s; model may still be downloading in the" >&2
         echo "  background. It will finish on first agent use. Log: $SERVER_LOG" >&2
         return
@@ -154,7 +170,7 @@ pilot_run() {
         -d '{"text":"reach me at pilot@example.com"}' 2>/dev/null) || true
     spans=$(printf '%s' "$resp" | jq -r '.spans // [] | length' 2>/dev/null)
     if [ "${spans:-0}" -ge 1 ]; then
-        echo "  ok — server warm, smoke test flagged ${spans} span(s), cached at ~/.cache/opf/"
+        echo "  ok — $SERVER_MODE server warm, smoke test flagged ${spans} span(s)"
         PILOT_OK=1
     else
         echo "  server up but smoke test flagged nothing; check $SERVER_LOG" >&2
@@ -193,7 +209,7 @@ echo "Done. Restart any running agent for the changes to take effect."
 if [ "$PILOT_OK" -eq 1 ]; then
     echo "Model is warm (pilot run) — the first agent prompt won't wait on the download."
 else
-    echo "First matching prompt may be slow — uv resolves deps and ~30MB model assets download to ~/.cache/opf/."
+    echo "First matching prompt may be slow. The server will resolve deps and load the selected model."
 fi
 if [ "$CODEX_PRESENT" -eq 1 ]; then
     echo
@@ -204,6 +220,8 @@ if [ "$CODEX_PRESENT" -eq 1 ]; then
 fi
 echo
 echo "Tuning:"
+echo "  PII_SERVER_MODE=redact  use GPU-backed Redact with deterministic rules (default)"
+echo "  PII_SERVER_MODE=openai  use the OpenAI Privacy Filter on CPU"
 echo "  PII_BLOCK_LEVEL=off       disable all checks"
 echo "  PII_BLOCK_LEVEL=relaxed   block only secrets + account numbers"
 echo "  PII_BLOCK_LEVEL=standard  + emails, phones, addresses (default)"

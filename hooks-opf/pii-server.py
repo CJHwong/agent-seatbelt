@@ -1,13 +1,15 @@
 # /// script
 # requires-python = ">=3.11"
 # dependencies = [
+#     "huggingface_hub>=0.23,<2",
 #     "onnxruntime>=1.17",
 #     "tokenizers>=0.15",
-#     "huggingface_hub>=0.23",
 #     "numpy>=1.24",
+#     "torch>=2.2,<3",
+#     "transformers>=4.40,<6",
 # ]
 # ///
-"""Local int8 PII server for openai/privacy-filter.
+"""Local PII server with Redact as the default mode.
 
 POST / {"text": "..."} -> {"spans": [{"start": int, "end": int, "label": str, "text": str}, ...]}
 """
@@ -40,6 +42,27 @@ REQUIRED_FILES = [
     "onnx/model_quantized.onnx",
     "onnx/model_quantized.onnx_data",
 ]
+SUPPORTED_MODES = ("redact", "openai")
+DEFAULT_MODE = "redact"
+
+
+def resolve_mode(requested: str | None = None) -> str:
+    mode = (
+        (requested or os.environ.get("PII_SERVER_MODE", DEFAULT_MODE)).strip().lower()
+    )
+    if mode not in SUPPORTED_MODES:
+        supported = ", ".join(SUPPORTED_MODES)
+        raise ValueError(f"PII_SERVER_MODE must be one of: {supported}")
+    return mode
+
+
+def health_payload(mode: str, model: object) -> dict[str, str]:
+    payload = {"status": "ok", "mode": mode}
+    if mode == "redact":
+        payload["device"] = str(getattr(model, "device", "unknown"))
+    else:
+        payload["device"] = "cpu"
+    return payload
 
 
 def ensure_assets() -> Path:
@@ -73,7 +96,9 @@ class LabelSpace:
                 self.span_name[idx] = rest
 
 
-def build_transition_tables(ls: LabelSpace) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+def build_transition_tables(
+    ls: LabelSpace,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Return (start_scores, end_scores, transition_scores) with invalid edges = NEG_INF.
 
     All default biases are 0, so valid edges carry 0 and invalid edges are masked out.
@@ -107,7 +132,11 @@ def _valid(ls: LabelSpace, prev: int, nxt: int) -> bool:
     if prev_tag in {"E", "S"}:
         return nxt_bg or nxt_tag in {"B", "S"}
     if prev_tag in {"B", "I"}:
-        return (not nxt_bg) and nxt_tag in {"I", "E"} and ls.span_name[prev] == ls.span_name[nxt]
+        return (
+            (not nxt_bg)
+            and nxt_tag in {"I", "E"}
+            and ls.span_name[prev] == ls.span_name[nxt]
+        )
     return False
 
 
@@ -243,12 +272,14 @@ class Model:
                 char_end -= 1
             if char_start >= char_end:
                 continue
-            spans.append({
-                "start": char_start,
-                "end": char_end,
-                "label": name,
-                "text": text[char_start:char_end],
-            })
+            spans.append(
+                {
+                    "start": char_start,
+                    "end": char_end,
+                    "label": name,
+                    "text": text[char_start:char_end],
+                }
+            )
         return spans
 
 
@@ -258,12 +289,26 @@ def _logsumexp(x: np.ndarray, axis: int, keepdims: bool) -> np.ndarray:
     return out if keepdims else np.squeeze(out, axis=axis)
 
 
+def load_selected_model(mode: str) -> object:
+    if mode == "openai":
+        return Model(ensure_assets())
+
+    server_dir = Path(__file__).resolve().parent
+    if str(server_dir) not in sys.path:
+        sys.path.insert(0, str(server_dir))
+    from redact_server import RedactModel, ensure_assets as ensure_redact_assets
+
+    requested_device = os.environ.get("REDACT_DEVICE", "auto")
+    return RedactModel(ensure_redact_assets(), requested_device)
+
+
 class Handler(BaseHTTPRequestHandler):
-    model: Model  # set on the class by main()
-    inference_lock = threading.Lock()  # ORT run() is thread-safe, but tokenizer may not be
+    model: object
+    mode: str
+    inference_lock = threading.Lock()
 
     def log_message(self, fmt, *args):
-        sys.stderr.write(f"[opf] {self.address_string()} {fmt % args}\n")
+        sys.stderr.write(f"[{self.mode}] {self.address_string()} {fmt % args}\n")
 
     def _send_json(self, code: int, payload: dict) -> None:
         body = json.dumps(payload).encode("utf-8")
@@ -300,7 +345,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         if self.path == "/health":
-            self._send_json(200, {"status": "ok"})
+            self._send_json(200, health_payload(self.mode, self.model))
             return
         self._send_json(404, {"error": "not found"})
 
@@ -309,13 +354,18 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=9123)
+    parser.add_argument("--mode", choices=SUPPORTED_MODES)
     args = parser.parse_args()
 
-    print(f"[opf] cache: {CACHE_DIR}", file=sys.stderr)
-    cache_dir = ensure_assets()
-    print("[opf] loading model...", file=sys.stderr)
-    Handler.model = Model(cache_dir)
-    print(f"[opf] ready on http://{args.host}:{args.port}", file=sys.stderr)
+    mode = resolve_mode(args.mode)
+    print(f"[{mode}] loading model...", file=sys.stderr, flush=True)
+    Handler.model = load_selected_model(mode)
+    Handler.mode = mode
+    print(
+        f"[{mode}] ready on http://{args.host}:{args.port}",
+        file=sys.stderr,
+        flush=True,
+    )
 
     server = ThreadingHTTPServer((args.host, args.port), Handler)
     for sig in (signal.SIGINT, signal.SIGTERM):

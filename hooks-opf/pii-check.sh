@@ -36,10 +36,16 @@ done
 PORT="${PII_PORT:-9123}"
 HOST="127.0.0.1"
 SERVER_SCRIPT="${PII_SERVER_SCRIPT:-$HOME/.claude/hooks/pii-server.py}"
+SERVER_MODE="${PII_SERVER_MODE:-redact}"
 HEALTH="http://$HOST:$PORT/health"
 PREDICT="http://$HOST:$PORT/"
 LOCK="/tmp/pii-server.starting"
 SERVER_LOG="${PII_SERVER_LOG:-$HOME/.cache/opf/server.log}"
+
+case "$SERVER_MODE" in
+    redact|openai) ;;
+    *) echo "pii-check: PII_SERVER_MODE must be redact or openai" >&2; exit 0 ;;
+esac
 
 # --- Category tiers ---
 CRITICAL=('secret' 'account_number')
@@ -100,9 +106,20 @@ if [[ "$MODE" == "prompt" || "$MODE" == "auto" ]] && [[ "$text" == "pii:off"* ]]
     exit 0
 fi
 
-health_ok() { curl -sSf --max-time 0.5 "$HEALTH" >/dev/null 2>&1; }
+health_json() { curl -sSf --max-time 0.5 "$HEALTH" 2>/dev/null; }
+health_ok() {
+    health_json | jq -e --arg mode "$SERVER_MODE" \
+        '.status == "ok" and .mode == $mode' >/dev/null 2>&1
+}
 
 if ! health_ok; then
+    current_health=$(health_json || true)
+    current_status=$(printf '%s' "$current_health" | jq -r '.status // empty' 2>/dev/null || true)
+    current_mode=$(printf '%s' "$current_health" | jq -r '.mode // "unknown"' 2>/dev/null || true)
+    if [ "$current_status" = "ok" ]; then
+        echo "pii-check: server mode is $current_mode, requested $SERVER_MODE; restart the server" >&2
+        exit 0
+    fi
     if [ -d "$LOCK" ] && [ -n "$(find "$LOCK" -maxdepth 0 -mmin +1 2>/dev/null)" ]; then
         rmdir "$LOCK" 2>/dev/null
     fi
@@ -110,7 +127,7 @@ if ! health_ok; then
     if mkdir "$LOCK" 2>/dev/null; then
         command -v uv >/dev/null 2>&1 || { rmdir "$LOCK"; exit 0; }
         [ -f "$SERVER_SCRIPT" ] || { rmdir "$LOCK"; echo "pii-check: $SERVER_SCRIPT not found" >&2; exit 0; }
-        nohup uv run "$SERVER_SCRIPT" --port "$PORT" >"$SERVER_LOG" 2>&1 </dev/null &
+        nohup uv run "$SERVER_SCRIPT" --port "$PORT" --mode "$SERVER_MODE" >"$SERVER_LOG" 2>&1 </dev/null &
         disown
     fi
 
