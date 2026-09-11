@@ -173,12 +173,13 @@ pilot_run() {
         fi
         return
     fi
-    echo "  resolving deps + loading the $SERVER_MODE model (one-time)..."
     mkdir -p "$(dirname "$SERVER_LOG")"
     if [ "$SERVER_MODE" = "rules" ]; then
         # Rules mode needs no dependencies, so it runs on the system python3.
+        echo "  starting the rules server on python3 (no dependencies to resolve)..."
         nohup python3 "$SERVER_DEST" --port "$PORT" --mode "$SERVER_MODE" >"$SERVER_LOG" 2>&1 </dev/null &
     else
+        echo "  resolving deps + loading the $SERVER_MODE model (one-time)..."
         nohup uv run "$SERVER_DEST" --port "$PORT" --mode "$SERVER_MODE" >"$SERVER_LOG" 2>&1 </dev/null &
     fi
     disown
