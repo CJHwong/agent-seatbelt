@@ -12,6 +12,7 @@ This is the content-level companion to `agent-seatbelt`'s file-level sandbox. Th
 
 - `~/.claude/hooks/pii-check.sh` — the hook binary, called on prompt submit and tool response
 - `~/.claude/hooks/pii-server.py` — local HTTP server that loads the selected model and returns labeled spans
+- `~/.claude/hooks/redact_server.py` — local Redact model adapter used by `pii-server.py`
 - For each detected agent, two entries in its hooks config:
   - `UserPromptSubmit` → blocks or warns on prompts containing PII before they reach the model provider
   - `PostToolUse` → blocks or warns on tool responses containing PII before the next LLM turn. The matcher is scoped to tools whose output can carry external data — `Bash`, `Read`, `NotebookRead`, `WebFetch`, `WebSearch`, `Agent`/`Task` (subagent results), and MCP tools. File edits, todo writes, glob, and ls only emit structural metadata, so scanning them is wasted work.
@@ -256,7 +257,7 @@ Exclude labels that a model documents as unsupported. For example, Rampart does 
 ## Uninstall
 
 ```bash
-rm ~/.claude/hooks/pii-check.sh ~/.claude/hooks/pii-server.py
+rm ~/.claude/hooks/pii-check.sh ~/.claude/hooks/pii-server.py ~/.claude/hooks/redact_server.py
 # then edit ~/.claude/settings.json and ~/.codex/hooks.json and remove the entries
 ```
 

@@ -21,6 +21,7 @@ set -euo pipefail
 REPO_BASE="${HOOKS_OPF_BASE_URL:-https://raw.githubusercontent.com/CJHwong/agent-seatbelt/main/hooks-opf}"
 HOOKS_DIR="$HOME/.claude/hooks"
 SERVER_DEST="$HOOKS_DIR/pii-server.py"
+REDACT_DEST="$HOOKS_DIR/redact_server.py"
 CHECK_DEST="$HOOKS_DIR/pii-check.sh"
 CLAUDE_SETTINGS="$HOME/.claude/settings.json"
 CODEX_HOOKS="$HOME/.codex/hooks.json"
@@ -76,9 +77,11 @@ mkdir -p "$HOOKS_DIR"
 
 echo "Downloading hook files..."
 curl -fsSL "$REPO_BASE/pii-server.py" -o "$SERVER_DEST"
+curl -fsSL "$REPO_BASE/redact_server.py" -o "$REDACT_DEST"
 curl -fsSL "$REPO_BASE/pii-check.sh"  -o "$CHECK_DEST"
 chmod +x "$CHECK_DEST"
 echo "Installed: $SERVER_DEST"
+echo "Installed: $REDACT_DEST"
 echo "Installed: $CHECK_DEST"
 
 # Add or update an entry in a hooks-shaped JSON file.
