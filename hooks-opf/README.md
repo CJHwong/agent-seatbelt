@@ -15,7 +15,7 @@ This is the content-level companion to `agent-seatbelt`'s file-level sandbox. Th
 - `~/.claude/hooks/redact_server.py` — local Redact model adapter used by `pii-server.py`
 - For each detected agent, two entries in its hooks config:
   - `UserPromptSubmit` → blocks or warns on prompts containing PII before they reach the model provider
-  - `PostToolUse` → blocks or warns on tool responses containing PII before the next LLM turn. The matcher is scoped to tools whose output can carry external data — `Bash`, `Read`, `NotebookRead`, `WebFetch`, `WebSearch`, `Agent`/`Task` (subagent results), and MCP tools. File edits, todo writes, glob, and ls only emit structural metadata, so scanning them is wasted work.
+  - `PostToolUse` → blocks or warns on tool responses containing PII before the next LLM turn. The matcher is scoped to tools whose output can carry external data — Claude Code `Bash`, Codex `exec_command`, `Read`, `NotebookRead`, `WebFetch`, `WebSearch`, `Agent`/`Task` (subagent results), and MCP tools. File edits, todo writes, glob, and ls only emit structural metadata, so scanning them is wasted work.
 
 Supported agents (auto-detected by directory presence):
 

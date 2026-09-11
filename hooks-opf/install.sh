@@ -33,8 +33,8 @@ ACTION_MODE="${PII_ACTION_MODE:-block}"
 # Tools whose output can carry external PII. Edit/Write/Glob/LS/Todo etc. only
 # emit structural metadata, so scanning them is wasted work. Codex aliases file
 # edits to apply_patch; both Claude's Edit/Write and Codex's apply_patch fall
-# outside this pattern and are skipped.
-POSTTOOL_MATCHER='^(Bash|Read|NotebookRead|WebFetch|WebSearch|Agent|Task|mcp__.*)$'
+# outside this pattern and are skipped. Codex shell calls use exec_command.
+POSTTOOL_MATCHER='^(Bash|Read|NotebookRead|WebFetch|WebSearch|Agent|Task|exec_command|mcp__.*)$'
 
 PROMPT_ONLY=0
 SKIP_CODEX=0

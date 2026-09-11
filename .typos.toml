@@ -1,0 +1,12 @@
+[default.extend-words]
+OPF = "OPF"
+opf = "opf"
+ist = "ist"
+reste = "reste"
+Adresse = "Adresse"
+
+[files]
+extend-exclude = [
+    "hooks-opf/tests/challenge_cases.py",
+    "hooks-opf/tests/false-positive-cases.jsonl",
+]
