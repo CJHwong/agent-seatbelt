@@ -1,0 +1,102 @@
+{"id":"clean-001","class":"clean","group":"ordinary_prose","expected":[],"text":"The build completed successfully and the deployment is ready.","reason":"ordinary status text"}
+{"id":"clean-002","class":"clean","group":"ordinary_prose","expected":[],"text":"Please review the parser before the release window closes.","reason":"ordinary work instruction"}
+{"id":"clean-003","class":"clean","group":"names_as_words","expected":[],"text":"The Jordan River flows through the valley.","reason":"person name used as a geographic name"}
+{"id":"clean-004","class":"clean","group":"names_as_words","expected":[],"text":"The Coleman stove is in the equipment catalog.","reason":"surname used as a product name"}
+{"id":"clean-005","class":"clean","group":"names_as_words","expected":[],"text":"May is the fifth month in the calendar.","reason":"month name without a date"}
+{"id":"clean-006","class":"clean","group":"names_as_words","expected":[],"text":"Mercury is the first planet in the chart.","reason":"common name used as a planet"}
+{"id":"clean-007","class":"clean","group":"security_words","expected":[],"text":"The account migration finished without errors.","reason":"security word without account data"}
+{"id":"clean-008","class":"clean","group":"security_words","expected":[],"text":"The secret scanner reports no findings.","reason":"security word without a secret"}
+{"id":"clean-009","class":"clean","group":"security_words","expected":[],"text":"The phone formatter uses international rules.","reason":"PII label word without a phone number"}
+{"id":"clean-010","class":"clean","group":"security_words","expected":[],"text":"The URL parser preserves fragments.","reason":"PII label word without a URL"}
+{"id":"clean-011","class":"clean","group":"security_words","expected":[],"text":"The address parser handles empty input.","reason":"PII label word without an address"}
+{"id":"clean-012","class":"clean","group":"structured_text","expected":[],"text":"{\"status\":\"ok\",\"processing_ms\":42,\"spans\":[]}","reason":"clean health response"}
+{"id":"clean-013","class":"clean","group":"structured_text","expected":[],"text":"GET /health returned 200 in 42 ms.","reason":"clean access log"}
+{"id":"clean-014","class":"clean","group":"structured_text","expected":[],"text":"trace_id=7f3a9c2e-4d11-4e9a-8b72-1e2f3a4b5c6d","reason":"UUID trace identifier"}
+{"id":"clean-015","class":"clean","group":"structured_text","expected":[],"text":"sha256=9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08","reason":"hash value"}
+{"id":"clean-016","class":"clean","group":"structured_text","expected":[],"text":"request_id=01J3Q5Z9M8Q6V2N4K7H1T0R3P5","reason":"ULID-like request identifier"}
+{"id":"clean-017","class":"clean","group":"numbers","expected":[],"text":"The package version is 2026.05.14.","reason":"dotted version number"}
+{"id":"clean-018","class":"clean","group":"numbers","expected":[],"text":"Order reference 001234567890 is not a bank account.","reason":"numeric reference with explicit non-account context"}
+{"id":"clean-019","class":"clean","group":"numbers","expected":[],"text":"The invalid card fixture is 0000 0000 0000 0000.","reason":"invalid checksum value"}
+{"id":"clean-020","class":"clean","group":"numbers","expected":[],"text":"The short phone fixture is 555-0100.","reason":"incomplete phone value"}
+{"id":"clean-021","class":"clean","group":"syntax","expected":[],"text":"The malformed address is user@.","reason":"invalid email syntax"}
+{"id":"clean-022","class":"clean","group":"syntax","expected":[],"text":"The local test address is john.doe@localhost.","reason":"email without a public suffix"}
+{"id":"clean-023","class":"clean","group":"syntax","expected":[],"text":"The incomplete link is https://.","reason":"incomplete URL syntax"}
+{"id":"clean-024","class":"clean","group":"syntax","expected":[],"text":"The token prefix is AKIA but no key follows it.","reason":"incomplete AWS key"}
+{"id":"clean-025","class":"clean","group":"syntax","expected":[],"text":"The example marker is -----BEGIN PUBLIC KEY-----.","reason":"public key is not a private key"}
+{"id":"clean-026","class":"clean","group":"syntax","expected":[],"text":"The form says password but does not include a value.","reason":"password label without a value"}
+{"id":"clean-027","class":"clean","group":"syntax","expected":[],"text":"The sample says secret = short.","reason":"short non-secret context value"}
+{"id":"clean-028","class":"clean","group":"invalid_dates","expected":[],"text":"The parser rejects the invalid date 2026-99-99.","reason":"invalid ISO date"}
+{"id":"clean-029","class":"clean","group":"invalid_dates","expected":[],"text":"The parser rejects June 99, 2026.","reason":"invalid month date"}
+{"id":"clean-030","class":"clean","group":"invalid_dates","expected":[],"text":"The parser rejects 2001-02-29 in this test.","reason":"invalid leap date"}
+{"id":"clean-031","class":"clean","group":"technical_network","expected":[],"text":"The IPv4 documentation uses 192.0.2.1.","reason":"reserved documentation IP"}
+{"id":"clean-032","class":"clean","group":"technical_network","expected":[],"text":"The service listens on the local address 10.0.0.1.","reason":"private network address used as configuration"}
+{"id":"clean-033","class":"clean","group":"names_as_words","expected":[],"text":"Northstar is the name of the sample package.","reason":"organization-like word without a person"}
+{"id":"clean-034","class":"clean","group":"addresses_as_words","expected":[],"text":"Waverly Street is a class name in the address parser.","reason":"street name without a physical address"}
+{"id":"clean-035","class":"clean","group":"multilingual","expected":[],"text":"東京のチームは朝に出社します。","reason":"neutral Japanese text"}
+{"id":"clean-036","class":"clean","group":"multilingual","expected":[],"text":"北京辦公室今天關閉。","reason":"neutral Traditional Chinese text"}
+{"id":"clean-037","class":"clean","group":"multilingual","expected":[],"text":"El sistema terminó correctamente.","reason":"neutral Spanish text"}
+{"id":"clean-038","class":"clean","group":"multilingual","expected":[],"text":"Le système est prêt pour la revue.","reason":"neutral French text"}
+{"id":"clean-039","class":"clean","group":"multilingual","expected":[],"text":"Das Packet wurde verarbeitet.","reason":"neutral German text"}
+{"id":"clean-040","class":"clean","group":"multilingual","expected":[],"text":"Il servizio è disponibile.","reason":"neutral Italian text"}
+{"id":"clean-041","class":"clean","group":"multilingual","expected":[],"text":"안녕하세요. 배포가 완료되었습니다.","reason":"neutral Korean text"}
+{"id":"clean-042","class":"clean","group":"multilingual","expected":[],"text":"مرحبا، اكتمل النشر.","reason":"neutral Arabic text"}
+{"id":"clean-043","class":"clean","group":"markup","expected":[],"text":"# Release notes\n\n- parser fixed\n- tests green\n- no sensitive values","reason":"clean Markdown"}
+{"id":"clean-044","class":"clean","group":"markup","expected":[],"text":"<result status=\"ok\"><count>3</count></result>","reason":"clean XML"}
+{"id":"clean-045","class":"clean","group":"markup","expected":[],"text":"SELECT status FROM jobs WHERE state = 'ready';","reason":"clean SQL example"}
+{"id":"clean-046","class":"clean","group":"numbers","expected":[],"text":"The log timestamp is 2026-05-14T09:30:00Z.","reason":"technical timestamp"}
+{"id":"clean-047","class":"clean","group":"numbers","expected":[],"text":"The dependency version is 1.2.3.","reason":"semantic version"}
+{"id":"clean-048","class":"clean","group":"syntax","expected":[],"text":"The base64 fixture is VGhlIHF1aWNrIGJyb3duIGZveA==.","reason":"short encoded test data"}
+{"id":"clean-049","class":"clean","group":"boundaries","expected":[],"text":"A Z 0 1 _ - .","reason":"short punctuation boundary"}
+{"id":"clean-050","class":"clean","group":"boundaries","expected":[],"text":"line one\nline two\r\nline three","reason":"line break boundary"}
+{"id":"positive-001","class":"positive","group":"private_email","expected":["private_email"],"text":"Send the draft to olivia.mercer@northstar-consulting.com.","reason":"personal email"}
+{"id":"positive-002","class":"positive","group":"private_email","expected":["private_email"],"text":"Use billing+apac@harborlabs.io for the invoice thread.","reason":"plus-address email"}
+{"id":"positive-003","class":"positive","group":"private_email","expected":["private_email"],"text":"The contact is analyst.eu@subdomain.example.co.uk.","reason":"subdomain email"}
+{"id":"positive-004","class":"positive","group":"private_phone","expected":["private_phone"],"text":"Text me at +1 (415) 555-0186.","reason":"North American phone"}
+{"id":"positive-005","class":"positive","group":"private_phone","expected":["private_phone"],"text":"Her Taipei mobile is +886 912 345 678.","reason":"Taiwan phone"}
+{"id":"positive-006","class":"positive","group":"private_phone","expected":["private_phone"],"text":"The Tokyo contact number is +81 90 1234 5678.","reason":"Japanese phone"}
+{"id":"positive-007","class":"positive","group":"private_url","expected":["private_url"],"text":"Review https://intranet.acme.corp/roadmap/q3-draft.","reason":"internal URL"}
+{"id":"positive-008","class":"positive","group":"private_url","expected":["private_url"],"text":"Download https://files.example.net/private/finance/audit-2026-04.","reason":"private path URL"}
+{"id":"positive-009","class":"positive","group":"private_url","expected":["private_url"],"text":"The service endpoint is http://192.168.10.42:8080/admin.","reason":"internal IP URL"}
+{"id":"positive-010","class":"positive","group":"private_date","expected":["private_date"],"text":"My immigration interview is on 2026-05-14.","reason":"ISO personal date"}
+{"id":"positive-011","class":"positive","group":"private_date","expected":["private_date"],"text":"Keep June 3, 2026 reserved for the appointment.","reason":"month personal date"}
+{"id":"positive-012","class":"positive","group":"private_date","expected":["private_date"],"text":"Date of birth: 1990-02-12.","reason":"date of birth"}
+{"id":"positive-013","class":"positive","group":"account_number","expected":["account_number"],"text":"Charge the order to card 4242 4242 4242 4242.","reason":"credit card"}
+{"id":"positive-014","class":"positive","group":"account_number","expected":["account_number"],"text":"Wire the deposit to account 001234567890.","reason":"bank account"}
+{"id":"positive-015","class":"positive","group":"account_number","expected":["account_number"],"text":"The IBAN is GB82WEST12345698765432.","reason":"IBAN"}
+{"id":"positive-016","class":"positive","group":"account_number","expected":["account_number"],"text":"The routing number is 021000021.","reason":"routing number"}
+{"id":"positive-017","class":"positive","group":"secret","expected":["secret"],"text":"The AWS access key is AKIAIOSFODNN7EXAMPLE.","reason":"AWS access key"}
+{"id":"positive-018","class":"positive","group":"secret","expected":["secret"],"text":"export AWS_SECRET_ACCESS_KEY=wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY","reason":"AWS secret environment value"}
+{"id":"positive-019","class":"positive","group":"secret","expected":["secret"],"text":"The staging key is sk_live_9Kx3Lm2Qp7Yt4Nf8Rw1Zc6Vb.","reason":"service API key"}
+{"id":"positive-020","class":"positive","group":"secret","expected":["secret"],"text":"The CI token is ghp_aB3xK9mN2pQ7rT4vY8wZ1cE5fH6jL0nO4sU.","reason":"GitHub token"}
+{"id":"positive-021","class":"positive","group":"secret","expected":["secret"],"text":"The bot token is xoxb-1234567890-abcdefghijklmnop.","reason":"Slack token"}
+{"id":"positive-022","class":"positive","group":"secret","expected":["secret"],"text":"Temporary admin password is StormGlass!492.","reason":"password context"}
+{"id":"positive-023","class":"positive","group":"secret","expected":["secret"],"text":"Decode this JWT: eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.aBcDeFgHiJkLmNoP.","reason":"JWT"}
+{"id":"positive-024","class":"positive","group":"secret","expected":["secret"],"text":"Use -----BEGIN RSA PRIVATE KEY----- in the test fixture.","reason":"private key marker"}
+{"id":"positive-025","class":"positive","group":"private_person","expected":["private_person"],"text":"Please add Avery Coleman to the invite list.","reason":"English person name"}
+{"id":"positive-026","class":"positive","group":"private_person","expected":["private_person"],"text":"Remind me to send the NDA to Nari Tanaka.","reason":"Japanese person name"}
+{"id":"positive-027","class":"positive","group":"private_address","expected":["private_address"],"text":"Ship the reader to 18 Waverly Street, Apt 5B, Boston, MA 02116.","reason":"US street address"}
+{"id":"positive-028","class":"positive","group":"private_address","expected":["private_address"],"text":"Deliver the parcel to 742 Evergreen Terrace, Springfield, IL 62704.","reason":"US address with postal code"}
+{"id":"positive-029","class":"positive","group":"account_number","expected":["account_number"],"text":"The tax identifier is 123-45-6789.","reason":"US tax identifier"}
+{"id":"positive-030","class":"positive","group":"private_url","expected":["private_url"],"text":"Open https://localhost:8443/private/records before the meeting.","reason":"localhost private URL"}
+{"id":"positive-031","class":"positive","group":"secret","expected":["secret"],"text":"Set the Google API key to AIzaSyDxKL3mN9pQ7rT4vY8wZ1cE5fH6jL0nO4s.","reason":"Google API key"}
+{"id":"positive-032","class":"positive","group":"secret","expected":["secret"],"text":"The private key begins -----BEGIN PRIVATE KEY-----.","reason":"generic private key marker"}
+{"id":"ambiguous-001","class":"ambiguous","group":"public_examples","expected":[],"text":"The documentation links to https://example.com.","reason":"public URL may not be private"}
+{"id":"ambiguous-002","class":"ambiguous","group":"public_examples","expected":[],"text":"Contact support@example.com for product help.","reason":"public support email"}
+{"id":"ambiguous-003","class":"ambiguous","group":"public_examples","expected":[],"text":"The hotline example is +1 (202) 555-0100.","reason":"public test phone"}
+{"id":"ambiguous-004","class":"ambiguous","group":"public_examples","expected":[],"text":"The changelog date is 2026-05-14.","reason":"release date"}
+{"id":"ambiguous-005","class":"ambiguous","group":"test_values","expected":[],"text":"The payment test card is 4111 1111 1111 1111.","reason":"public test card"}
+{"id":"ambiguous-006","class":"ambiguous","group":"test_values","expected":[],"text":"Use 192.0.2.1 in the network documentation.","reason":"reserved documentation IP"}
+{"id":"ambiguous-007","class":"ambiguous","group":"test_values","expected":[],"text":"The sample key is sk_test_4eC39HqLyjWDarjtT1zdp7dc.","reason":"test API key"}
+{"id":"ambiguous-008","class":"ambiguous","group":"test_values","expected":[],"text":"The fixture password is hunter2.","reason":"test password"}
+{"id":"ambiguous-009","class":"ambiguous","group":"business_data","expected":[],"text":"The public office is at 1600 Pennsylvania Avenue NW, Washington, DC 20500.","reason":"public business address"}
+{"id":"ambiguous-010","class":"ambiguous","group":"business_data","expected":[],"text":"The report names Jordan as the release owner.","reason":"employee name in a report"}
+{"id":"ambiguous-011","class":"ambiguous","group":"business_data","expected":[],"text":"The invoice reference is account-001234567890.","reason":"business reference that resembles an account"}
+{"id":"ambiguous-012","class":"ambiguous","group":"business_data","expected":[],"text":"The service uses the public endpoint https://api.example.com/v1.","reason":"public API URL"}
+{"id":"ambiguous-013","class":"ambiguous","group":"structured_text","expected":[],"text":"{\"email\":\"documentation@example.com\",\"date\":\"2026-05-14\"}","reason":"synthetic JSON sample"}
+{"id":"ambiguous-014","class":"ambiguous","group":"structured_text","expected":[],"text":"password=correct-horse-battery-staple","reason":"documentation password"}
+{"id":"ambiguous-015","class":"ambiguous","group":"structured_text","expected":[],"text":"The record ID is 550e8400-e29b-41d4-a716-446655440000.","reason":"UUID that should normally be safe"}
+{"id":"ambiguous-016","class":"ambiguous","group":"structured_text","expected":[],"text":"The tracking number is 9400111899223856928491.","reason":"shipping tracking number"}
+{"id":"ambiguous-017","class":"ambiguous","group":"multilingual","expected":[],"text":"東京オフィスの代表電話は +81 3 1234 5678 です。","reason":"public Japanese office phone"}
+{"id":"ambiguous-018","class":"ambiguous","group":"multilingual","expected":[],"text":"Die öffentliche Adresse ist Hauptstraße 5, 10115 Berlin.","reason":"public German address"}
+{"id":"ambiguous-019","class":"ambiguous","group":"multilingual","expected":[],"text":"La réunion est le 3 juin 2026.","reason":"French meeting date"}
+{"id":"ambiguous-020","class":"ambiguous","group":"multilingual","expected":[],"text":"台北辦公室位於台北市信義區。","reason":"office location without a street address"}
