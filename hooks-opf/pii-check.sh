@@ -8,10 +8,10 @@
 #   codex-posttool   Codex PostToolUse
 #   (default)        Auto-detect from stdin (prompt vs tool_output)
 #
-# Claude Code and Codex share one hook contract: input carries .prompt or
-# .tool_response, and {decision:"block",reason} blocks. The two posttool modes
-# are identical in behavior; the split is kept only so each agent's hooks.json
-# reads self-documenting. Verified against codex-cli 0.142.x.
+# Claude Code and Codex share the prompt contract: input carries .prompt, and
+# {decision:"block",reason} blocks. The post-tool modes share one detector path.
+# Codex CLI 0.154.0 did not invoke a user-level PostToolUse hook in a live
+# unified shell test, so this path remains configured but is not certified there.
 #
 # PII_ACTION_MODE (default: block):
 #   block    reject input when a span matches PII_BLOCK_LEVEL

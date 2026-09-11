@@ -232,6 +232,8 @@ if [ "$CODEX_PRESENT" -eq 1 ]; then
     echo "and trust the pii-check entries (trust is remembered in ~/.codex/config.toml"
     echo "under [hooks.state]). Re-running this installer changes the command string,"
     echo "so Codex will ask you to re-trust. Claude Code needs no trust step."
+    echo "The prompt hook passed a live test. codex-cli 0.154.0 did not invoke"
+    echo "the user-level PostToolUse hook for unified shell output."
 fi
 echo
 echo "Tuning:"
