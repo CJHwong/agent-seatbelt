@@ -23,11 +23,15 @@ import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from typing import Any, cast
 
-import numpy as np
-import torch
-from tokenizers import Tokenizer
-from transformers import BertConfig, BertForTokenClassification
+import numpy as np  # ty: ignore[unresolved-import]
+import torch  # ty: ignore[unresolved-import]
+from tokenizers import Tokenizer  # ty: ignore[unresolved-import]
+from transformers import (  # ty: ignore[unresolved-import]
+    BertConfig,
+    BertForTokenClassification,
+)
 
 REDACT_REPO = os.environ.get("REDACT_REPO", "desert-ant-labs/redact")
 REDACT_REVISION = os.environ.get("REDACT_REVISION", "v0.4.0")
@@ -36,6 +40,8 @@ MAX_SEQUENCE_LENGTH = 256
 CONTENT_WINDOW_LENGTH = MAX_SEQUENCE_LENGTH - 2
 WINDOW_STRIDE = 64
 NEG_INF = -1e9
+DEFAULT_MAX_TOKENS = 4096
+DEFAULT_CHUNK_OVERLAP_TOKENS = 128
 
 REQUIRED_FILES = [
     "config.json",
@@ -707,8 +713,8 @@ def _trim_url_end(text: str, start: int, end: int) -> int:
 def merge_spans(text: str, spans: list[dict[str, object]]) -> list[dict[str, object]]:
     normalized = []
     for span in spans:
-        start = int(span["start"])
-        end = int(span["end"])
+        start = cast(int, span["start"])
+        end = cast(int, span["end"])
         label = str(span["label"])
         if start >= end or start < 0 or end > len(text):
             continue
@@ -741,9 +747,37 @@ def _spans_overlap(
     first_span: dict[str, object],
     second_span: dict[str, object],
 ) -> bool:
-    return int(first_span["start"]) < int(second_span["end"]) and int(
-        second_span["start"]
-    ) < int(first_span["end"])
+    first_start = cast(int, first_span["start"])
+    first_end = cast(int, first_span["end"])
+    second_start = cast(int, second_span["start"])
+    second_end = cast(int, second_span["end"])
+    return first_start < second_end and second_start < first_end
+
+
+def chunk_token_ranges(
+    token_count: int,
+    chunk_size: int,
+    overlap: int,
+) -> list[tuple[int, int]]:
+    if token_count < 0:
+        raise ValueError("token_count must not be negative")
+    if chunk_size <= 0:
+        raise ValueError("chunk_size must be positive")
+    if overlap < 0 or overlap >= chunk_size:
+        raise ValueError("overlap must be non-negative and smaller than chunk_size")
+    if token_count == 0:
+        return []
+
+    step = chunk_size - overlap
+    ranges: list[tuple[int, int]] = []
+    start = 0
+    while start < token_count:
+        end = min(start + chunk_size, token_count)
+        ranges.append((start, end))
+        if end == token_count:
+            break
+        start += step
+    return ranges
 
 
 def _window_ranges(token_count: int) -> list[tuple[int, int]]:
@@ -777,11 +811,24 @@ class RedactModel:
         self.device = choose_device(requested_device)
         self.min_score = float(os.environ.get("REDACT_MIN_SCORE", "0.6"))
         self.batch_size = int(os.environ.get("REDACT_BATCH_SIZE", "8"))
-        self.max_tokens = int(os.environ.get("REDACT_MAX_TOKENS", "4096"))
+        self.max_tokens = int(
+            os.environ.get("REDACT_MAX_TOKENS", str(DEFAULT_MAX_TOKENS))
+        )
+        self.chunk_overlap = int(
+            os.environ.get(
+                "REDACT_CHUNK_OVERLAP_TOKENS",
+                str(DEFAULT_CHUNK_OVERLAP_TOKENS),
+            )
+        )
         if not 0.0 <= self.min_score <= 1.0:
             raise ValueError("REDACT_MIN_SCORE must be between 0 and 1")
         if self.batch_size <= 0 or self.max_tokens <= 0:
             raise ValueError("REDACT_BATCH_SIZE and REDACT_MAX_TOKENS must be positive")
+        if self.chunk_overlap < 0 or self.chunk_overlap >= self.max_tokens:
+            raise ValueError(
+                "REDACT_CHUNK_OVERLAP_TOKENS must be non-negative and smaller "
+                "than REDACT_MAX_TOKENS"
+            )
 
         self.tokenizer = Tokenizer.from_file(str(cache_dir / "tokenizer.json"))
         self.bos_id = self._token_id("<s>", 0)
@@ -825,20 +872,50 @@ class RedactModel:
         if not text:
             return []
         encoding = self.tokenizer.encode(text, add_special_tokens=False)
+        rule_spans = deterministic_spans(text)
         if len(encoding.ids) == 0:
-            return deterministic_spans(text)
-        if len(encoding.ids) > self.max_tokens:
-            raise ValueError(
-                f"input has {len(encoding.ids)} tokens, exceeds max {self.max_tokens}"
+            return rule_spans
+
+        model_spans: list[dict[str, object]] = []
+        for token_start, token_end in chunk_token_ranges(
+            len(encoding.ids), self.max_tokens, self.chunk_overlap
+        ):
+            chunk_char_start = encoding.offsets[token_start][0]
+            chunk_char_end = encoding.offsets[token_end - 1][1]
+            if chunk_char_end <= chunk_char_start:
+                continue
+
+            chunk_text = text[chunk_char_start:chunk_char_end]
+            chunk_offsets = [
+                (start - chunk_char_start, end - chunk_char_start)
+                for start, end in encoding.offsets[token_start:token_end]
+            ]
+            chunk_spans = self._predict_model_spans(
+                encoding.ids[token_start:token_end],
+                chunk_offsets,
+                chunk_text,
+            )
+            model_spans.extend(
+                {
+                    "start": cast(int, span["start"]) + chunk_char_start,
+                    "end": cast(int, span["end"]) + chunk_char_start,
+                    "label": str(span["label"]),
+                }
+                for span in chunk_spans
             )
 
-        token_probabilities = self._predict_token_probabilities(encoding.ids)
+        return merge_spans(text, rule_spans + model_spans)
+
+    def _predict_model_spans(
+        self,
+        token_ids: list[int],
+        offsets: list[tuple[int, int]],
+        text: str,
+    ) -> list[dict[str, object]]:
+        token_probabilities = self._predict_token_probabilities(token_ids)
         log_probs = np.log(np.clip(token_probabilities, 1e-7, 1.0))
         path = viterbi_decode(log_probs, self.start, self.end, self.transition)
-        model_spans = self._path_to_spans(
-            path, token_probabilities, encoding.offsets, text
-        )
-        return merge_spans(text, deterministic_spans(text) + model_spans)
+        return self._path_to_spans(path, token_probabilities, offsets, text)
 
     def _predict_token_probabilities(self, token_ids: list[int]) -> np.ndarray:
         token_count = len(token_ids)
@@ -953,8 +1030,8 @@ class Handler(BaseHTTPRequestHandler):
     model: RedactModel
     inference_lock = threading.Lock()
 
-    def log_message(self, fmt: str, *args: object) -> None:
-        sys.stderr.write(f"[redact] {self.address_string()} {fmt % args}\n")
+    def log_message(self, format: str, *args: Any) -> None:
+        sys.stderr.write(f"[redact] {self.address_string()} {format % args}\n")
 
     def _send_json(self, status_code: int, payload: dict[str, object]) -> None:
         body = json.dumps(payload).encode("utf-8")

@@ -22,6 +22,8 @@ HOOK_PATH = ROOT / "hooks-opf" / "pii-check.sh"
 class FakePiiHandler(BaseHTTPRequestHandler):
     """Return one fixed detector span without loading a model."""
 
+    response_status = 200
+
     detector_response = {
         "spans": [
             {
@@ -43,11 +45,13 @@ class FakePiiHandler(BaseHTTPRequestHandler):
     def do_POST(self) -> None:  # noqa: N802
         request_length = int(self.headers.get("Content-Length", "0"))
         self.rfile.read(request_length)
-        self._send_json(self.detector_response)
+        self._send_json(self.detector_response, self.response_status)
 
-    def _send_json(self, response_body: dict[str, object]) -> None:
+    def _send_json(
+        self, response_body: dict[str, object], status_code: int = 200
+    ) -> None:
         encoded_body = json.dumps(response_body).encode("utf-8")
-        self.send_response(200)
+        self.send_response(status_code)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(encoded_body)))
         self.end_headers()
@@ -159,6 +163,38 @@ class HookModeTests(unittest.TestCase):
                 hook_specific_output = hook_output["hookSpecificOutput"]
                 self.assertEqual(hook_specific_output["hookEventName"], "PostToolUse")
                 self.assertIn("tool output", hook_specific_output["additionalContext"])
+
+    def test_detector_error_warns_instead_of_silent_pass(self) -> None:
+        FakePiiHandler.response_status = 413
+        try:
+            hook_output = self.run_hook(
+                "codex-posttool",
+                {"tool_response": {"stdout": "send this secret"}},
+                action_mode="warn",
+            )
+        finally:
+            FakePiiHandler.response_status = 200
+
+        self.assertTrue(hook_output["continue"])
+        self.assertIn("PII detector unavailable", hook_output["systemMessage"])
+        self.assertIn(
+            "PII detector unavailable",
+            hook_output["hookSpecificOutput"]["additionalContext"],
+        )
+
+    def test_detector_error_blocks_in_block_mode(self) -> None:
+        FakePiiHandler.response_status = 413
+        try:
+            hook_output = self.run_hook(
+                "codex-posttool",
+                {"tool_response": {"stdout": "send this secret"}},
+                action_mode="block",
+            )
+        finally:
+            FakePiiHandler.response_status = 200
+
+        self.assertEqual(hook_output["decision"], "block")
+        self.assertIn("PII detector unavailable", hook_output["reason"])
 
 
 if __name__ == "__main__":

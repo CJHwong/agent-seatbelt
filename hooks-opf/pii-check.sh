@@ -114,6 +114,48 @@ if [[ "$MODE" == "prompt" || "$MODE" == "auto" ]] && [[ "$text" == "pii:off"* ]]
     exit 0
 fi
 
+# Detect the event contract before the server call so failures use the same output shape.
+emit_mode="$MODE"
+if [ "$emit_mode" = "auto" ]; then
+    if printf '%s' "$payload" | jq -e '.prompt' >/dev/null 2>&1; then
+        emit_mode="prompt"
+    else
+        emit_mode="claude-posttool"
+    fi
+fi
+
+detector_failure() {
+    local detail="$1"
+    local detected_location="in the input"
+    local allowed_subject="The input"
+    local event_name="PostToolUse"
+    case "$emit_mode" in
+        prompt)
+            detected_location="in the user prompt"
+            allowed_subject="The user prompt"
+            event_name="UserPromptSubmit"
+            ;;
+        claude-posttool|codex-posttool)
+            detected_location="in tool output"
+            allowed_subject="The tool output"
+            ;;
+    esac
+
+    if [ "$ACTION_MODE" = "warn" ]; then
+        local warning_message="PII detector unavailable while checking ${detected_location}. ${allowed_subject} was allowed because PII_ACTION_MODE=warn, but the detector did not complete. Treat the content as sensitive."
+        local warning_context="PII detector unavailable while checking ${detected_location}. ${allowed_subject} was allowed because PII_ACTION_MODE=warn, but the detector did not complete. Do not repeat or expose unscanned values. ${detail}."
+        jq -cn \
+            --arg message "$warning_message" \
+            --arg context "$warning_context" \
+            --arg event "$event_name" \
+            '{continue: true, systemMessage: $message, hookSpecificOutput: {hookEventName: $event, additionalContext: $context}}'
+    else
+        local reason="PII detector unavailable while checking ${detected_location}. Blocked because PII_ACTION_MODE=block. ${detail}."
+        jq -cn --arg reason "$reason" '{decision: "block", reason: $reason}'
+    fi
+    exit 0
+}
+
 health_json() { curl -sSf --max-time 0.5 "$HEALTH" 2>/dev/null; }
 health_ok() {
     health_json | jq -e --arg mode "$SERVER_MODE" \
@@ -125,16 +167,21 @@ if ! health_ok; then
     current_status=$(printf '%s' "$current_health" | jq -r '.status // empty' 2>/dev/null || true)
     current_mode=$(printf '%s' "$current_health" | jq -r '.mode // "unknown"' 2>/dev/null || true)
     if [ "$current_status" = "ok" ]; then
-        echo "pii-check: server mode is $current_mode, requested $SERVER_MODE; restart the server" >&2
-        exit 0
+        detector_failure "server mode is $current_mode, requested $SERVER_MODE; restart the server"
     fi
     if [ -d "$LOCK" ] && [ -n "$(find "$LOCK" -maxdepth 0 -mmin +1 2>/dev/null)" ]; then
         rmdir "$LOCK" 2>/dev/null
     fi
 
     if mkdir "$LOCK" 2>/dev/null; then
-        command -v uv >/dev/null 2>&1 || { rmdir "$LOCK"; exit 0; }
-        [ -f "$SERVER_SCRIPT" ] || { rmdir "$LOCK"; echo "pii-check: $SERVER_SCRIPT not found" >&2; exit 0; }
+        command -v uv >/dev/null 2>&1 || {
+            rmdir "$LOCK" 2>/dev/null || true
+            detector_failure "uv is not available"
+        }
+        [ -f "$SERVER_SCRIPT" ] || {
+            rmdir "$LOCK" 2>/dev/null || true
+            detector_failure "$SERVER_SCRIPT was not found"
+        }
         nohup uv run "$SERVER_SCRIPT" --port "$PORT" --mode "$SERVER_MODE" >"$SERVER_LOG" 2>&1 </dev/null &
         disown
     fi
@@ -145,14 +192,18 @@ if ! health_ok; then
     done
     rmdir "$LOCK" 2>/dev/null
 
-    health_ok || exit 0
+    health_ok || detector_failure "server did not become healthy"
 fi
 
-response=$(curl -sS --max-time 5 -X POST "$PREDICT" \
+if ! response=$(curl -fsS --max-time 5 -X POST "$PREDICT" \
     -H 'Content-Type: application/json' \
-    -d "$(jq -cn --arg t "$text" '{text:$t}')" 2>/dev/null) || exit 0
+    -d "$(jq -cn --arg t "$text" '{text:$t}')" 2>/dev/null); then
+    detector_failure "detector request failed"
+fi
 
-count=$(printf '%s' "$response" | jq -r '.spans // [] | length' 2>/dev/null)
+if ! count=$(printf '%s' "$response" | jq -er '.spans | if type == "array" then length else error("spans is not an array") end' 2>/dev/null); then
+    detector_failure "detector returned invalid JSON"
+fi
 [ "${count:-0}" -eq 0 ] && exit 0
 
 # --- Build blocked-labels array based on BLOCK_LEVEL ---
@@ -202,16 +253,6 @@ detected_spans_masked=$(printf '%s' "$detected_spans" | jq -r \
 
 # Stderr: tier-annotated masked warnings for non-blocked spans.
 printf '%s' "$warned_spans" | jq -r '.[] | "PII warn: [\(.label)(\(.tier))] \(.masked)"' >&2 || true
-
-# Detect prompt-vs-tool-output for auto mode.
-emit_mode="$MODE"
-if [ "$emit_mode" = "auto" ]; then
-    if printf '%s' "$payload" | jq -e '.prompt' >/dev/null 2>&1; then
-        emit_mode="prompt"
-    else
-        emit_mode="claude-posttool"
-    fi
-fi
 
 if [ "$ACTION_MODE" = "warn" ]; then
     case "$emit_mode" in

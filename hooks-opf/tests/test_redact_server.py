@@ -16,16 +16,19 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from redact_server import (
     choose_device,
+    chunk_token_ranges,
     deterministic_spans,
     ensure_assets,
     map_model_label,
     merge_spans,
+    RedactModel,
 )
 
 
@@ -235,6 +238,61 @@ class SpanMergeTests(unittest.TestCase):
             ],
         )
         self.assertEqual([span["label"] for span in spans], ["secret"])
+
+
+class ChunkingTests(unittest.TestCase):
+    def test_chunk_ranges_keep_overlap_and_cover_all_tokens(self):
+        self.assertEqual(
+            chunk_token_ranges(8, chunk_size=4, overlap=1),
+            [(0, 4), (3, 7), (6, 8)],
+        )
+
+    def test_chunk_ranges_keep_short_input_in_one_chunk(self):
+        self.assertEqual(
+            chunk_token_ranges(3, chunk_size=4, overlap=1),
+            [(0, 3)],
+        )
+
+    def test_chunk_ranges_reject_invalid_overlap(self):
+        with self.assertRaisesRegex(ValueError, "overlap"):
+            chunk_token_ranges(8, chunk_size=4, overlap=4)
+
+    def test_long_input_scans_deterministic_rules_once_and_remaps_model_spans(self):
+        class StubRedactModel(RedactModel):
+            def __init__(self):
+                self.tokenizer = SimpleNamespace(
+                    encode=lambda text, add_special_tokens=False: SimpleNamespace(
+                        ids=list(range(8)),
+                        offsets=[(index * 2, index * 2 + 1) for index in range(8)],
+                    )
+                )
+                self.max_tokens = 4
+                self.chunk_overlap = 1
+                self.chunk_sizes = []
+
+            def _predict_model_spans(self, token_ids, offsets, text):
+                self.chunk_sizes.append(len(token_ids))
+                return [{"start": 0, "end": 1, "label": "private_person"}]
+
+        text = "a " * 8
+        deterministic = [{"start": 2, "end": 3, "label": "secret"}]
+        model = StubRedactModel()
+        with patch(
+            "redact_server.deterministic_spans", return_value=deterministic
+        ) as scan:
+            spans = model.predict(text)
+
+        scan.assert_called_once_with(text)
+        self.assertEqual(model.chunk_sizes, [4, 4, 2])
+        self.assertEqual(
+            [(span["start"], span["label"]) for span in spans],
+            [
+                (0, "private_person"),
+                (2, "secret"),
+                (6, "private_person"),
+                (12, "private_person"),
+            ],
+        )
 
 
 if __name__ == "__main__":

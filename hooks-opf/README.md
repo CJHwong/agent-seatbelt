@@ -194,8 +194,11 @@ All env vars override defaults; set them in your shell or the hook's env:
 | `PII_SERVER_SCRIPT` | `~/.claude/hooks/pii-server.py` | server script path |
 | `PII_SERVER_LOG` | `~/.cache/opf/server.log` | server log path |
 | `OPF_CACHE_DIR` | `~/.cache/opf` | model assets cache (server-side) |
+| `OPF_MAX_TOKENS` | `4096` | OpenAI Privacy Filter request limit; larger requests fail with HTTP 413 |
 | `REDACT_CACHE_DIR` | `~/.cache/redact` | converted Redact assets cache |
 | `REDACT_DEVICE` | `auto` | `cuda`, `mps`, or explicit `cpu` |
+| `REDACT_MAX_TOKENS` | `4096` | maximum tokens in one Redact chunk |
+| `REDACT_CHUNK_OVERLAP_TOKENS` | `128` | token overlap between adjacent Redact chunks |
 
 ## Redact GPU mode
 
@@ -225,7 +228,13 @@ Select OpenAI as the secondary mode. Stop the existing server before changing mo
 PII_SERVER_MODE=openai uv run hooks-opf/pii-server.py --mode openai --port 9123
 ```
 
-The neural model runs on the selected accelerator. Tokenization, deterministic checks, and span cleanup run on the CPU. Configure the mode with `REDACT_CACHE_DIR`, `REDACT_MIN_SCORE`, `REDACT_BATCH_SIZE`, and `REDACT_MAX_TOKENS`.
+The neural model runs on the selected accelerator. Tokenization, deterministic checks, and span cleanup run on the CPU. Configure the mode with `REDACT_CACHE_DIR`, `REDACT_MIN_SCORE`, `REDACT_BATCH_SIZE`, `REDACT_MAX_TOKENS`, and `REDACT_CHUNK_OVERLAP_TOKENS`.
+
+### Token limits and long outputs
+
+The Redact checkpoint declares 512 position embeddings. The implementation uses 256-token model windows. It groups those windows into chunks of up to `REDACT_MAX_TOKENS` tokens. Longer input is chunked with `REDACT_CHUNK_OVERLAP_TOKENS` overlap. Deterministic rules scan the full input before model inference.
+
+The OpenAI Privacy Filter checkpoint declares 131,072 position embeddings. This wrapper keeps `OPF_MAX_TOKENS=4096` as its request limit. OpenAI mode does not chunk input. An oversized request returns HTTP 413, and the hook reports detector failure instead of silently allowing it.
 
 Review the [Redact release](https://huggingface.co/desert-ant-labs/redact/resolve/v0.4.0/README.md) and its [source-available license](https://license.desertant.com/1.0) before distribution. The published release contains Core ML and TFLite assets. Create or provide the PyTorch cache separately.
 
