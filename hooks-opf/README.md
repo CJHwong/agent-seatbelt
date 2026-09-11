@@ -110,6 +110,33 @@ The hook returns `continue: true` and keeps the current block response unchanged
 
 Use `PII_ACTION_MODE=warn` for gradual adoption, observation, or agent-assisted remediation. Use `PII_ACTION_MODE=block` for the hard boundary.
 
+### Planned mask mode
+
+Mask mode is not implemented. Do not set `PII_ACTION_MODE=mask`.
+
+The planned behavior would replace detected values with fixed markers, then let the agent continue:
+
+```text
+password=[REDACTED:SECRET]
+email=[REDACTED:PRIVATE_EMAIL]
+```
+
+Mask secrets without preserving a prefix or suffix. A partial secret can still be useful to an attacker. Mask mode must preserve the output shape that each runtime expects. It must fail closed if replacement is rejected.
+
+The runtimes use different PostToolUse contracts:
+
+| Runtime | Replacement support | Test result |
+|---|---|---|
+| Claude Code 2.1.268 | `updatedToolOutput` replaces tool output for all tools. The replacement must match the tool output shape. | The real CLI sent only `MASKED_OUTPUT` to a local protocol stub. |
+| Codex 0.154.0 | No generic `updatedToolOutput`. `decision: "block"` replaces the model-visible result with hook feedback. | The real CLI saw masked feedback and did not see the original sentinel. |
+| Codex 0.154.0 with `continue: false` | Not a replacement method for this use. | The real CLI saw the original sentinel. |
+
+See the [Claude Code hooks reference](https://code.claude.com/docs/en/hooks) and the [official Codex hooks documentation](https://learn.chatgpt.com/docs/hooks).
+
+Neither documented `UserPromptSubmit` contract provides an updated prompt field. `additionalContext` adds context but does not replace the original prompt. Secure prompt masking requires a wrapper before the agent receives the prompt.
+
+The Claude test used the real CLI with a local protocol stub because the live account had no available API quota. The Codex test used the real CLI with a temporary project hook. Both tests used synthetic sentinel values only.
+
 ## Per-prompt bypass
 
 Prefix a single prompt with `pii:off ` to skip the check for that submission:
@@ -155,6 +182,8 @@ This is a high-recall filter, not a hard gate. Three failure modes worth knowing
 1. **Adversarial reformatting bypass.** A motivated agent (or a model trying to satisfy a "show me the file" prompt) can reshape tool output past the NER's pattern matching: `od -c file`, `base64 file`, `xxd file`, `tr a-z A-Z < file`, splitting bytes across lines, etc. Observed empirically — given a blocked `cat secrets.txt`, a model adapted within one turn to `od -c` and the byte-spread output flowed through unblocked. The NER labels patterns it recognizes; spread-out or re-encoded versions of the same content are not labeled. Content-based filtering can't close this gap without semantic execution; treat the hook as defense-in-depth alongside the file-level sandbox, not a perimeter.
 
 2. **Codex trust requirement.** Codex CLI gates external hooks behind a per-hook trust list. Until you trust each command, Codex registers the hook in `~/.codex/hooks.json` but does not invoke it. Trust lives in `~/.codex/config.toml` under `[hooks.state]`, keyed by `<hooks.json path>:<event>:<group>:<index>`, with `enabled = true` and a `trusted_hash` for the command. Review and trust via `/hooks` in the Codex TUI. Re-running the installer after a command change requires trust again. A fresh live test with `codex-cli 0.154.0` confirmed both `UserPromptSubmit` and `PostToolUse` blocking for unified shell output. Warning mode also displayed the masked `systemMessage` and continued the turn. Claude Code runs both hooks without a trust step.
+
+   Claude Code has a separate PostToolUse caveat. Its `decision: "block"` response leaves the original tool output visible. Use `updatedToolOutput` when the model must not receive the original output. The current block path does not provide that replacement.
 
 3. **Fail-open posture.** The hook returns success (exit 0, empty stdout) on any internal error — server down, jq parse failure, curl timeout. A probabilistic model with a hard fail-closed posture would brick your agent. The tradeoff: missed detections during transient failures are silent. If you need certainty, layer a deterministic regex or block the data source upstream.
 
