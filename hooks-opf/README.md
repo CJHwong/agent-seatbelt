@@ -15,7 +15,7 @@ This is the content-level companion to `agent-seatbelt`'s file-level sandbox. Th
 - `~/.claude/hooks/redact_server.py` — local Redact model adapter used by `pii-server.py`
 - For each detected agent, two entries in its hooks config:
   - `UserPromptSubmit` → blocks or warns on prompts containing PII before they reach the model provider
-  - `PostToolUse` → blocks or warns on tool responses containing PII before the next LLM turn. Claude Code uses a scoped matcher for `Bash`, `Read`, `NotebookRead`, `WebFetch`, `WebSearch`, `Agent`/`Task` (subagent results), `exec_command`, and MCP tools. Codex uses `*` because its tool identifiers vary by runtime. The hook filters returned text, including structural tool output. A live test with `codex-cli 0.154.0` did not invoke the user-level Codex entry for unified shell output.
+  - `PostToolUse` → blocks or warns on tool responses containing PII before the next LLM turn. Claude Code uses a scoped matcher for `Bash`, `Read`, `NotebookRead`, `WebFetch`, `WebSearch`, `Agent`/`Task` (subagent results), `exec_command`, and MCP tools. Codex uses `*` because its tool identifiers vary by runtime. The hook filters returned text, including structural tool output.
 
 Supported agents (auto-detected by directory presence):
 
@@ -154,7 +154,7 @@ This is a high-recall filter, not a hard gate. Three failure modes worth knowing
 
 1. **Adversarial reformatting bypass.** A motivated agent (or a model trying to satisfy a "show me the file" prompt) can reshape tool output past the NER's pattern matching: `od -c file`, `base64 file`, `xxd file`, `tr a-z A-Z < file`, splitting bytes across lines, etc. Observed empirically — given a blocked `cat secrets.txt`, a model adapted within one turn to `od -c` and the byte-spread output flowed through unblocked. The NER labels patterns it recognizes; spread-out or re-encoded versions of the same content are not labeled. Content-based filtering can't close this gap without semantic execution; treat the hook as defense-in-depth alongside the file-level sandbox, not a perimeter.
 
-2. **Codex trust and tool-path limits.** Codex CLI gates external hooks behind a per-hook trust list. Until you trust each command, Codex registers the hook in `~/.codex/hooks.json` but does not invoke it. Trust lives in `~/.codex/config.toml` under `[hooks.state]`, keyed by `<hooks.json path>:<event>:<group>:<index>`, with `enabled = true` and a `trusted_hash` for the command. Review and trust via `/hooks` in the Codex TUI. Re-running the installer after a command change requires trust again. A live test with `codex-cli 0.154.0` confirmed `UserPromptSubmit` blocking after trust. The same test did not invoke the user-level `PostToolUse` entry for unified shell output. Current Codex coverage is prompt-only. Claude Code runs both hooks.
+2. **Codex trust requirement.** Codex CLI gates external hooks behind a per-hook trust list. Until you trust each command, Codex registers the hook in `~/.codex/hooks.json` but does not invoke it. Trust lives in `~/.codex/config.toml` under `[hooks.state]`, keyed by `<hooks.json path>:<event>:<group>:<index>`, with `enabled = true` and a `trusted_hash` for the command. Review and trust via `/hooks` in the Codex TUI. Re-running the installer after a command change requires trust again. A fresh live test with `codex-cli 0.154.0` confirmed both `UserPromptSubmit` and `PostToolUse` blocking for unified shell output. Warning mode also displayed the masked `systemMessage` and continued the turn. Claude Code runs both hooks without a trust step.
 
 3. **Fail-open posture.** The hook returns success (exit 0, empty stdout) on any internal error — server down, jq parse failure, curl timeout. A probabilistic model with a hard fail-closed posture would brick your agent. The tradeoff: missed detections during transient failures are silent. If you need certainty, layer a deterministic regex or block the data source upstream.
 
@@ -173,7 +173,7 @@ Claude tool runs ──> PostToolUse ──> pii-check.sh --mode claude-posttool
 
 Codex tool runs ──> PostToolUse ──> pii-check.sh --mode codex-posttool ──> pii-server.py
                                         │
-                                        └── configured, but not invoked by codex-cli 0.154.0 in the live test
+                                        └── blocks or warns based on PII_ACTION_MODE
 ```
 
 The server is auto-started on first hook call via `uv run`, then stays warm. Health check at `http://127.0.0.1:9123/health`.

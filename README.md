@@ -102,7 +102,7 @@ Powered by [`openai/privacy-filter`](https://huggingface.co/openai/privacy-filte
 curl -fsSL https://raw.githubusercontent.com/CJHwong/agent-seatbelt/main/hooks-opf/install.sh | bash
 ```
 
-Auto-detects Claude Code (`~/.claude/`) and Codex (`~/.codex/`). It wires `UserPromptSubmit` on both agents and `PostToolUse` on Claude Code. It also registers `PostToolUse` for Codex, but `codex-cli 0.154.0` did not invoke that user-level entry during a live unified shell test. Pass `-s -- --prompt-only` to skip PostToolUse, or `-s -- --no-codex` to ignore Codex.
+Auto-detects Claude Code (`~/.claude/`) and Codex (`~/.codex/`) and wires both `UserPromptSubmit` and `PostToolUse` on each. Pass `-s -- --prompt-only` to skip PostToolUse, or `-s -- --no-codex` to ignore Codex.
 
 Full docs, block-level tuning, test fixture, known limitations: see [`hooks-opf/README.md`](hooks-opf/README.md).
 

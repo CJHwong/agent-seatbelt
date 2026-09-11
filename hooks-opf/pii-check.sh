@@ -10,8 +10,7 @@
 #
 # Claude Code and Codex share the prompt contract: input carries .prompt, and
 # {decision:"block",reason} blocks. The post-tool modes share one detector path.
-# Codex CLI 0.154.0 did not invoke a user-level PostToolUse hook in a live
-# unified shell test, so this path remains configured but is not certified there.
+# Verified with codex-cli 0.154.0 in a fresh TUI session after hook trust.
 #
 # PII_ACTION_MODE (default: block):
 #   block    reject input when a span matches PII_BLOCK_LEVEL
