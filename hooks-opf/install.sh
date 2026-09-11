@@ -33,8 +33,10 @@ ACTION_MODE="${PII_ACTION_MODE:-block}"
 # Tools whose output can carry external PII. Edit/Write/Glob/LS/Todo etc. only
 # emit structural metadata, so scanning them is wasted work. Codex aliases file
 # edits to apply_patch; both Claude's Edit/Write and Codex's apply_patch fall
-# outside this pattern and are skipped. Codex shell calls use exec_command.
-POSTTOOL_MATCHER='^(Bash|Read|NotebookRead|WebFetch|WebSearch|Agent|Task|exec_command|mcp__.*)$'
+# outside this pattern and are skipped. Codex uses a wildcard because its tool
+# identifiers vary by runtime, and the hook filters the returned text itself.
+POSTTOOL_MATCHER_CLAUDE='^(Bash|Read|NotebookRead|WebFetch|WebSearch|Agent|Task|exec_command|mcp__.*)$'
+POSTTOOL_MATCHER_CODEX='*'
 
 PROMPT_ONLY=0
 SKIP_CODEX=0
@@ -115,6 +117,10 @@ add_entry() {
 
 wire_agent() {
     local label="$1" target="$2" posttool_mode="$3"
+    local posttool_matcher="$POSTTOOL_MATCHER_CLAUDE"
+    if [ "$label" = "codex" ]; then
+        posttool_matcher="$POSTTOOL_MATCHER_CODEX"
+    fi
 
     local prompt_cmd="$CHECK_DEST --mode prompt"
     local posttool_cmd="$CHECK_DEST --mode $posttool_mode"
@@ -127,10 +133,10 @@ wire_agent() {
 
     if [ "$PROMPT_ONLY" -eq 0 ]; then
         local posttool_entry
-        posttool_entry=$(jq -cn --arg cmd "$posttool_cmd" --arg matcher "$POSTTOOL_MATCHER" \
+        posttool_entry=$(jq -cn --arg cmd "$posttool_cmd" --arg matcher "$posttool_matcher" \
             '{matcher:$matcher,hooks:[{type:"command",command:$cmd,timeout:20}]}')
         add_entry "$target" "PostToolUse" "$posttool_entry" "$posttool_cmd"
-        echo "  [$label] PostToolUse ($POSTTOOL_MATCHER) -> $posttool_cmd"
+        echo "  [$label] PostToolUse ($posttool_matcher) -> $posttool_cmd"
     else
         echo "  [$label] PostToolUse skipped (--prompt-only)"
     fi
