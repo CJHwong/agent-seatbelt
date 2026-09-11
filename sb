@@ -19,26 +19,38 @@
 set -euo pipefail
 
 CLEAN_ENV=false
+JAIL=false
 
 # Parse sb-specific flags (before the command)
 while [[ $# -gt 0 ]]; do
     case "$1" in
         -c|--clean-env) CLEAN_ENV=true; shift ;;
+        -j|--jail) JAIL=true; CLEAN_ENV=true; shift ;;
         -h|--help)
             echo "Usage: sb [options] <command> [args...]"
             echo "Options:"
             echo "  -c, --clean-env   Sanitize environment (strip secrets)"
+            echo "  -j, --jail        Lock egress to loopback + deny keychain (implies -c)"
             exit 0 ;;
         -*) echo "error: unknown option: $1" >&2; exit 1 ;;
         *)  break ;;
     esac
 done
 
-# Find the profile in the home directory
-PROFILE="${HOME}/my.sb"
+# Select the profile: permissive default, or the strict jail (opt-in via -j).
+# The jail imports my.sb as its base, so both files must exist for -j.
+if [[ "$JAIL" == true ]]; then
+    PROFILE="${HOME}/my.jail.sb"
+else
+    PROFILE="${HOME}/my.sb"
+fi
 
 if [[ ! -f "$PROFILE" ]]; then
     echo "error: sandbox profile not found: ${PROFILE}" >&2
+    exit 1
+fi
+if [[ "$JAIL" == true && ! -f "${HOME}/my.sb" ]]; then
+    echo "error: jail profile imports base, not found: ${HOME}/my.sb" >&2
     exit 1
 fi
 
@@ -81,6 +93,11 @@ SANDBOX_ARGS=(
     -D "_TMPDIR=${RESOLVED_TMPDIR}"
 )
 
+# The jail profile imports the base profile via the _BASE param.
+if [[ "$JAIL" == true ]]; then
+    SANDBOX_ARGS+=(-D "_BASE=${RESOLVED_HOME}/my.sb")
+fi
+
 if [[ "$CLEAN_ENV" == true ]]; then
     # Build sanitized environment: only essentials, no secrets
     ENV_ARGS=(
@@ -103,7 +120,13 @@ if [[ "$CLEAN_ENV" == true ]]; then
     [[ -n "${XDG_DATA_HOME:-}" ]] && ENV_ARGS+=("XDG_DATA_HOME=${XDG_DATA_HOME}")
     [[ -n "${XDG_CACHE_HOME:-}" ]] && ENV_ARGS+=("XDG_CACHE_HOME=${XDG_CACHE_HOME}")
     [[ -n "${XDG_RUNTIME_DIR:-}" ]] && ENV_ARGS+=("XDG_RUNTIME_DIR=${XDG_RUNTIME_DIR}")
-    # Passthrough *_BASE_URL vars (for future proxy support)
+    # Passthrough proxy + base-url config so a broker/proxy can route the
+    # agent's traffic without it ever holding a key (config, not secrets).
+    for proxy_var in HTTP_PROXY HTTPS_PROXY ALL_PROXY NO_PROXY \
+                     http_proxy https_proxy all_proxy no_proxy; do
+        [[ -n "${!proxy_var:-}" ]] && ENV_ARGS+=("${proxy_var}=${!proxy_var}")
+    done
+    # Passthrough *_BASE_URL vars (LLM SDKs route here; the broker injects keys)
     while IFS='=' read -r key val; do
         [[ "$key" == *_BASE_URL ]] && ENV_ARGS+=("${key}=${val}")
     done < <(env)

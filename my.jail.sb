@@ -1,0 +1,31 @@
+;; my.jail.sb: strict lockdown profile (opt-in via `sb -j`).
+;;
+;; Imports the permissive my.sb as its base, then overrides two things for an
+;; autonomous agent that receives its credentials from a broker rather than from
+;; the environment or the keychain:
+;;
+;;   1. Egress: deny outbound to the internet; allow only loopback. The agent
+;;      reaches approved external services (e.g. an LLM API) through a local
+;;      broker that injects the real key, and can still run its own local dev
+;;      servers and tests. A hijacked agent cannot phone home.
+;;   2. Keychain: deny reads. The broker owns the real credentials now, so the
+;;      agent has no reason to touch the keychain. This closes the
+;;      authenticated-action-via-credential-helper path the permissive profile
+;;      leaves open by design.
+;;
+;; Parameters (injected by the wrapper): _BASE (absolute path to my.sb), plus
+;; the base profile's own _HOME / _PROJECT_DIR / _TMPDIR.
+;;
+;; SBPL is last-match-wins, so these overrides take effect over the imported
+;; allows. Import, param-built paths, and the loopback/keychain rules below were
+;; all verified against real sandbox-exec runs.
+
+(version 1)
+(import (param "_BASE"))
+
+;; -- Egress: internet denied, loopback (broker + local dev) allowed --
+(deny network-outbound)
+(allow network-outbound (remote ip "localhost:*"))
+
+;; -- Keychain: denied (the broker holds credentials) --
+(deny file-read* (subpath (string-append (param "_HOME") "/Library/Keychains")))
