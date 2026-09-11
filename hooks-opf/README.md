@@ -90,9 +90,9 @@ PII in prompt: secret(critical): sk_t...p7dc. Blocked at PII_BLOCK_LEVEL=strict.
 
 ## Enforcement actions
 
-The default `PII_ACTION_MODE=block` rejects input when a span matches the selected `PII_BLOCK_LEVEL`.
+The default `PII_ACTION_MODE=warn` allows input and adds a masked detector warning to the agent context.
 
-Set `PII_ACTION_MODE=warn` to allow the input. The hook then adds a masked detector summary to the agent context. It also tells the agent to check whether each detection is valid. If valid, the agent must avoid repeating the value and use a redacted form. The warning recommends secret rotation or revocation when applicable.
+Set `PII_ACTION_MODE=block` to reject input when a span matches the selected `PII_BLOCK_LEVEL`. Set `PII_ACTION_MODE=warn` to allow the input. The hook then adds a masked detector summary to the agent context. It also tells the agent to check whether each detection is valid. If valid, the agent must avoid repeating the value and use a redacted form. The warning recommends secret rotation or revocation when applicable.
 
 Unless `PII_BLOCK_LEVEL=off`, the warning mode reports every detected span. It does not expose the full value. The `PII_BLOCK_LEVEL` setting still controls blocked and warned classifications in stderr. `PII_ALLOW_LABELS` still removes labels from the block set, but warning mode still reports those detector spans.
 
@@ -108,7 +108,7 @@ The hook returns `continue: true` and keeps the current block response unchanged
 }
 ```
 
-Use `PII_ACTION_MODE=warn` for observation or agent-assisted remediation. Use `PII_ACTION_MODE=block` for the hard boundary.
+Use `PII_ACTION_MODE=warn` for gradual adoption, observation, or agent-assisted remediation. Use `PII_ACTION_MODE=block` for the hard boundary.
 
 ## Per-prompt bypass
 
@@ -188,7 +188,7 @@ All env vars override defaults; set them in your shell or the hook's env:
 |---|---|---|
 | `PII_BLOCK_LEVEL` | `standard` | tier (off/relaxed/standard/strict) |
 | `PII_ALLOW_LABELS` | empty | comma-separated labels to allow within the selected tier |
-| `PII_ACTION_MODE` | `block` | `block` to reject input or `warn` to allow input with agent context |
+| `PII_ACTION_MODE` | `warn` | `warn` to allow input with agent context or `block` to reject input |
 | `PII_SERVER_MODE` | `redact` | `redact` or `openai` |
 | `PII_PORT` | `9123` | local server port |
 | `PII_SERVER_SCRIPT` | `~/.claude/hooks/pii-server.py` | server script path |

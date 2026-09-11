@@ -12,6 +12,7 @@ import tempfile
 import threading
 import unittest
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from typing import Any
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -52,7 +53,7 @@ class FakePiiHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(encoded_body)
 
-    def log_message(self, format_string: str, *arguments: object) -> None:
+    def log_message(self, format: str, *args: Any) -> None:
         return
 
 
@@ -75,7 +76,7 @@ class HookModeTests(unittest.TestCase):
 
     def run_hook(
         self, mode: str, payload: dict[str, object], action_mode: str | None = None
-    ) -> dict[str, object]:
+    ) -> dict[str, Any]:
         environment = os.environ.copy()
         environment.update(
             {
@@ -107,12 +108,24 @@ class HookModeTests(unittest.TestCase):
         self.assertTrue(result.stdout.strip(), result.stderr)
         return json.loads(result.stdout)
 
-    def test_default_action_blocks_prompt(self) -> None:
-        hook_output = self.run_hook("prompt", {"prompt": "send this secret"})
+    def test_explicit_block_action_blocks_prompt(self) -> None:
+        hook_output = self.run_hook(
+            "prompt",
+            {"prompt": "send this secret"},
+            action_mode="block",
+        )
 
         self.assertEqual(hook_output["decision"], "block")
         self.assertIn("secret(critical)", hook_output["reason"])
         self.assertIn("sk_t...7890", hook_output["reason"])
+
+    def test_default_action_warns_on_prompt(self) -> None:
+        hook_output = self.run_hook("prompt", {"prompt": "send this secret"})
+
+        self.assertTrue(hook_output["continue"])
+        self.assertNotIn("decision", hook_output)
+        self.assertNotIn("reason", hook_output)
+        self.assertIn("PII detector warning", hook_output["systemMessage"])
 
     def test_warn_action_passes_prompt_with_agent_context(self) -> None:
         hook_output = self.run_hook(

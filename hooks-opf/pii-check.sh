@@ -12,9 +12,9 @@
 # {decision:"block",reason} blocks. The post-tool modes share one detector path.
 # Verified with codex-cli 0.154.0 in a fresh TUI session after hook trust.
 #
-# PII_ACTION_MODE (default: block):
-#   block    reject input when a span matches PII_BLOCK_LEVEL
+# PII_ACTION_MODE (default: warn):
 #   warn     allow input and add a masked warning to agent context
+#   block    reject input when a span matches PII_BLOCK_LEVEL
 # PII_BLOCK_LEVEL (default: standard):
 #   off      — disable all PII checks
 #   relaxed  — block only critical (secrets, account numbers)
@@ -43,7 +43,7 @@ HEALTH="http://$HOST:$PORT/health"
 PREDICT="http://$HOST:$PORT/"
 LOCK="/tmp/pii-server.starting"
 SERVER_LOG="${PII_SERVER_LOG:-$HOME/.cache/opf/server.log}"
-ACTION_MODE="${PII_ACTION_MODE:-block}"
+ACTION_MODE="${PII_ACTION_MODE:-warn}"
 
 case "$SERVER_MODE" in
     redact|openai) ;;

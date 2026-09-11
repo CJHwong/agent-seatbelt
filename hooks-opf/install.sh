@@ -28,7 +28,7 @@ CODEX_HOOKS="$HOME/.codex/hooks.json"
 PORT="${PII_PORT:-9123}"
 SERVER_LOG="${PII_SERVER_LOG:-$HOME/.cache/opf/server.log}"
 SERVER_MODE="${PII_SERVER_MODE:-redact}"
-ACTION_MODE="${PII_ACTION_MODE:-block}"
+ACTION_MODE="${PII_ACTION_MODE:-warn}"
 
 # Tools whose output can carry external PII. Edit/Write/Glob/LS/Todo etc. only
 # emit structural metadata, so scanning them is wasted work. Codex aliases file
@@ -237,8 +237,8 @@ echo
 echo "Tuning:"
 echo "  PII_SERVER_MODE=redact  use GPU-backed Redact with deterministic rules (default)"
 echo "  PII_SERVER_MODE=openai  use the OpenAI Privacy Filter on CPU"
-echo "  PII_ACTION_MODE=block   reject detected PII (default)"
-echo "  PII_ACTION_MODE=warn    allow input and warn the agent about detected PII"
+echo "  PII_ACTION_MODE=warn    allow input and warn the agent about detected PII (default)"
+echo "  PII_ACTION_MODE=block   reject detected PII"
 echo "  PII_BLOCK_LEVEL=off       disable all checks"
 echo "  PII_BLOCK_LEVEL=relaxed   block only secrets + account numbers"
 echo "  PII_BLOCK_LEVEL=standard  + emails, phones, addresses (default)"
