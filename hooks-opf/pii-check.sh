@@ -285,7 +285,7 @@ if [ "$ACTION_MODE" = "warn" ]; then
             ;;
     esac
     warning_context="PII detector warning: possible sensitive data was identified ${detected_location}: ${detected_spans_masked}. ${allowed_subject} was allowed because PII_ACTION_MODE=warn. Check whether each detection is valid. If the detection is valid, do not repeat or expose the value. Use a redacted form. Rotate or revoke a valid secret."
-    warning_message="PII detector warning: possible sensitive data was identified ${detected_location}. ${allowed_subject} was allowed because PII_ACTION_MODE=warn. Check the agent context for masked findings."
+    warning_message="PII detector warning: possible sensitive data was identified ${detected_location}: ${detected_spans_masked}. ${allowed_subject} was allowed because PII_ACTION_MODE=warn."
     jq -cn \
         --arg message "$warning_message" \
         --arg context "$warning_context" \

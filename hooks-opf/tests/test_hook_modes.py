@@ -130,6 +130,9 @@ class HookModeTests(unittest.TestCase):
         self.assertNotIn("decision", hook_output)
         self.assertNotIn("reason", hook_output)
         self.assertIn("PII detector warning", hook_output["systemMessage"])
+        self.assertIn("secret(critical)", hook_output["systemMessage"])
+        self.assertIn("sk_t...7890", hook_output["systemMessage"])
+        self.assertNotIn("sk_test_1234567890", json.dumps(hook_output))
 
     def test_warn_action_passes_prompt_with_agent_context(self) -> None:
         hook_output = self.run_hook(
@@ -162,7 +165,10 @@ class HookModeTests(unittest.TestCase):
                 self.assertNotIn("reason", hook_output)
                 hook_specific_output = hook_output["hookSpecificOutput"]
                 self.assertEqual(hook_specific_output["hookEventName"], "PostToolUse")
+                self.assertIn("secret(critical)", hook_output["systemMessage"])
+                self.assertIn("sk_t...7890", hook_output["systemMessage"])
                 self.assertIn("tool output", hook_specific_output["additionalContext"])
+                self.assertNotIn("sk_test_1234567890", json.dumps(hook_output))
 
     def test_detector_error_warns_instead_of_silent_pass(self) -> None:
         FakePiiHandler.response_status = 413

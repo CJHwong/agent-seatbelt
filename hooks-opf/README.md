@@ -90,7 +90,7 @@ PII in prompt: secret(critical): sk_t...p7dc. Blocked at PII_BLOCK_LEVEL=strict.
 
 ## Enforcement actions
 
-The default `PII_ACTION_MODE=warn` allows input and adds a masked detector warning to the agent context.
+The default `PII_ACTION_MODE=warn` allows input and adds the masked detector summary to both `systemMessage` and `hookSpecificOutput.additionalContext`.
 
 Set `PII_ACTION_MODE=block` to reject input when a span matches the selected `PII_BLOCK_LEVEL`. Set `PII_ACTION_MODE=warn` to allow the input. The hook then adds a masked detector summary to the agent context. It also tells the agent to check whether each detection is valid. If valid, the agent must avoid repeating the value and use a redacted form. The warning recommends secret rotation or revocation when applicable.
 
@@ -101,9 +101,10 @@ The hook returns `continue: true` and keeps the current block response unchanged
 ```json
 {
   "continue": true,
+  "systemMessage": "PII detector warning: possible sensitive data was identified in the user prompt: secret(critical): [masked].",
   "hookSpecificOutput": {
     "hookEventName": "UserPromptSubmit",
-    "additionalContext": "PII detector warning: ..."
+    "additionalContext": "PII detector warning: ... masked findings ..."
   }
 }
 ```
