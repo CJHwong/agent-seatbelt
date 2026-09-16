@@ -50,9 +50,11 @@ The installer is idempotent. Running it again does not duplicate hook entries. I
 - macOS or Linux
 - Network access on first run (Hugging Face download + `uv` dep resolution)
 
-## Block levels
+## Levels
 
-Tune via `PII_BLOCK_LEVEL`. Each level blocks the labels listed below; detected labels outside the blocked set are still printed to stderr as warnings.
+Tune via `PII_LEVEL`. The level selects which labels the hook acts on. Block mode rejects a selected span. Warn mode reports a selected span to the agent. A label below the level is printed to stderr only, so the agent never sees it.
+
+`PII_BLOCK_LEVEL` is the former name. The hook still reads it when `PII_LEVEL` is unset.
 
 | Level | Blocked labels |
 |---|---|
@@ -77,24 +79,26 @@ Tune via `PII_BLOCK_LEVEL`. Each level blocks the labels listed below; detected 
 To carve out specific categories from a tier, set `PII_ALLOW_LABELS` to a comma-separated list:
 
 ```bash
-PII_BLOCK_LEVEL=strict PII_ALLOW_LABELS=private_url,private_date
+PII_LEVEL=strict PII_ALLOW_LABELS=private_url,private_date
 ```
 
-That keeps `strict` blocking enabled for secrets, account numbers, emails, phones, addresses, and names, but allows URLs and dates through as warnings.
+That keeps `strict` enabled for secrets, account numbers, emails, phones, addresses, and names, but allows URLs and dates through. An allowed label goes to stderr only, in both action modes.
 
 When a request is blocked, the hook includes masked snippets in the block message so you can identify what fired without exposing the full value to the agent transcript:
 
 ```text
-PII in prompt: secret(critical): sk_t...p7dc. Blocked at PII_BLOCK_LEVEL=strict.
+PII in prompt: secret(critical): sk_t...p7dc. Blocked at PII_LEVEL=strict.
 ```
 
 ## Enforcement actions
 
 The default `PII_ACTION_MODE=warn` allows input and adds the masked detector summary to both `systemMessage` and `hookSpecificOutput.additionalContext`.
 
-Set `PII_ACTION_MODE=block` to reject input when a span matches the selected `PII_BLOCK_LEVEL`. Set `PII_ACTION_MODE=warn` to allow the input. The hook then adds a masked detector summary to the agent context. It also tells the agent to check whether each detection is valid. If valid, the agent must avoid repeating the value and use a redacted form. The warning recommends secret rotation or revocation when applicable.
+Set `PII_ACTION_MODE=block` to reject input when a span matches the selected `PII_LEVEL`. Set `PII_ACTION_MODE=warn` to allow the input. The hook then adds a masked detector summary to the agent context. It also tells the agent to check whether each detection is valid. If valid, the agent must avoid repeating the value and use a redacted form. The warning recommends secret rotation or revocation when applicable.
 
-Unless `PII_BLOCK_LEVEL=off`, the warning mode reports every detected span. It does not expose the full value. The `PII_BLOCK_LEVEL` setting still controls blocked and warned classifications in stderr. `PII_ALLOW_LABELS` still removes labels from the block set, but warning mode still reports those detector spans.
+Both action modes honour `PII_LEVEL`. Warn mode reports the same spans that block mode would reject. It does not expose the full value. A span below the level goes to stderr as `PII below level:`, and the agent never receives it. `PII_ALLOW_LABELS` removes a label in both modes.
+
+At `PII_LEVEL=relaxed` with `PII_ACTION_MODE=warn`, a prompt carrying only a name and a phone number produces no agent-visible warning. Raise the level to see those categories again.
 
 The hook returns `continue: true` and keeps the current block response unchanged:
 
@@ -216,7 +220,7 @@ All env vars override defaults; set them in your shell or the hook's env:
 
 | Var | Default | Purpose |
 |---|---|---|
-| `PII_BLOCK_LEVEL` | `standard` | tier (off/relaxed/standard/strict) |
+| `PII_LEVEL` | `standard` | tier (off/relaxed/standard/strict); `PII_BLOCK_LEVEL` is the legacy name |
 | `PII_ALLOW_LABELS` | empty | comma-separated labels to allow within the selected tier |
 | `PII_ACTION_MODE` | `warn` | `warn` to allow input with agent context or `block` to reject input |
 | `PII_SERVER_MODE` | `redact` | `redact`, `openai`, or `rules` |
