@@ -81,13 +81,15 @@ class InstallerHarness(unittest.TestCase):
         extra_env: dict[str, str] | None = None,
         source: Path | None = None,
         pilot: bool = False,
+        piped: bool = False,
     ) -> subprocess.CompletedProcess[str]:
         """Run the real installer against the temporary HOME.
 
         `source` overrides where the scripts are fetched from, which is how the
         cold-start pilot test substitutes a fake server. `pilot` enables the pilot
         run, which is off by default because it resolves model dependencies and
-        leaves a listening process behind.
+        leaves a listening process behind. `piped` feeds the script on stdin the way
+        a `curl | bash` install does, which leaves `$0` as "bash" instead of a path.
         """
         environment = os.environ.copy()
         environment.update(
@@ -108,13 +110,14 @@ class InstallerHarness(unittest.TestCase):
                 environment.pop(key, None)
         if extra_env:
             environment.update(extra_env)
-        command = [BASH, str(INSTALL)]
+        command = [BASH, "-s", "--"] if piped else [BASH, str(INSTALL)]
         if not pilot:
             command.append("--no-pilot")
         command.extend(args)
         return subprocess.run(
             command,
             env=environment,
+            input=INSTALL.read_text() if piped else None,
             text=True,
             capture_output=True,
             check=False,
@@ -717,6 +720,18 @@ class HelpTests(InstallerHarness):
 
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("Installs hooks-opf", result.stdout)
+        self.assertEqual(self.files_under_home(), set())
+
+    def test_help_works_when_piped(self) -> None:
+        """Piped from curl, `$0` is "bash", so there is no file to dump the header from.
+
+        This path printed a sed error instead of usage.
+        """
+        self.add_agent("claude")
+        result = self.run_installer("--help", piped=True)
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("Usage: install.sh", result.stdout)
         self.assertEqual(self.files_under_home(), set())
 
 
