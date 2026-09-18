@@ -43,18 +43,51 @@ SERVER_SCRIPT="${PII_SERVER_SCRIPT:-$HOME/.claude/hooks/pii-server.py}"
 SERVER_MODE="${PII_SERVER_MODE:-redact}"
 HEALTH="http://$HOST:$PORT/health"
 PREDICT="http://$HOST:$PORT/"
-LOCK="/tmp/pii-server.starting"
+# Per user and per port. The old fixed /tmp/pii-server.starting was shared by every
+# session and every user on the host, so a second one skipped its own start, waited
+# out the full health poll, and then failed closed.
+LOCK="${TMPDIR:-/tmp}/pii-server.$(id -u).${PORT}.starting"
 SERVER_LOG="${PII_SERVER_LOG:-$HOME/.cache/opf/server.log}"
 ACTION_MODE="${PII_ACTION_MODE:-warn}"
+# Default 1 keeps the documented one-shot bypass working for existing users. A
+# multi-user deployment sets 0, because anyone who can reach the agent can forge the
+# prefix, and a prefix carried in-band cannot be authenticated.
+ALLOW_BYPASS="${PII_ALLOW_BYPASS:-1}"
+
+# Say that scanning was skipped, and why, instead of exiting silently. A silent exit
+# downgrades a block-mode deployment to no scanning at all, and the transcript shows
+# nothing. jq may itself be the thing that is missing, so that case writes the JSON
+# literally rather than through jq.
+scanner_skipped() {
+    local detail="$1"
+    local tail_note="Nothing in this request was checked for sensitive data. Treat the content as sensitive."
+    if command -v jq >/dev/null 2>&1; then
+        jq -cn --arg message "PII scanner skipped: ${detail}." \
+            --arg context "PII scanner skipped: ${detail}. ${tail_note}" \
+            '{continue: true, systemMessage: $message, hookSpecificOutput: {hookEventName: "UserPromptSubmit", additionalContext: $context}}'
+    else
+        printf '{"continue":true,"systemMessage":"PII scanner skipped: %s.","hookSpecificOutput":{"hookEventName":"UserPromptSubmit","additionalContext":"PII scanner skipped: %s. %s"}}\n' \
+            "$detail" "$detail" "$tail_note"
+    fi
+    exit 0
+}
+
+command -v jq >/dev/null 2>&1 || scanner_skipped "jq is not installed"
+command -v curl >/dev/null 2>&1 || scanner_skipped "curl is not installed"
 
 case "$SERVER_MODE" in
     redact|openai|rules) ;;
-    *) echo "pii-check: PII_SERVER_MODE must be redact, openai, or rules" >&2; exit 0 ;;
+    *) scanner_skipped "PII_SERVER_MODE is '${SERVER_MODE}', which is not redact, openai, or rules" ;;
 esac
 
 case "$ACTION_MODE" in
     block|warn) ;;
-    *) echo "pii-check: PII_ACTION_MODE must be block or warn" >&2; exit 0 ;;
+    *) scanner_skipped "PII_ACTION_MODE is '${ACTION_MODE}', which is neither block nor warn. Blocking needs the exact value 'block'" ;;
+esac
+
+case "$ALLOW_BYPASS" in
+    0|1) ;;
+    *) scanner_skipped "PII_ALLOW_BYPASS is '${ALLOW_BYPASS}', which is neither 0 nor 1" ;;
 esac
 
 # --- Category tiers ---
@@ -66,9 +99,6 @@ LEVEL="${PII_LEVEL:-${PII_BLOCK_LEVEL:-standard}}"
 ALLOW_LABELS="${PII_ALLOW_LABELS:-}"
 
 mkdir -p "$(dirname "$SERVER_LOG")"
-
-command -v jq >/dev/null 2>&1 || { echo "pii-check: jq not found, skipping" >&2; exit 0; }
-command -v curl >/dev/null 2>&1 || { echo "pii-check: curl not found, skipping" >&2; exit 0; }
 
 payload=$(cat)
 
@@ -105,16 +135,16 @@ extract_text() {
     esac
 }
 
-text=$(extract_text 2>/dev/null)
+if ! text=$(extract_text 2>/dev/null); then
+    # The payload could not be parsed at all. Under set -e an unguarded substitution
+    # here aborted the whole script with jq's exit status and no output, which a
+    # runtime reads as "no decision" and therefore as a pass.
+    scanner_skipped "the hook could not parse its own input, so it could not extract any text to scan"
+fi
 [ -z "$text" ] && exit 0
 
 # --- Bypass ---
 [ "$LEVEL" = "off" ] && exit 0
-
-# pii:off prefix only for user prompts
-if [[ "$MODE" == "prompt" || "$MODE" == "auto" ]] && [[ "$text" == "pii:off"* ]]; then
-    exit 0
-fi
 
 # Detect the event contract before the server call so failures use the same output shape.
 emit_mode="$MODE"
@@ -126,22 +156,39 @@ if [ "$emit_mode" = "auto" ]; then
     fi
 fi
 
-detector_failure() {
-    local detail="$1"
-    local detected_location="in the input"
-    local allowed_subject="The input"
-    local event_name="PostToolUse"
+# The pii:off prefix applies to a user prompt and to nothing else. Routing it on the
+# resolved event contract, rather than on a second guess about the payload shape, is
+# what keeps it off tool output. Tool output is content an attacker controls, so a
+# prefix there would be a bypass anyone could plant in a web page, a file, or an MCP
+# result, and it would switch off the scan for that entire response.
+if [ "$ALLOW_BYPASS" = "1" ] && [ "$emit_mode" = "prompt" ] && [[ "$text" == "pii:off"* ]]; then
+    exit 0
+fi
+
+# The resolved event contract is the only source for the wording of a response.
+event_subject() {
     case "$emit_mode" in
         prompt)
+            event_name="UserPromptSubmit"
             detected_location="in the user prompt"
             allowed_subject="The user prompt"
-            event_name="UserPromptSubmit"
             ;;
         claude-posttool|codex-posttool)
+            event_name="PostToolUse"
             detected_location="in tool output"
             allowed_subject="The tool output"
             ;;
+        *)
+            event_name="UserPromptSubmit"
+            detected_location="in the input"
+            allowed_subject="The input"
+            ;;
     esac
+}
+
+detector_failure() {
+    local detail="$1"
+    event_subject
 
     if [ "$ACTION_MODE" = "warn" ]; then
         local warning_message="PII detector unavailable while checking ${detected_location}. ${allowed_subject} was allowed because PII_ACTION_MODE=warn, but the detector did not complete. Treat the content as sensitive."
@@ -153,6 +200,29 @@ detector_failure() {
             '{continue: true, systemMessage: $message, hookSpecificOutput: {hookEventName: $event, additionalContext: $context}}'
     else
         local reason="PII detector unavailable while checking ${detected_location}. Blocked because PII_ACTION_MODE=block. ${detail}."
+        jq -cn --arg reason "$reason" '{decision: "block", reason: $reason}'
+    fi
+    exit 0
+}
+
+# A rejected input is not a broken detector. Both make curl exit non-zero, but the
+# agent's next move differs: retrying is useless here, and the fix is on the server's
+# limit rather than on the input.
+oversize_failure() {
+    local detail="$1"
+    event_subject
+    local advice="Raise the detector's input limit, or lower PII_LEVEL, if this content has to be checked."
+
+    if [ "$ACTION_MODE" = "warn" ]; then
+        local warning_message="The input was too large for the detector to scan while checking ${detected_location}, so ${allowed_subject} went unscanned. ${advice}"
+        local warning_context="The input was too large for the detector to scan while checking ${detected_location}, so ${allowed_subject} went unscanned. Do not treat it as checked. ${detail}."
+        jq -cn \
+            --arg message "$warning_message" \
+            --arg context "$warning_context" \
+            --arg event "$event_name" \
+            '{continue: true, systemMessage: $message, hookSpecificOutput: {hookEventName: $event, additionalContext: $context}}'
+    else
+        local reason="The input is too large for the detector to scan, so ${detected_location} can never be checked. This is not a retryable failure and the data is not a detector fault. ${advice} ${detail}."
         jq -cn --arg reason "$reason" '{decision: "block", reason: $reason}'
     fi
     exit 0
@@ -209,14 +279,38 @@ if ! health_ok; then
     health_ok || detector_failure "server did not become healthy"
 fi
 
-if ! response=$(curl -fsS --max-time 5 -X POST "$PREDICT" \
-    -H 'Content-Type: application/json' \
-    -d "$(jq -cn --arg t "$text" '{text:$t}')" 2>/dev/null); then
-    detector_failure "detector request failed"
-fi
+# Build and send the request through pipes, never through argv. `jq --arg t "$text"`
+# puts the whole payload into the argument list, and the kernel caps that, at 1 MB on
+# macOS: a larger input died with "Argument list too long" before the detector saw it,
+# and the hook reported that as a failed request rather than as a size problem.
+# An empty body here would surface as HTTP 400 from the detector, which is honest: the
+# request really was malformed. The `|| true` is what keeps set -e from aborting the
+# script with no output at all.
+request_body=$(printf '%s' "$text" | jq -Rs '{text:.}' 2>/dev/null) || true
 
-if ! count=$(printf '%s' "$response" | jq -er '.spans | if type == "array" then length else error("spans is not an array") end' 2>/dev/null); then
-    detector_failure "detector returned invalid JSON"
+# Keep the status code. curl -f collapses every non-2xx into one failure, which is why
+# an input the detector rejected as oversized used to be reported as a dead detector.
+response=$(printf '%s' "$request_body" | \
+    curl -sS --max-time 5 -w $'\n%{http_code}' -X POST "$PREDICT" \
+    -H 'Content-Type: application/json' --data-binary @- 2>/dev/null) || true
+http_status="${response##*$'\n'}"
+response="${response%$'\n'*}"
+
+case "$http_status" in
+    200) ;;
+    413) oversize_failure "The detector answered HTTP 413 for this input" ;;
+    *)   detector_failure "the detector request failed with HTTP status '${http_status:-none}'" ;;
+esac
+
+# Validate the shape, not only the container. A spans array of numbers passes a length
+# check and then kills the script later, when the label is read off a number.
+if ! count=$(printf '%s' "$response" | jq -er '
+        .spans |
+        if type != "array" then error("spans is not an array")
+        elif any(.[]; type != "object") then error("a span is not an object")
+        elif any(.[]; (.label | type) != "string") then error("a span has no string label")
+        else length end' 2>/dev/null); then
+    detector_failure "the detector response did not have the expected shape"
 fi
 [ "${count:-0}" -eq 0 ] && exit 0
 
@@ -244,14 +338,13 @@ tier_map=$(jq -cn \
      ($mod  | map({(.):"moderate"}) | add) +
      ($low_ | map({(.):"low"})      | add)')
 
+# shellcheck disable=SC2016  # the single quotes are deliberate: this is jq source
 mask_jq='
     def mask_value:
         (.text // "" | tostring | gsub("[\r\n\t]+"; " ") | gsub(" +"; " ")) as $s |
         ($s | length) as $n |
-        if $n == 0 then "[empty]"
-        elif $n <= 6 then "[redacted]"
-        elif $n <= 14 then ($s[0:2] + "..." + $s[-2:])
-        else ($s[0:4] + "..." + $s[-4:])
+        if $n < 12 then "[redacted]"
+        else ($s[0:2] + "..." + $s[-2:])
         end;
 '
 
@@ -267,7 +360,7 @@ printf '%s' "$ignored_spans" | jq -r '.[] | "PII below level: [\(.label)(\(.tier
 selected_count=$(printf '%s' "$selected_spans" | jq -r 'length' 2>/dev/null)
 [ "${selected_count:-0}" -eq 0 ] && exit 0
 
-# Tier-annotated, masked span list for the model-facing text, e.g. "secret(critical): sk_t...p7dc".
+# Tier-annotated, masked span list for the model-facing text, e.g. "secret(critical): sk...dc".
 selected_spans_masked=$(printf '%s' "$selected_spans" | jq -r \
     '[.[] | "\(.label)(\(.tier)): \(.masked)"] | unique | join(", ")')
 
@@ -303,7 +396,10 @@ fi
 printf '%s' "$selected_spans" | jq -r '.[] | "PII block: [\(.label)(\(.tier))] \(.masked)"' >&2
 echo "pii-check: blocked $selected_count span(s) in ${processing_ms}ms at level=$LEVEL" >&2
 
-# Highest tier that fired determines the remediation hint.
+# Highest tier that fired determines the remediation hint. Every label the
+# detector can emit is in the tier map, so the case covers every reachable value;
+# hint is initialized rather than defaulted in a case arm, because set -u is on
+# and every reason string below interpolates it.
 highest_tier=$(printf '%s' "$selected_spans" | jq -r '
     [.[].tier] |
     if any(. == "critical") then "critical"
@@ -311,16 +407,16 @@ highest_tier=$(printf '%s' "$selected_spans" | jq -r '
     elif any(. == "low") then "low"
     else "unknown" end')
 
+hint=""
 case "$highest_tier" in
     critical) hint="Only PII_LEVEL=off would allow this." ;;
     moderate) hint="Drop to PII_LEVEL=relaxed to allow moderate categories (emails/phones/addresses)." ;;
     low)      hint="Drop to PII_LEVEL=standard to allow low categories (names/urls/dates)." ;;
-    *)        hint="" ;;
 esac
 
 case "$emit_mode" in
     prompt)
-        reason="PII in prompt: ${selected_spans_masked}. Blocked at PII_LEVEL=${LEVEL}. ${hint} One-shot bypass: prefix prompt with 'pii:off '."
+        reason="PII in prompt: ${selected_spans_masked}. Blocked at PII_LEVEL=${LEVEL}. ${hint}"
         ;;
     claude-posttool|codex-posttool)
         reason="PII in tool output: ${selected_spans_masked}. Blocked at PII_LEVEL=${LEVEL}. ${hint} Do not retry the same command. Treat every value in that output as already exposed: do not repeat it, and do not write it to a file or a message."

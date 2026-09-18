@@ -1,0 +1,50 @@
+name: ci
+
+# The offline suites only. pii_opf and redact_server need torch and onnxruntime,
+# so they are not run here; every other suite is hermetic and needs no model.
+#
+# coverage.sh is the single entry point: it runs that same set of suites and
+# enforces PII_COV_FLOOR per file, so a developer and CI run one identical
+# command rather than two lists that drift apart.
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install jq
+        run: sudo apt-get update && sudo apt-get install --yes jq
+
+      # install.sh requires uv for its default mode, so the installer tests need it
+      # present. Without it the installer refuses at need_cmd, which is correct
+      # behaviour and makes seventeen of those tests fail for the wrong reason.
+      - name: Install uv
+        run: |
+          curl -fsSL https://astral.sh/uv/install.sh | sh
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Show the tool versions the hook depends on
+        run: |
+          bash --version | head -1
+          python3 --version
+          jq --version
+          curl --version | head -1
+          uv --version
+          lsof -v 2>&1 | head -1
+
+      - name: Offline suites and the coverage floor
+        working-directory: hooks-opf
+        # PII_COV_DETAIL prints the uncovered lines, so a failure here says which
+        # line regressed rather than only that the floor was missed.
+        run: PII_COV_FLOOR=100 PII_COV_DETAIL=1 bash tests/coverage.sh

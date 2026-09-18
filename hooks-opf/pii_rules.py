@@ -7,6 +7,7 @@ hook all consume these spans. Nothing here loads a checkpoint.
 from __future__ import annotations
 
 import re
+from bisect import bisect_left
 from typing import cast
 
 
@@ -21,22 +22,81 @@ SPAN_PRIORITY = {
     "private_date": 1,
 }
 
+# Characters that carry no width: a value split by one of them must still
+# match, and a value that ends on one must still be reported whole. The set
+# excludes tab, LF and CR, which carry the line and column structure that the
+# CSV rule reads.
+INVISIBLE_CODES = (
+    *range(0x00, 0x09),
+    0x0B,
+    0x0C,
+    *range(0x0E, 0x20),
+    *range(0x7F, 0xA0),
+    0xAD,
+    0x180E,
+    *range(0x200B, 0x2010),
+    *range(0x202A, 0x202F),
+    *range(0x2060, 0x2070),
+    0xFEFF,
+)
+INVISIBLE_CHARACTERS = frozenset(map(chr, INVISIBLE_CODES))
+INVISIBLE_PATTERN = re.compile(
+    "[" + re.escape("".join(sorted(INVISIBLE_CHARACTERS))) + "]"
+)
+
+# A card is written either as one run of digits or as digit groups held by a
+# space or a hyphen. Both forms must start and end on a digit: a run that ends
+# on a separator swallows the character after it, and a run that continues past
+# a separator merges the card with the next digit it happens to precede.
+CARD_PATTERN = re.compile(r"(?<!\d)(?:\d{13,19}|\d{1,6}(?:[ -]\d{2,6}){1,5})(?!\d)")
+
+# A phone is one of: a country code marked by + or 00, a parenthesised area
+# code, a dotted NANP number, a bare run of ten digits, or digit groups held by
+# a space or a hyphen. The dotted form is pinned to three-three-four digits, so
+# a dotted quad never reads as a phone. A dotted run of any other length is a
+# version number, and neither a quad nor a version is a phone. The grouped form
+# carries no length in its shape, so _append_phone_matches counts its digits.
+#
+# The guard on the right differs per shape. A sentence may end on the number,
+# so a trailing full stop must not reject it. The dotted shape instead refuses
+# a fourth group, which is what makes it leave a dotted quad alone. The guard
+# on the left refuses a word character and a longer dotted run, nothing else.
+#
+# Two shapes are deliberately narrow. The 00 prefix needs a separator after the
+# country code, because a bare run behind it is a reference number and not a
+# dialled one. The grouped form needs its middle groups to carry three or four
+# digits, because a two-digit middle group is the shape of a tax identifier.
+PHONE_PATTERN = re.compile(
+    r"(?<!\w)(?<!\d\.)"
+    r"(?:"
+    r"\+\d{1,3}[ .-]?(?:\(\d{1,4}\)[ .-]?)?\d(?:[ .-]?\d){5,12}(?!\w)"
+    r"|00\d{1,3}[ .-](?:\(\d{1,4}\)[ .-]?)?\d(?:[ .-]?\d){5,12}(?!\w)"
+    r"|\(\d{1,4}\)[ .-]?\d(?:[ .-]?\d){6,12}(?!\w)"
+    r"|\d{3}\.\d{3}\.\d{4}(?!\.?\d)"
+    r"|(?<!\d)\d{10}(?!\d)"
+    r"|(?<!\d[ -])\d{2,4}(?:[ -]\d{3,4}){0,2}[ -]\d{3,4}(?!\d)"
+    r")"
+)
+PHONE_DIGIT_FLOOR = 9
+PHONE_DIGIT_CEILING = 15
+
+# The guards on both sides reject a character that continues the token, and
+# they must not reject a full stop that ends a sentence. A dot is only a
+# continuation when a word character sits beside it: in front, the dot of a
+# longer dotted run; behind, the dot of a longer domain.
 EMAIL_PATTERN = re.compile(
-    r"(?<![\w.+-])[A-Za-z0-9][A-Za-z0-9._%+-]*"
-    r"@[A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?\.[A-Za-z]{2,}(?![\w.-])"
+    r"(?<![\w+-])(?<!\w\.)[A-Za-z0-9][A-Za-z0-9._%+-]*"
+    r"@[A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?\.[A-Za-z]{2,}(?![\w-])"
 )
 URL_PATTERN = re.compile(r"https?://[^\s<>\"']+", re.IGNORECASE)
-PHONE_PATTERN = re.compile(
-    r"(?<!\w)(?:\+\d{1,3}[\s.-]?)?"
-    r"(?:\(\d{2,4}\)|\d{2,4})[\s.-]\d{3}[\s.-]\d{3,4}(?!\w)"
-)
-CARD_PATTERN = re.compile(r"(?<!\d)(?:\d[ -]?){13,19}(?!\d)")
 BANK_ACCOUNT_PATTERN = re.compile(
     r"(?i)\b(?:account|acct)(?:\s+(?:number|no\.?))?"
     r"\s*(?:is|=|:)?\s*(?P<value>\d{8,})\b"
 )
 IBAN_PATTERN = re.compile(r"\b[A-Z]{2}\d{2}[A-Z0-9]{11,30}\b")
-IP_PATTERN = re.compile(r"(?<![\w.])(?:\d{1,3}\.){3}\d{1,3}(?![\w.])")
+# The same guard as the address rule: refuse a word character on either side,
+# refuse to sit inside a longer dotted run, and let a full stop end a sentence.
+IP_PATTERN = re.compile(r"(?<!\w)(?<!\d\.)(?:\d{1,3}\.){3}\d{1,3}(?!\w)(?!\.\d)")
 AWS_ACCESS_KEY_PATTERN = re.compile(r"\bAKIA[0-9A-Z]{16}\b")
 SECRET_PREFIX_PATTERN = re.compile(
     r"\b(?:sk_(?:live|test)_[A-Za-z0-9]+|gh[pousr]_[A-Za-z0-9]+|"
@@ -154,10 +214,61 @@ MONTH_DATE_PATTERN = re.compile(
 
 
 def deterministic_spans(text: str) -> list[dict[str, object]]:
+    """Return the merged spans of text, with offsets into text itself.
+
+    Every rule matches against the text with the invisible characters removed,
+    so a zero-width character cannot hide a value. The offsets are then put
+    back onto the original text, because the hook and the redactor both address
+    the original string by offset.
+    """
+    clean_text, index_map = _strip_invisibles(text)
+    spans = _scan_spans(clean_text)
+    if index_map is not None:
+        spans = [_restore_offsets(span, index_map) for span in spans]
+    return merge_spans(text, spans)
+
+
+def _strip_invisibles(text: str) -> tuple[str, list[int] | None]:
+    """Remove the invisible characters and return the clean text plus a map.
+
+    The map holds the original index of each clean character, plus one final
+    entry holding len(text). None means the text was already clean, which is
+    the common case and costs one scan.
+    """
+    if not INVISIBLE_PATTERN.search(text):
+        return text, None
+    characters: list[str] = []
+    index_map: list[int] = []
+    for index, character in enumerate(text):
+        if character in INVISIBLE_CHARACTERS:
+            continue
+        characters.append(character)
+        index_map.append(index)
+    index_map.append(len(text))
+    return "".join(characters), index_map
+
+
+def _restore_offsets(
+    span: dict[str, object], index_map: list[int]
+) -> dict[str, object]:
+    """Move a clean-text span onto the original text.
+
+    The end maps through the entry after the last matched character, so a
+    match that ends on an invisible character keeps that character inside the
+    span instead of leaving it behind.
+    """
+    return {
+        "start": index_map[cast(int, span["start"])],
+        "end": index_map[cast(int, span["end"])],
+        "label": span["label"],
+    }
+
+
+def _scan_spans(text: str) -> list[dict[str, object]]:
     spans: list[dict[str, object]] = []
     _append_matches(text, EMAIL_PATTERN, "private_email", spans)
     _append_matches(text, URL_PATTERN, "private_url", spans, trim_url=True)
-    _append_matches(text, PHONE_PATTERN, "private_phone", spans)
+    _append_phone_matches(text, spans)
     _append_card_matches(text, spans)
     _append_matches(
         text, BANK_ACCOUNT_PATTERN, "account_number", spans, group_name="value"
@@ -265,7 +376,24 @@ def deterministic_spans(text: str) -> list[dict[str, object]]:
 
     _append_matches(text, ISO_DATE_PATTERN, "private_date", spans)
     _append_matches(text, MONTH_DATE_PATTERN, "private_date", spans)
-    return merge_spans(text, spans)
+    return spans
+
+
+def _append_phone_matches(text: str, spans: list[dict[str, object]]) -> None:
+    """Keep the phone-shaped runs that carry a plausible digit count.
+
+    The shape of a grouped number fixes no length, so the count decides: below
+    the floor a grouped run is a date or a version, and above the ceiling it is
+    not a dialable number. A miss is cheaper than a false positive here, which
+    blocks ordinary work at the default level.
+    """
+    for match in PHONE_PATTERN.finditer(text):
+        digit_count = sum(character.isdigit() for character in match.group())
+        if not PHONE_DIGIT_FLOOR <= digit_count <= PHONE_DIGIT_CEILING:
+            continue
+        spans.append(
+            {"start": match.start(), "end": match.end(), "label": "private_phone"}
+        )
 
 
 def _append_matches(
@@ -280,9 +408,12 @@ def _append_matches(
     for match in pattern.finditer(text):
         start, end = match.span(group_name) if group_name else match.span()
         if trim_url:
+            # The trim cannot empty a match: every URL keeps "https://", whose
+            # last character is not in the trim set. A pattern that did return
+            # an empty span would be dropped by merge_spans, which normalizes
+            # start >= end away.
             end = _trim_url_end(text, start, end)
-        if start < end:
-            spans.append({"start": start, "end": end, "label": label})
+        spans.append({"start": start, "end": end, "label": label})
 
 
 def _append_secret_matches(
@@ -455,8 +586,63 @@ def _trim_url_end(text: str, start: int, end: int) -> int:
     return end
 
 
+# A trimmed fragment shorter than this carries nothing worth reporting. The
+# split leaves a blank run or a single character between two claimed ranges,
+# and a labelled blank reaches the hook as a span it cannot act on.
+MIN_FRAGMENT_LENGTH = 2
+
+
 def merge_spans(text: str, spans: list[dict[str, object]]) -> list[dict[str, object]]:
-    normalized = []
+    """Return the disjoint spans of text, highest priority first.
+
+    A span that overlaps a selected one keeps the parts the selected span does
+    not cover, and it is dropped only when nothing is left. So a signature
+    value inside a URL leaves the rest of the URL reported, instead of erasing
+    the whole URL from the answer. A trimmed part that carries no value is
+    dropped as well: a fragment is only reported when it says something.
+
+    The selected ranges are held sorted, and each candidate is placed into them
+    with a bisect. Scanning the whole selected list per candidate made this
+    quadratic, and the merge is the dominant cost on large input.
+    """
+    selected: list[dict[str, object]] = []
+    claimed_starts: list[int] = []
+    claimed_ranges: list[tuple[int, int]] = []
+    for candidate in sorted(
+        _normalized_spans(text, spans),
+        key=lambda span: (
+            -SPAN_PRIORITY.get(str(span["label"]), 0),
+            -(int(span["end"]) - int(span["start"])),
+            int(span["start"]),
+        ),
+    ):
+        candidate_start = cast(int, candidate["start"])
+        candidate_end = cast(int, candidate["end"])
+        for start, end in _uncovered_parts(
+            candidate_start,
+            candidate_end,
+            claimed_starts,
+            claimed_ranges,
+        ):
+            trimmed = start != candidate_start or end != candidate_end
+            if trimmed and _is_degenerate_fragment(text, start, end):
+                continue
+            selected.append(
+                {
+                    "start": start,
+                    "end": end,
+                    "label": candidate["label"],
+                    "text": text[start:end],
+                }
+            )
+            _claim_range(claimed_starts, claimed_ranges, start, end)
+    return sorted(selected, key=lambda span: (int(span["start"]), int(span["end"])))
+
+
+def _normalized_spans(
+    text: str, spans: list[dict[str, object]]
+) -> list[dict[str, object]]:
+    normalized: list[dict[str, object]] = []
     for span in spans:
         start = cast(int, span["start"])
         end = cast(int, span["end"])
@@ -471,29 +657,55 @@ def merge_spans(text: str, spans: list[dict[str, object]]) -> list[dict[str, obj
                 "text": text[start:end],
             }
         )
-
-    prioritized = sorted(
-        normalized,
-        key=lambda span: (
-            -SPAN_PRIORITY.get(str(span["label"]), 0),
-            -(int(span["end"]) - int(span["start"])),
-            int(span["start"]),
-        ),
-    )
-    selected: list[dict[str, object]] = []
-    for candidate in prioritized:
-        if any(_spans_overlap(candidate, selected_span) for selected_span in selected):
-            continue
-        selected.append(candidate)
-    return sorted(selected, key=lambda span: (int(span["start"]), int(span["end"])))
+    return normalized
 
 
-def _spans_overlap(
-    first_span: dict[str, object],
-    second_span: dict[str, object],
-) -> bool:
-    first_start = cast(int, first_span["start"])
-    first_end = cast(int, first_span["end"])
-    second_start = cast(int, second_span["start"])
-    second_end = cast(int, second_span["end"])
-    return first_start < second_end and second_start < first_end
+def _is_degenerate_fragment(text: str, start: int, end: int) -> bool:
+    """True when a trimmed fragment is blank or a single character."""
+    return len(text[start:end].strip()) < MIN_FRAGMENT_LENGTH
+
+
+def _uncovered_parts(
+    start: int,
+    end: int,
+    claimed_starts: list[int],
+    claimed_ranges: list[tuple[int, int]],
+) -> list[tuple[int, int]]:
+    """Return the parts of [start, end) that no claimed range covers."""
+    parts: list[tuple[int, int]] = []
+    index = bisect_left(claimed_starts, start)
+    if index > 0 and claimed_ranges[index - 1][1] > start:
+        index -= 1
+    cursor = start
+    while index < len(claimed_ranges) and claimed_ranges[index][0] < end:
+        claimed_start, claimed_end = claimed_ranges[index]
+        if claimed_start > cursor:
+            parts.append((cursor, claimed_start))
+        cursor = max(cursor, claimed_end)
+        if cursor >= end:
+            # A claim reaches the end of the range, so nothing is left open.
+            return parts
+        index += 1
+    # Every claim that reached the end returned above, so the tail is open and
+    # cursor is still inside the range.
+    parts.append((cursor, end))
+    return parts
+
+
+def _claim_range(
+    claimed_starts: list[int],
+    claimed_ranges: list[tuple[int, int]],
+    start: int,
+    end: int,
+) -> None:
+    """Add [start, end) to the sorted claimed ranges, joining its neighbours."""
+    index = bisect_left(claimed_starts, start)
+    if index > 0 and claimed_ranges[index - 1][1] >= start:
+        index -= 1
+        start = claimed_ranges[index][0]
+    last = index
+    while last < len(claimed_ranges) and claimed_ranges[last][0] <= end:
+        end = max(end, claimed_ranges[last][1])
+        last += 1
+    claimed_ranges[index:last] = [(start, end)]
+    claimed_starts[index:last] = [start]

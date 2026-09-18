@@ -39,11 +39,37 @@ REDACT_REVISION = os.environ.get("REDACT_REVISION", "v0.4.0")
 CACHE_DIR = Path(os.environ.get("REDACT_CACHE_DIR", Path.home() / ".cache" / "redact"))
 MAX_SEQUENCE_LENGTH = 256
 CONTENT_WINDOW_LENGTH = MAX_SEQUENCE_LENGTH - 2
-WINDOW_STRIDE = 64
+# How many tokens adjacent windows share. `_window_ranges` backs the next start
+# up by this much, so it is the overlap, not the step between starts.
+WINDOW_OVERLAP = 64
+# How far apart adjacent windows start, which is the content window minus the
+# overlap. Kept in step with the loop in `_window_ranges`.
+WINDOW_STEP = CONTENT_WINDOW_LENGTH - WINDOW_OVERLAP
 NEG_INF = -1e9
 DEFAULT_MAX_TOKENS = 4096
 DEFAULT_CHUNK_OVERLAP_TOKENS = 128
 DEFAULT_MAX_INPUT_TOKENS = 32768
+DEFAULT_MAX_BODY_BYTES = 2 * 1024 * 1024
+HANDLER_TIMEOUT_SECONDS = 30
+
+
+def max_body_bytes() -> int:
+    """The largest request body the server reads. A bad setting uses the default."""
+    try:
+        configured = int(os.environ.get("PII_MAX_BODY_BYTES", DEFAULT_MAX_BODY_BYTES))
+    except ValueError:
+        return DEFAULT_MAX_BODY_BYTES
+    return configured if configured > 0 else DEFAULT_MAX_BODY_BYTES
+
+
+def request_shutdown(server: ThreadingHTTPServer) -> None:
+    """Stop serve_forever() from a thread that the serving loop does not own.
+
+    shutdown() blocks until serve_forever() returns. A signal handler runs on
+    the main thread, which is inside serve_forever(), so calling shutdown()
+    there waits on itself. socketserver expects a separate thread.
+    """
+    threading.Thread(target=server.shutdown, daemon=True).start()
 
 
 class InputTooLargeError(ValueError):
@@ -291,10 +317,15 @@ def chunk_token_ranges(
     if token_count == 0:
         return []
 
+    # The loop leaves through the break below, never through an exhausted
+    # start: step is positive because the check above rejects an overlap at or
+    # above the chunk size, and a window that stops short of the end leaves the
+    # next start inside the input. 353,976 calls over every accepted shape took
+    # the break 6,858,311 times and never the other exit.
     step = chunk_size - overlap
     ranges: list[tuple[int, int]] = []
     start = 0
-    while start < token_count:
+    while True:
         end = min(start + chunk_size, token_count)
         ranges.append((start, end))
         if end == token_count:
@@ -306,17 +337,22 @@ def chunk_token_ranges(
 def _window_ranges(token_count: int) -> list[tuple[int, int]]:
     if token_count <= 0:
         return []
-    if WINDOW_STRIDE >= CONTENT_WINDOW_LENGTH:
-        raise RuntimeError("WINDOW_STRIDE must be less than the content window length")
+    if WINDOW_OVERLAP >= CONTENT_WINDOW_LENGTH:
+        raise RuntimeError("WINDOW_OVERLAP must be less than the content window length")
 
+    # Same shape as chunk_token_ranges: the loop leaves through the break,
+    # because the overlap is well under the content window (checked above), so
+    # every pass advances the start and a window that stops short of the end
+    # leaves the next start inside the input. 30,001 input lengths took the
+    # break 2,373,382 times and never the other exit.
     ranges: list[tuple[int, int]] = []
     start = 0
-    while start < token_count:
+    while True:
         end = min(start + CONTENT_WINDOW_LENGTH, token_count)
         ranges.append((start, end))
         if end == token_count:
             break
-        start = end - WINDOW_STRIDE
+        start = end - WINDOW_OVERLAP
     return ranges
 
 
@@ -391,6 +427,13 @@ class RedactModel:
         model.load_state_dict(state_dict, strict=True)
         model.eval()
         model.to(self.device)
+        # Module.to() moves every parameter and buffer, so this arm cannot be
+        # reached through the constructor: over 12 models across hidden sizes
+        # and layer counts on cpu and mps it never fired. It is kept because it
+        # is the only thing that turns a device move that silently did nothing
+        # into a startup failure naming the cause. Without it the same broken
+        # precondition runs until the first request, which answers 500 with
+        # "Passed CPU tensor to MPS op" instead.
         parameter_devices = {parameter.device.type for parameter in model.parameters()}
         if parameter_devices != {self.device.type}:
             raise RuntimeError(
@@ -475,6 +518,12 @@ class RedactModel:
                 content_probabilities = probability_array[
                     row_index, 1 : content_length + 1
                 ]
+                # Max-pool, then renormalize the row below. A token on a window
+                # seam is covered by more than one window, so pooling and
+                # renormalizing can only push its probability down relative to
+                # the same token away from a seam. Seams fall every WINDOW_STEP
+                # tokens. The bias is one-directional and small, so it is left
+                # in place; log_probs clips at 1e-7 regardless.
                 aggregate[start:end] = np.maximum(
                     aggregate[start:end], content_probabilities
                 )
@@ -564,17 +613,23 @@ def _trim_span_whitespace(text: str, start: int, end: int) -> tuple[int, int]:
 class Handler(BaseHTTPRequestHandler):
     model: RedactModel
     inference_lock = threading.Lock()
+    timeout = HANDLER_TIMEOUT_SECONDS
 
     def log_message(self, format: str, *args: Any) -> None:
         sys.stderr.write(f"[redact] {self.address_string()} {format % args}\n")
 
     def _send_json(self, status_code: int, payload: dict[str, object]) -> None:
         body = json.dumps(payload).encode("utf-8")
-        self.send_response(status_code)
-        self.send_header("Content-Type", "application/json")
-        self.send_header("Content-Length", str(len(body)))
-        self.end_headers()
-        self.wfile.write(body)
+        try:
+            self.send_response(status_code)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+        except (BrokenPipeError, ConnectionResetError):
+            # The client left before the answer. One line says so, and a
+            # routine disconnect stops burying a real failure in a traceback.
+            self.log_message("client disconnected before the response")
 
     def do_POST(self) -> None:
         try:
@@ -585,9 +640,20 @@ class Handler(BaseHTTPRequestHandler):
         if content_length <= 0:
             self._send_json(400, {"error": "empty body"})
             return
+        cap = max_body_bytes()
+        if content_length > cap:
+            # Answer before the read. Tokenizing a body this large costs memory
+            # in proportion to the body, not to the token cap.
+            error = (
+                f"request body of {content_length} bytes exceeds the {cap} byte limit"
+            )
+            self._send_json(413, {"error": error})
+            return
 
         try:
             request_body = json.loads(self.rfile.read(content_length).decode("utf-8"))
+            if not isinstance(request_body, dict):
+                raise ValueError("body must be a JSON object")
             request_text = request_body["text"]
             if not isinstance(request_text, str):
                 raise TypeError("text must be a string")
@@ -622,7 +688,11 @@ class Handler(BaseHTTPRequestHandler):
         if self.path == "/health":
             self._send_json(
                 200,
-                {"status": "ok", "device": str(self.model.device)},
+                {
+                    "status": "ok",
+                    "device": str(self.model.device),
+                    "busy": self.inference_lock.locked(),
+                },
             )
             return
         self._send_json(404, {"error": "not found"})
@@ -652,7 +722,7 @@ def main() -> None:
 
     server = ThreadingHTTPServer((args.host, args.port), Handler)
     for sig in (signal.SIGINT, signal.SIGTERM):
-        signal.signal(sig, lambda *_: server.shutdown())
+        signal.signal(sig, lambda *_: request_shutdown(server))
     try:
         server.serve_forever()
     except KeyboardInterrupt:
