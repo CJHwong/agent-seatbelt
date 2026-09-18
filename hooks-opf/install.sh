@@ -298,10 +298,9 @@ if [ "$CODEX_PRESENT" -eq 1 ]; then
     echo
     echo "Codex only: hooks require trust before they run. Launch codex, run /hooks,"
     echo "and trust the pii-check entries (trust is remembered in ~/.codex/config.toml"
-    echo "under [hooks.state]). Re-running this installer changes the command string,"
-    echo "Trust binds to the command string. A new entry needs trusting once, and a"
-    echo "content update does not, because the hook's path does not change. Claude Code"
-    echo "needs no trust step."
+    echo "under [hooks.state]). Trust binds to the command string, so a new entry needs"
+    echo "trusting once. A content update does not, because the hook's path does not"
+    echo "change. Claude Code needs no trust step."
 fi
 echo
 echo "Tuning:"
