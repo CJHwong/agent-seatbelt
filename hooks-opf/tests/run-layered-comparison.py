@@ -25,25 +25,27 @@ import sys
 import time
 from collections import defaultdict
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
-from classifinder_engine import scan as classifinder_scan
-from detect_secrets.core.scan import scan_line
-from detect_secrets.settings import default_settings
-import numpy as np
+from classifinder_engine import (  # ty: ignore[unresolved-import]
+    scan as classifinder_scan,
+)
+from detect_secrets.core.scan import scan_line  # ty: ignore[unresolved-import]
+from detect_secrets.settings import default_settings  # ty: ignore[unresolved-import]
+import numpy as np  # ty: ignore[unresolved-import]
 
 
 TEST_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(TEST_DIR))
 sys.path.insert(0, str(TEST_DIR.parent))
 
-from challenge_cases import CASES, validate_cases  # noqa: E402
-from final_holdout_cases import (  # noqa: E402
+from challenge_cases import CASES, validate_cases  # noqa: E402  # ty: ignore[unresolved-import]
+from final_holdout_cases import (  # noqa: E402  # ty: ignore[unresolved-import]
     FINAL_HOLDOUT_CASES,
     validate_final_holdout_cases,
 )
-from holdout_cases import HOLDOUT_CASES, validate_holdout_cases  # noqa: E402
-from redact_server import (  # noqa: E402
+from holdout_cases import HOLDOUT_CASES, validate_holdout_cases  # noqa: E402  # ty: ignore[unresolved-import]
+from redact_server import (  # noqa: E402  # ty: ignore[unresolved-import]
     RedactModel,
     deterministic_spans,
     merge_spans,
@@ -130,6 +132,18 @@ def format_rate(passed: int, total: int) -> str:
     return f"{passed}/{total} ({passed / total:.1%})"
 
 
+def _expected_labels(case_record: CaseRecord) -> list[str]:
+    """The labels a case expects, narrowed out of the record's object values.
+
+    A case always carries a list here, but a record's values are typed as
+    object, so the narrowing happens once here rather than at each use.
+    """
+    expected = case_record["expected"]
+    if not isinstance(expected, list):
+        return []
+    return [str(label) for label in expected]
+
+
 def measure_layer(
     layer_name: str,
     layer_labels: dict[str, Labels],
@@ -138,16 +152,14 @@ def measure_layer(
 ) -> dict[str, object]:
     positive_cases = [case for case in cases if case["class"] == "positive"]
     secret_cases = [
-        case
-        for case in positive_cases
-        if "secret" in {str(label) for label in case["expected"]}
+        case for case in positive_cases if "secret" in set(_expected_labels(case))
     ]
     robustness_cases = [case for case in cases if case["class"] == "robustness"]
     clean_cases = [case for case in cases if case["class"] == "clean"]
     ambiguous_cases = [case for case in cases if case["class"] == "ambiguous"]
 
     def matches(case: CaseRecord) -> bool:
-        expected_labels = {str(label) for label in case["expected"]}
+        expected_labels = set(_expected_labels(case))
         return expected_labels.issubset(layer_labels[str(case["id"])])
 
     positive_misses = [case for case in positive_cases if not matches(case)]
@@ -190,17 +202,29 @@ def measure_layer(
 
 
 def print_layer_summary(summary: dict[str, object]) -> None:
-    false_positives = summary["clean_false_positives"]
-    ambiguous_flags = summary["ambiguous_flags"]
+    # measure_layer fixes these shapes, but a record's values are typed as
+    # object, so each is narrowed once here rather than at each use.
+    false_positives = cast("list[CaseRecord]", summary["clean_false_positives"])
+    ambiguous_flags = cast("list[CaseRecord]", summary["ambiguous_flags"])
+    secret_clean_false_positives = cast(
+        "list[CaseRecord]", summary["secret_clean_false_positives"]
+    )
+    secret_ambiguous_flags = cast("list[CaseRecord]", summary["secret_ambiguous_flags"])
+    positive_passed = cast(int, summary["positive_passed"])
+    positive_total = cast(int, summary["positive_total"])
+    secret_passed = cast(int, summary["secret_passed"])
+    secret_total = cast(int, summary["secret_total"])
+    robustness_passed = cast(int, summary["robustness_passed"])
+    robustness_total = cast(int, summary["robustness_total"])
     print(
         f"{summary['name']}: "
-        f"positive={format_rate(int(summary['positive_passed']), int(summary['positive_total']))} "
-        f"secret={format_rate(int(summary['secret_passed']), int(summary['secret_total']))} "
-        f"robustness={format_rate(int(summary['robustness_passed']), int(summary['robustness_total']))} "
+        f"positive={format_rate(positive_passed, positive_total)} "
+        f"secret={format_rate(secret_passed, secret_total)} "
+        f"robustness={format_rate(robustness_passed, robustness_total)} "
         f"clean_fp={len(false_positives)}/{summary['clean_total']} "
         f"ambiguous={len(ambiguous_flags)}/{summary['ambiguous_total']} "
-        f"secret_clean_fp={len(summary['secret_clean_false_positives'])} "
-        f"secret_ambiguous={len(summary['secret_ambiguous_flags'])} "
+        f"secret_clean_fp={len(secret_clean_false_positives)} "
+        f"secret_ambiguous={len(secret_ambiguous_flags)} "
         f"latency_ms(p50/p95/p99)={summary['p50_ms']:.3f}/"
         f"{summary['p95_ms']:.3f}/{summary['p99_ms']:.3f}"
     )
@@ -212,14 +236,27 @@ def print_case_ids(prefix: str, cases: list[CaseRecord]) -> None:
 
 
 def print_detailed_summary(summary: dict[str, object]) -> None:
-    print_case_ids("secret misses", summary["secret_misses"])
-    print_case_ids("clean false positives", summary["clean_false_positives"])
+    # measure_layer fixes these shapes, but a record's values are typed as
+    # object, so each list is narrowed to the type print_case_ids takes.
+    print_case_ids("secret misses", cast("list[CaseRecord]", summary["secret_misses"]))
     print_case_ids(
-        "secret clean false positives", summary["secret_clean_false_positives"]
+        "clean false positives",
+        cast("list[CaseRecord]", summary["clean_false_positives"]),
     )
-    print_case_ids("ambiguous flags", summary["ambiguous_flags"])
-    print_case_ids("secret ambiguous flags", summary["secret_ambiguous_flags"])
-    print_case_ids("robustness misses", summary["robustness_misses"])
+    print_case_ids(
+        "secret clean false positives",
+        cast("list[CaseRecord]", summary["secret_clean_false_positives"]),
+    )
+    print_case_ids(
+        "ambiguous flags", cast("list[CaseRecord]", summary["ambiguous_flags"])
+    )
+    print_case_ids(
+        "secret ambiguous flags",
+        cast("list[CaseRecord]", summary["secret_ambiguous_flags"]),
+    )
+    print_case_ids(
+        "robustness misses", cast("list[CaseRecord]", summary["robustness_misses"])
+    )
 
 
 def local_layers(

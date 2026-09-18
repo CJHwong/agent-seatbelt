@@ -11,6 +11,7 @@ import time
 import urllib.error
 import urllib.request
 from pathlib import Path
+from typing import cast
 
 DEFAULT_FIXTURE = Path(__file__).with_name("false-positive-cases.jsonl")
 
@@ -99,6 +100,19 @@ def query_server(
     return labels, spans, elapsed_ms
 
 
+def _expected_labels(case_record: dict[str, object]) -> list[str]:
+    """The labels a case expects, narrowed out of the record's object values.
+
+    Every case carries a list here, which `load_cases` checks before returning,
+    but a record's values are typed as object, so the narrowing happens once
+    here rather than at each use.
+    """
+    expected = case_record["expected"]
+    if not isinstance(expected, list):
+        return []
+    return [str(label) for label in expected]
+
+
 def compare_server(
     server_name: str,
     server_url: str,
@@ -110,7 +124,7 @@ def compare_server(
         case
         for case in cases
         if case["class"] == "positive"
-        and ({str(label) for label in case["expected"]} - unsupported_labels)
+        and (set(_expected_labels(case)) - unsupported_labels)
     ]
     ambiguous_cases = [case for case in cases if case["class"] == "ambiguous"]
     false_positives: list[tuple[str, str, list[str], list[str]]] = []
@@ -130,9 +144,7 @@ def compare_server(
                 (case_id, case_group, sorted(labels), span_descriptions)
             )
         if case_type == "positive":
-            expected_labels = {
-                str(label) for label in case_record["expected"]
-            } - unsupported_labels
+            expected_labels = set(_expected_labels(case_record)) - unsupported_labels
             if not expected_labels:
                 continue
             missing_labels = sorted(expected_labels.difference(labels))
@@ -179,12 +191,20 @@ def rate_text(passed: int, total: int) -> str:
 
 
 def print_summary(result: dict[str, object]) -> None:
-    false_positives = result["false_positives"]
-    missing_detections = result["missing_detections"]
-    ambiguous_flags = result["ambiguous_flags"]
-    latencies = result["latencies"]
-    clean_total = int(result["clean_total"])
-    positive_total = int(result["positive_total"])
+    # compare_server fixes these shapes, but a record's values are typed as
+    # object, so each is narrowed once here rather than at each use.
+    false_positives = cast(
+        "list[tuple[str, str, list[str], list[str]]]", result["false_positives"]
+    )
+    missing_detections = cast(
+        "list[tuple[str, str, list[str], list[str]]]", result["missing_detections"]
+    )
+    ambiguous_flags = cast(
+        "list[tuple[str, str, list[str]]]", result["ambiguous_flags"]
+    )
+    latencies = cast("list[float]", result["latencies"])
+    clean_total = cast(int, result["clean_total"])
+    positive_total = cast(int, result["positive_total"])
     print(
         f"{result['name']}: "
         f"clean={rate_text(clean_total - len(false_positives), clean_total)} "

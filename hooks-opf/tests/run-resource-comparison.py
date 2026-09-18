@@ -29,7 +29,7 @@ TEST_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(TEST_DIR))
 sys.path.insert(0, str(TEST_DIR.parent))
 
-from final_holdout_cases import (  # noqa: E402
+from final_holdout_cases import (  # noqa: E402  # ty: ignore[unresolved-import]
     FINAL_HOLDOUT_CASES,
     validate_final_holdout_cases,
 )
@@ -67,7 +67,7 @@ def memory_peak_mb() -> float:
 
 
 def accelerator_memory_mb(device: object) -> tuple[float, float]:
-    import torch
+    import torch  # ty: ignore[unresolved-import]
 
     device_type = getattr(device, "type", str(device))
     if device_type == "mps":
