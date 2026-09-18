@@ -81,6 +81,21 @@ case "$ACTION_MODE" in
     *) echo "Error: PII_ACTION_MODE must be block or warn." >&2; exit 1 ;;
 esac
 
+# Decide which agents are present BEFORE anything is created. mkdir -p "$HOOKS_DIR"
+# below would make $HOME/.claude exist, which would then satisfy the check that
+# $HOME/.claude exists, so testing it afterwards installed into a machine with no
+# agent and reported success. Checking first also means a refusal writes nothing.
+CLAUDE_PRESENT=0
+CODEX_PRESENT=0
+[ -d "$HOME/.claude" ] && CLAUDE_PRESENT=1
+[ -d "$HOME/.codex" ] && CODEX_PRESENT=1
+[ "$SKIP_CODEX" -eq 1 ] && CODEX_PRESENT=0
+
+if [ "$CLAUDE_PRESENT" -eq 0 ] && [ "$CODEX_PRESENT" -eq 0 ]; then
+    echo "Neither ~/.claude/ nor ~/.codex/ found. Install at least one agent first." >&2
+    exit 1
+fi
+
 mkdir -p "$HOOKS_DIR"
 
 echo "Downloading hook files..."
@@ -183,8 +198,7 @@ pilot_run() {
         nohup uv run "$SERVER_DEST" --port "$PORT" --mode "$SERVER_MODE" >"$SERVER_LOG" 2>&1 </dev/null &
     fi
     disown
-    local i
-    for i in $(seq 1 120); do   # up to ~60s for a cold download
+    for _ in $(seq 1 120); do   # up to ~60s for a cold download
         curl -sSf --max-time 1 "$health" | jq -e --arg mode "$SERVER_MODE" \
             '.status == "ok" and .mode == $mode' >/dev/null 2>&1 && break
         sleep 0.5
@@ -207,17 +221,6 @@ pilot_run() {
         echo "  server up but smoke test flagged nothing; check $SERVER_LOG" >&2
     fi
 }
-
-CLAUDE_PRESENT=0
-CODEX_PRESENT=0
-[ -d "$HOME/.claude" ] && CLAUDE_PRESENT=1
-[ -d "$HOME/.codex" ] && CODEX_PRESENT=1
-[ "$SKIP_CODEX" -eq 1 ] && CODEX_PRESENT=0
-
-if [ "$CLAUDE_PRESENT" -eq 0 ] && [ "$CODEX_PRESENT" -eq 0 ]; then
-    echo "Neither ~/.claude/ nor ~/.codex/ found. Install at least one agent first." >&2
-    exit 1
-fi
 
 PILOT_OK=0
 if [ "$RUN_PILOT" -eq 1 ]; then
