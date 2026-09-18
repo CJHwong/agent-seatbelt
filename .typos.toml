@@ -7,6 +7,6 @@ Adresse = "Adresse"
 
 [files]
 extend-exclude = [
-    "hooks-opf/tests/challenge_cases.py",
-    "hooks-opf/tests/false-positive-cases.jsonl",
+    "hooks-pii/tests/challenge_cases.py",
+    "hooks-pii/tests/false-positive-cases.jsonl",
 ]

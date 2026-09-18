@@ -29,7 +29,8 @@
 # skips wherever the CLI it drives is absent, which is every CI runner by default.
 #
 # What this does NOT measure:
-#   - the Python side (pii-server.py, pii_rules.py, pii_opf.py, redact_server.py).
+#   - the Python side (pii-server.py, pii_rules.py, pii_opf.py, pii_redact_torch.py,
+#     pii_redact_lite.py).
 #     Use `uv run --with coverage python -m coverage run --branch` for those.
 #   - branch coverage. A two-arm check counts as one covered line. Use the Python
 #     command above with --branch where it matters; a bash guard whose false arm no
@@ -40,9 +41,9 @@ ROOT="$(cd "$DIR/../.." && pwd)"
 
 # The bash this project ships. Both are driven by the offline tests, so one trace
 # run covers them.
-TARGETS=("hooks-opf/pii-check.sh" "hooks-opf/install.sh")
+TARGETS=("hooks-pii/pii-check.sh" "hooks-pii/install.sh")
 # The suites that need no model, which is also the set CI runs on a pull request.
-# Deliberately not test_*.py: test_pii_opf and test_redact_server need torch and
+# Deliberately not test_*.py: test_pii_opf and test_pii_redact_torch need torch and
 # onnxruntime, so they would either crawl or fail on a runner without them.
 TEST_PATTERNS=(
     "test_hook_*.py"
@@ -97,10 +98,10 @@ echo
 # name, so a record for either target lands on the key the loop below looks up.
 grep -ao 'COV:[^:]*:[0-9]*:' "$TRACE" 2>/dev/null \
   | sed -e 's/^COV://' -e 's/:$//' \
-        -e 's|^.*/hooks-opf/||' \
+        -e 's|^.*/hooks-pii/||' \
   | grep -E '^(pii-check\.sh|install\.sh):' \
-  | sed -e 's|^pii-check\.sh:|hooks-opf/pii-check.sh:|' \
-        -e 's|^install\.sh:|hooks-opf/install.sh:|' \
+  | sed -e 's|^pii-check\.sh:|hooks-pii/pii-check.sh:|' \
+        -e 's|^install\.sh:|hooks-pii/install.sh:|' \
   | sort -u > "$HITS_GOT"
 
 printf '%-28s %8s %8s %7s\n' FILE COVERED EXEC PCT

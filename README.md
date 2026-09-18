@@ -3,7 +3,7 @@
 Defense-in-depth for AI coding agents on macOS.
 
 - **Sandbox (`sb`)** — Apple Seatbelt wrapper that blocks reads of your secrets and writes outside your project, even with `--dangerously-skip-permissions`. Two files, no dependencies.
-- **OPF hooks (`hooks-opf/`)** — Userland PII detector powered by [`openai/privacy-filter`](https://huggingface.co/openai/privacy-filter). Catches secrets and personal data flowing into prompts or out of tool responses before the LLM sees them.
+- **PII hooks (`hooks-pii/`)** — Userland PII detector. Runs [Desert Ant Redact](https://huggingface.co/desert-ant-labs/redact) by default, with the [OpenAI Privacy Filter](https://huggingface.co/openai/privacy-filter) and a deterministic rules-only mode as alternatives. Catches secrets and personal data flowing into prompts or out of tool responses before the LLM sees them.
 
 The sandbox is a file-level gate. The hooks are a content-level filter. Each closes a hole the other can't.
 
@@ -90,21 +90,21 @@ Pick based on what you want. If you want something you can read in 10 minutes an
 
 `my.sb` is standard [SBPL](https://reverse.put.as/wp-content/uploads/2011/09/Apple-Sandbox-Guide-v1.0.pdf). The wrapper injects three params: `_HOME`, `_PROJECT_DIR`, `_TMPDIR`. Edit the file to match your setup. Add cache dirs your tools need, block paths specific to your machine.
 
-# OPF hooks (`hooks-opf/`)
+# PII hooks (`hooks-pii/`)
 
-Content-level filter that runs alongside the sandbox. The sandbox stops the agent from *reading* your secrets; OPF hooks stop secrets and PII from *flowing through prompts or tool responses* even when they enter the process some other way (env vars, credential helpers, paste).
+Content-level filter that runs alongside the sandbox. The sandbox stops the agent from *reading* your secrets; PII hooks stop secrets and PII from *flowing through prompts or tool responses* even when they enter the process some other way (env vars, credential helpers, paste).
 
-Powered by [`openai/privacy-filter`](https://huggingface.co/openai/privacy-filter), see [OpenAI's introduction](https://openai.com/index/introducing-openai-privacy-filter/). int8 ONNX model, runs locally, ~30MB.
+Powered by [Desert Ant Redact](https://huggingface.co/desert-ant-labs/redact) by default: a 24 MB LiteRT graph at v0.4.0 that downloads on first use, runs locally, and needs no accelerator. Three alternatives are available: `redact-torch` for a host that already has the PyTorch checkpoint, `openai` for the [OpenAI Privacy Filter](https://huggingface.co/openai/privacy-filter) (int8 ONNX, ~30 MB), and `rules` for the deterministic checks alone. Nothing leaves the machine.
 
 ## Install
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/CJHwong/agent-seatbelt/main/hooks-opf/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/CJHwong/agent-seatbelt/main/hooks-pii/install.sh | bash
 ```
 
 Auto-detects Claude Code (`~/.claude/`) and Codex (`~/.codex/`) and wires both `UserPromptSubmit` and `PostToolUse` on each. Pass `-s -- --prompt-only` to skip PostToolUse, or `-s -- --no-codex` to ignore Codex.
 
-Full docs, block-level tuning, test fixture, known limitations: see [`hooks-opf/README.md`](hooks-opf/README.md).
+Full docs, block-level tuning, test fixture, known limitations: see [`hooks-pii/README.md`](hooks-pii/README.md).
 
 # Roadmap
 
@@ -114,8 +114,8 @@ Full docs, block-level tuning, test fixture, known limitations: see [`hooks-opf/
 
 # Caveats
 
-- macOS only for the sandbox. For Linux, look at [bubblewrap](https://github.com/containers/bubblewrap). The OPF hooks work on Linux too.
+- macOS only for the sandbox. For Linux, look at [bubblewrap](https://github.com/containers/bubblewrap). The PII hooks work on Linux too.
 - `sandbox-exec` is technically deprecated by Apple. Still works on Sequoia, no replacement exists for third-party use.
-- The sandbox is a hard file-level boundary. OPF hooks are a probabilistic ML filter that fails open on any error — treat them as high-recall filtering, not a hard gate.
-- The sandbox has no network restrictions. If a secret enters the process via env vars (without `-c`) or credential helpers, OPF hooks are the layer that catches it on the way out.
+- The sandbox is a hard file-level boundary. PII hooks are a probabilistic ML filter that fails open on any error — treat them as high-recall filtering, not a hard gate.
+- The sandbox has no network restrictions. If a secret enters the process via env vars (without `-c`) or credential helpers, PII hooks are the layer that catches it on the way out.
 - Keychain access is allowed by design so credential helpers (git, AWS) work without the agent seeing raw tokens. But the agent can still perform authenticated actions like `git push`.

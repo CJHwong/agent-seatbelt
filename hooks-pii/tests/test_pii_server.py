@@ -179,11 +179,32 @@ ASSET_DIRECTORY = Path("/nonexistent/redact-assets")
 @contextlib.contextmanager
 def stubbed_redact_module() -> Iterator[None]:
     """Swap in a Redact module, so the test needs no 88 MB checkpoint."""
-    stub_module = types.ModuleType("redact_server")
+    stub_module = types.ModuleType("pii_redact_torch")
     setattr(stub_module, "RedactModel", StubRedactModel)
     setattr(stub_module, "ensure_assets", lambda: ASSET_DIRECTORY)
     StubRedactModel.created = []
-    with patch.dict(sys.modules, {"redact_server": stub_module}):
+    with patch.dict(sys.modules, {"pii_redact_torch": stub_module}):
+        yield
+
+
+class StubLiteRedactModel:
+    """Records what pii-server forwards to the LiteRT constructor."""
+
+    created: ClassVar[list[StubLiteRedactModel]] = []
+
+    def __init__(self, cache_dir: Path) -> None:
+        self.cache_dir = cache_dir
+        StubLiteRedactModel.created.append(self)
+
+
+@contextlib.contextmanager
+def stubbed_lite_module() -> Iterator[None]:
+    """Swap in the LiteRT backend, so the test needs no 23 MB graph."""
+    stub_module = types.ModuleType("pii_redact_lite")
+    setattr(stub_module, "LitertRedactModel", StubLiteRedactModel)
+    setattr(stub_module, "ensure_assets", lambda: ASSET_DIRECTORY)
+    StubLiteRedactModel.created = []
+    with patch.dict(sys.modules, {"pii_redact_lite": stub_module}):
         yield
 
 
@@ -204,20 +225,29 @@ class ModelSelectionTests(TestCase):
         self.assertIsInstance(model, StubModel)
         self.assertEqual(built, [ASSET_DIRECTORY])
 
-    def test_redact_mode_defaults_the_requested_device_to_auto(self) -> None:
-        with stubbed_redact_module(), patch.dict(os.environ, {}, clear=True):
+    def test_redact_mode_builds_the_litert_model_from_the_asset_directory(self) -> None:
+        """`redact` is what a fresh install selects, so it has to be the backend
+        that fetches its own assets rather than the one that needs a checkpoint."""
+        with stubbed_lite_module():
             model = PII_SERVER.load_selected_model("redact")
+
+        self.assertIsInstance(model, StubLiteRedactModel)
+        self.assertEqual(StubLiteRedactModel.created[0].cache_dir, ASSET_DIRECTORY)
+
+    def test_pii_redact_torch_mode_defaults_the_requested_device_to_auto(self) -> None:
+        with stubbed_redact_module(), patch.dict(os.environ, {}, clear=True):
+            model = PII_SERVER.load_selected_model("redact-torch")
 
         self.assertIs(model, StubRedactModel.created[0])
         self.assertEqual(StubRedactModel.created[0].cache_dir, ASSET_DIRECTORY)
         self.assertEqual(StubRedactModel.created[0].requested_device, "auto")
 
-    def test_redact_mode_forwards_the_requested_device(self) -> None:
+    def test_pii_redact_torch_mode_forwards_the_requested_device(self) -> None:
         with (
             stubbed_redact_module(),
             patch.dict(os.environ, {"REDACT_DEVICE": "cpu"}, clear=True),
         ):
-            PII_SERVER.load_selected_model("redact")
+            PII_SERVER.load_selected_model("redact-torch")
 
         self.assertEqual(StubRedactModel.created[0].requested_device, "cpu")
 
