@@ -48,18 +48,26 @@ TEST_PATTERNS=(
 
 TRACE=$(mktemp "${TMPDIR:-/tmp}/pii_cov.XXXXXX")
 HITS=$(mktemp "${TMPDIR:-/tmp}/pii_hits.XXXXXX")
+SUITE_LOG=$(mktemp "${TMPDIR:-/tmp}/pii_suite.XXXXXX")
 HITS_EXEC="$HITS.exec"
 HITS_GOT="$HITS.got"
-trap 'rm -f "$TRACE" "$HITS" "$HITS_EXEC" "$HITS_GOT"' EXIT INT TERM
+trap 'rm -f "$TRACE" "$HITS" "$HITS_EXEC" "$HITS_GOT" "$SUITE_LOG"' EXIT INT TERM
 
 export PII_COV_TRACE="$TRACE"
 export BASH_ENV="$DIR/cov_env.sh"
 
 # The bash tests are stdlib-only, so they run on the system python3 rather than
 # through `uv run`, which would resolve the model dependencies they never touch.
+#
+# Each suite's output is captured rather than discarded. The trace has to stay
+# quiet, but hiding a failure too would leave a CI run saying only that something
+# broke, which is worse than saying nothing at all.
 suite_status=0
 for pattern in "${TEST_PATTERNS[@]}"; do
-    python3 -m unittest discover -s "$DIR" -p "$pattern" >/dev/null 2>&1 || suite_status=$?
+    if ! python3 -m unittest discover -s "$DIR" -p "$pattern" >>"$SUITE_LOG" 2>&1; then
+        suite_status=1
+        echo "pii-check coverage: the suite matching '$pattern' failed" >&2
+    fi
 done
 
 # Merge every record and normalize the absolute path down to the repo-relative
@@ -143,7 +151,9 @@ fi
 
 if [ "$suite_status" -ne 0 ]; then
     echo
-    echo "== a test suite failed (exit $suite_status); the numbers above are not trustworthy =="
+    echo "== a test suite failed; the numbers above are not trustworthy =="
+    echo "== the failing suite's output follows =="
+    cat "$SUITE_LOG"
     exit 1
 fi
 
