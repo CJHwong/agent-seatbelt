@@ -124,11 +124,14 @@ add_entry() {
     fi
     local tmp
     tmp=$(mktemp)
-    jq \
-        --arg event "$event" \
-        --arg cmd "$cmd" \
-        --argjson entry "$entry" \
-        '
+    # The program is built in a plain assignment, and the call below is one line.
+    # A command continued with backslashes AND carrying a multi-line quoted program
+    # is attributed to different lines by different bash versions: 5.3 reports the
+    # command's first line here and 3.2 reports the first argument line. No single
+    # prediction can match both, so the construct is avoided rather than guessed at.
+    local program
+    # shellcheck disable=SC2016  # the single quotes are deliberate: this is jq source
+    program='
         .hooks = (.hooks // {}) |
         .hooks[$event] = (
           (.hooks[$event] // []) as $entries |
@@ -136,7 +139,8 @@ add_entry() {
           if any($mapped[]?; any(.hooks[]?; .command == $cmd)) then $mapped
           else $mapped + [$entry] end
         )
-        ' "$target" > "$tmp"
+        '
+    jq --arg event "$event" --arg cmd "$cmd" --argjson entry "$entry" "$program" "$target" > "$tmp"
     mv "$tmp" "$target"
 }
 
