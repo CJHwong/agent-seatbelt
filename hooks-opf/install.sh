@@ -62,7 +62,22 @@ while [[ $# -gt 0 ]]; do
         --no-codex)    SKIP_CODEX=1; shift ;;
         --no-pilot)    RUN_PILOT=0; shift ;;
         -h|--help)
-            sed -n '2,18p' "$0" | sed 's/^# \{0,1\}//'
+            # Print the text below, never this file's own header. Piped from curl,
+            # $0 is "bash" and there is no file to dump, so reading the header here
+            # printed a sed error instead of usage.
+            cat <<'USAGE'
+Installs hooks-opf and wires the PII hooks on whichever agents are present.
+
+Usage: install.sh [--prompt-only] [--no-codex] [--no-pilot]
+  --prompt-only   wire the prompt hook only, skipping both tool hooks
+  --no-codex      ignore Codex even if ~/.codex exists
+  --no-pilot      skip the model warm-up run
+
+Environment: PII_SERVER_MODE, PII_ACTION_MODE, PII_LEVEL, PII_PORT,
+PII_SERVER_LOG, PII_SKIP_LOG, HOOKS_OPF_BASE_URL.
+
+Full notes: https://github.com/CJHwong/agent-seatbelt/blob/main/hooks-opf/README.md
+USAGE
             exit 0
             ;;
         *) echo "unknown arg: $1" >&2; exit 1 ;;
@@ -284,7 +299,9 @@ if [ "$CODEX_PRESENT" -eq 1 ]; then
     echo "Codex only: hooks require trust before they run. Launch codex, run /hooks,"
     echo "and trust the pii-check entries (trust is remembered in ~/.codex/config.toml"
     echo "under [hooks.state]). Re-running this installer changes the command string,"
-    echo "so Codex will ask you to re-trust. Claude Code needs no trust step."
+    echo "Trust binds to the command string. A new entry needs trusting once, and a"
+    echo "content update does not, because the hook's path does not change. Claude Code"
+    echo "needs no trust step."
 fi
 echo
 echo "Tuning:"

@@ -34,6 +34,13 @@ jobs:
           curl -fsSL https://astral.sh/uv/install.sh | sh
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
 
+      # The canary suite drives the real Claude Code CLI against a scripted API, so
+      # it skips without one and reports as skipped in the suite table. Installing
+      # the current release is deliberate: that suite exists to notice when the CLI
+      # changes a hook contract, so pinning it would defeat it.
+      - name: Install the Claude Code CLI
+        run: npm install -g @anthropic-ai/claude-code
+
       - name: Show the tool versions the hook depends on
         run: |
           bash --version | head -1
@@ -42,6 +49,7 @@ jobs:
           curl --version | head -1
           uv --version
           lsof -v 2>&1 | head -1
+          claude --version
 
       - name: Offline suites and the coverage floor
         working-directory: hooks-opf

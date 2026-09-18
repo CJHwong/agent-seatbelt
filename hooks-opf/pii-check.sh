@@ -54,6 +54,21 @@ ACTION_MODE="${PII_ACTION_MODE:-warn}"
 # prefix, and a prefix carried in-band cannot be authenticated.
 ALLOW_BYPASS="${PII_ALLOW_BYPASS:-1}"
 
+# Record a skipped scan where a daemon can see it, on the host, without the agent.
+#
+# The in-band warning reaches the agent, and the agent is the one party this hook
+# cannot vouch for, so that warning is not a signal a deployment can rest on by
+# itself. It also cannot be: the scanner is killable, so a skip is not always an
+# operational accident. A host-side line needs no cooperation from anyone, and the
+# daemon is the component that sees enough state to tell the two apart.
+#
+# One line per skipped request. Rotation belongs to whatever reads it.
+SKIP_LOG="${PII_SKIP_LOG:-$HOME/.cache/opf/pii-skips.log}"
+signal_skip() {
+    mkdir -p "$(dirname "$SKIP_LOG")" 2>/dev/null || true
+    printf '%s %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$1" >>"$SKIP_LOG" 2>/dev/null || true
+}
+
 # Say that scanning was skipped, why, and how to restore it, instead of exiting
 # silently. A silent exit downgrades the deployment to no scanning at all, and the
 # transcript shows nothing.
@@ -68,6 +83,7 @@ ALLOW_BYPASS="${PII_ALLOW_BYPASS:-1}"
 scanner_skipped() {
     local detail="$1"
     local remedy="$2"
+    signal_skip "$detail"
     local summary="PII scanner skipped: ${detail}. ${remedy}. Nothing was checked, and the scanner stays off until this is fixed."
     if command -v jq >/dev/null 2>&1; then
         jq -cn --arg message "$summary" \
@@ -209,12 +225,12 @@ event_subject() {
     esac
 }
 
-# Emit a block in the shape the event expects. This is not cosmetic. Claude Code's
-# PreToolUse takes hookSpecificOutput.permissionDecision, and a top-level decision is
-# dropped silently there, with no error: the hook looks right and stops nothing. The
-# other events take the top-level shape. Codex still accepts the top-level shape for
-# PreToolUse as well, but its own documentation prefers the deny shape, so both
-# pre-tool modes use it and the two runtimes cannot drift apart.
+# Emit a block in the shape the event expects. Claude Code documents
+# hookSpecificOutput.permissionDecision for PreToolUse, and the top-level decision for
+# the other events. On 2.1.276 all three deny forms block: both shapes and exit code 2.
+# So this follows the documented contract rather than the one form that works today.
+# Codex takes the deny shape too, so both pre-tool modes use it and the two runtimes
+# cannot drift apart.
 block_response() {
     local reason="$1"
     case "$emit_mode" in

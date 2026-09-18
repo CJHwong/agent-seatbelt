@@ -31,7 +31,13 @@ if [ -n "${PII_COV_TRACE:-}" ]; then
         exec 2>>"$PII_COV_TRACE"
     fi
     # shellcheck disable=SC2016  # must reach the traced shell unexpanded
-    PS4='+COV:${BASH_SOURCE}:${LINENO}:'
+    #
+    # The default matters. A script read from stdin, which is how `curl | bash`
+    # installs itself, has no BASH_SOURCE at all, and under `set -u` the prompt
+    # expansion then kills the traced shell with "BASH_SOURCE: unbound variable"
+    # before its first line runs. The records such a shell does emit name "stdin",
+    # which no target matches, so they fall out of the per-file count.
+    PS4='+COV:${BASH_SOURCE[0]:-stdin}:${LINENO}:'
     set -x
 fi
 

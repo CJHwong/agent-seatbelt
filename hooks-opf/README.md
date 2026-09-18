@@ -211,6 +211,22 @@ uv run --with coverage python -m coverage report -m
 
 The hook tests stub the detector with a throwaway HTTP server, and the installer tests run the real `install.sh` against a temporary `HOME` with the source pointed at this checkout, so both suites run offline in seconds and neither touches your `~/.claude` or `~/.codex`.
 
+### The canary suite
+
+`tests/test_hook_canaries.py` asks a different question from every other test here. The rest assert a response: the fields, the shape, the wording. This one asserts the **effect**, by running the real `claude` CLI against a scripted API that serves one fixed tool call, and then checking whether the command the hook refused actually ran.
+
+A response test cannot catch a control that is wired up wrong. A hook has two ways to look right and stop nothing: the runtime can drop its decision, and the wrapper that invokes it can swallow the decision before the runtime sees it. The second kind is easy to write and fails silently. Both kinds pass every shape assertion.
+
+The scripted API is what makes this a test. With a real model in the loop, the model decides whether to call the tool at all, and it will refuse a prompt that reads like a probe, so an absent side effect proves nothing. `tests/stub_anthropic_api.py` answers instead.
+
+Every control is measured twice inside the same test, once off and once on. Kept apart, a block test passes whenever the harness cannot produce the effect at all, which is how a broken harness reads as a working control.
+
+The suite passes `--allowedTools Bash` to the CLI. That is not decoration: without it the scripted tool call runs only where the machine already trusts the workspace. The suite passed on macOS and failed on Linux with the same CLI version until that flag went in.
+
+CI installs the current CLI release on purpose, because noticing a hook contract change is what this suite is for. It skips wherever `claude` is absent, and the suite table reports the skip count, so a green run cannot quietly mean "not checked".
+
+Measured on Claude Code 2.1.276: PreToolUse refuses on a nested `permissionDecision`, on a top-level `decision`, and on exit code 2. The hook emits the nested form because Claude Code documents it, not because the other two fail. One consequence is worth knowing: Claude Code asks the provider for a session title before any hook runs, and that call carries the prompt text, so a blocked prompt still reaches the provider once. The turn never starts, which is the guarantee the hook offers.
+
 `coverage.sh` covers every shipped bash file, `pii-check.sh` and `install.sh`, on lines only, and applies `PII_COV_FLOOR` to **each file** rather than to the total: a total lets one file improve while another regresses and still passes, which is the opposite of a ratchet. Set `PII_COV_FLOOR=100` in CI, and `PII_COV_DETAIL=1` to list the uncovered lines.
 
 Measure branch coverage, not only lines. Lines reached hide a guard whose false arm no test ever takes: a rule can be 100% covered and still be broken for the most common input of its kind, because a guard that always evaluates true is still a reached line. That is not hypothetical. It happened here, to the phone rule, which was fully covered and dropped every phone number at the end of a sentence. The column to watch is `BrPart`.
