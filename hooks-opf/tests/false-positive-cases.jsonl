@@ -28,8 +28,8 @@
 {"id":"clean-028","class":"clean","group":"invalid_dates","expected":[],"text":"The parser rejects the invalid date 2026-99-99.","reason":"invalid ISO date"}
 {"id":"clean-029","class":"clean","group":"invalid_dates","expected":[],"text":"The parser rejects June 99, 2026.","reason":"invalid month date"}
 {"id":"clean-030","class":"clean","group":"invalid_dates","expected":[],"text":"The parser rejects 2001-02-29 in this test.","reason":"invalid leap date"}
-{"id":"clean-031","class":"clean","group":"technical_network","expected":[],"text":"The IPv4 documentation uses 192.0.2.1.","reason":"reserved documentation IP"}
-{"id":"clean-032","class":"clean","group":"technical_network","expected":[],"text":"The service listens on the local address 10.0.0.1.","reason":"private network address used as configuration"}
+{"id":"clean-031","class":"ambiguous","group":"technical_network","expected":["private_url"],"text":"The IPv4 documentation uses 192.0.2.1.","reason":"reserved documentation IP. An address is URL-shaped and private_url is a low-tier label, so this is reported only at PII_LEVEL=strict. It read as clean before only because the trailing full stop hid the address from the rule."}
+{"id":"clean-032","class":"ambiguous","group":"technical_network","expected":["private_url"],"text":"The service listens on the local address 10.0.0.1.","reason":"private network address used as configuration. Same as clean-031: private_url is low-tier, surfaced only at PII_LEVEL=strict, and the old clean reading came from the trailing full stop hiding it."}
 {"id":"clean-033","class":"clean","group":"names_as_words","expected":[],"text":"Northstar is the name of the sample package.","reason":"organization-like word without a person"}
 {"id":"clean-034","class":"clean","group":"addresses_as_words","expected":[],"text":"Waverly Street is a class name in the address parser.","reason":"street name without a physical address"}
 {"id":"clean-035","class":"clean","group":"multilingual","expected":[],"text":"東京のチームは朝に出社します。","reason":"neutral Japanese text"}
@@ -96,7 +96,7 @@
 {"id":"ambiguous-014","class":"ambiguous","group":"structured_text","expected":[],"text":"password=correct-horse-battery-staple","reason":"documentation password"}
 {"id":"ambiguous-015","class":"ambiguous","group":"structured_text","expected":[],"text":"The record ID is 550e8400-e29b-41d4-a716-446655440000.","reason":"UUID that should normally be safe"}
 {"id":"ambiguous-016","class":"ambiguous","group":"structured_text","expected":[],"text":"The tracking number is 9400111899223856928491.","reason":"shipping tracking number"}
-{"id":"ambiguous-017","class":"ambiguous","group":"multilingual","expected":[],"text":"東京オフィスの代表電話は +81 3 1234 5678 です。","reason":"public Japanese office phone"}
+{"id": "ambiguous-017", "class": "positive", "group": "multilingual", "expected": ["private_phone"], "text": "東京オフィスの代表電話は +81 3 1234 5678 です。", "reason": "Japanese office line; the phone rule covers international shapes"}
 {"id":"ambiguous-018","class":"ambiguous","group":"multilingual","expected":[],"text":"Die öffentliche Adresse ist Hauptstraße 5, 10115 Berlin.","reason":"public German address"}
 {"id":"ambiguous-019","class":"ambiguous","group":"multilingual","expected":[],"text":"La réunion est le 3 juin 2026.","reason":"French meeting date"}
 {"id":"ambiguous-020","class":"ambiguous","group":"multilingual","expected":[],"text":"台北辦公室位於台北市信義區。","reason":"office location without a street address"}

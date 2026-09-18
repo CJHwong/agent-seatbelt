@@ -20,10 +20,20 @@ HF_REPO = "openai/privacy-filter"
 CACHE_DIR = Path(os.environ.get("OPF_CACHE_DIR", Path.home() / ".cache" / "opf"))
 NEG_INF = -1e9
 
+
+class ModelOutputShapeError(RuntimeError):
+    """Raised when the session's logits disagree with the tokenized input.
+
+    It does not subclass ValueError. A ValueError from predict means the input
+    was too large, and the server answers that with HTTP 413, so a shape
+    mismatch must not travel as one. A wrong shape means a broken export, a
+    wrong config, or a partial download.
+    """
+
+
 REQUIRED_FILES = [
     "config.json",
     "tokenizer.json",
-    "viterbi_calibration.json",
     "onnx/model_quantized.onnx",
     "onnx/model_quantized.onnx_data",
 ]
@@ -204,18 +214,21 @@ class Model:
             providers=["CPUExecutionProvider"],
         )
         model_max = config.get("max_position_embeddings", 131072)
-        self.max_len = min(model_max, int(os.environ.get("OPF_MAX_TOKENS", "4096")))
+        # 1024 tokens costs 2.28 s with one intra-op thread and 0.70 s with four.
+        # The hook's POST budget is 5 s, and it must also carry the round trip and
+        # the JSON parse. The old 4096 default accepted work that took 13 s on one
+        # thread, so it could never fit. Raise this with OPF_MAX_TOKENS on a box
+        # that can afford it.
+        self.max_len = min(model_max, int(os.environ.get("OPF_MAX_TOKENS", "1024")))
 
     def predict(self, text: str) -> list[dict]:
-        if not text:
-            return []
-
         enc = self.tokenizer.encode(text, add_special_tokens=False)
-        if len(enc.ids) == 0:
+        token_count = len(enc.ids)
+        if token_count == 0:
             return []
-        if len(enc.ids) > self.max_len:
+        if token_count > self.max_len:
             raise ValueError(
-                f"input has {len(enc.ids)} tokens, exceeds max {self.max_len}"
+                f"input has {token_count} tokens, exceeds max {self.max_len}"
             )
 
         input_ids = np.array([enc.ids], dtype=np.int64)
@@ -225,6 +238,13 @@ class Model:
             ["logits"],
             {"input_ids": input_ids, "attention_mask": attention_mask},
         )[0][0]
+
+        expected_shape = (token_count, self.ls.num_classes)
+        if logits.shape != expected_shape:
+            raise ModelOutputShapeError(
+                f"model returned logits of shape {logits.shape}, "
+                f"expected {expected_shape}"
+            )
 
         log_probs = logits - _logsumexp(logits, axis=-1, keepdims=True)
         path = viterbi_decode(log_probs, self.start, self.end, self.trans)
