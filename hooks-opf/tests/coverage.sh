@@ -23,6 +23,11 @@
 # The floor applies to each file, not to the total. A total lets one file improve
 # while another regresses and still passes, which is the opposite of a ratchet.
 #
+# The suite table prints on every run, pass or fail. Its summary line carries each
+# suite's skip count, and a green run that quietly skipped a suite must not read as
+# one that checked it. The canary suite is the case that made this necessary: it
+# skips wherever the CLI it drives is absent, which is every CI runner by default.
+#
 # What this does NOT measure:
 #   - the Python side (pii-server.py, pii_rules.py, pii_opf.py, redact_server.py).
 #     Use `uv run --with coverage python -m coverage run --branch` for those.
@@ -63,12 +68,30 @@ export BASH_ENV="$DIR/cov_env.sh"
 # quiet, but hiding a failure too would leave a CI run saying only that something
 # broke, which is worse than saying nothing at all.
 suite_status=0
+suite_rows=""
 for pattern in "${TEST_PATTERNS[@]}"; do
-    if ! python3 -m unittest discover -s "$DIR" -p "$pattern" >>"$SUITE_LOG" 2>&1; then
+    one_log=$(mktemp "${TMPDIR:-/tmp}/pii_one.XXXXXX")
+    if ! python3 -m unittest discover -s "$DIR" -p "$pattern" >"$one_log" 2>&1; then
         suite_status=1
         echo "pii-check coverage: the suite matching '$pattern' failed" >&2
     fi
+    cat "$one_log" >>"$SUITE_LOG"
+    # One row per suite, always printed. The summary line carries the skip count, and
+    # a suite that skipped itself must say so on a green run too. Otherwise "passed"
+    # reads as "checked", and the suite that matters most here is the one that skips
+    # wherever the CLI it drives is absent.
+    suite_rows="$suite_rows$(awk -v p="$pattern" '
+        /^Ran [0-9]+ tests?/ { ran = $2 }
+        /^(OK|FAILED)/      { result = $0 }
+        END { printf "%-24s %6s   %s", p, (ran ? ran : "-"), (result ? result : "no result line") }
+    ' "$one_log")
+"
+    rm -f "$one_log"
 done
+
+printf '%-24s %6s   %s\n' SUITE TESTS RESULT
+printf '%s' "$suite_rows"
+echo
 
 # Merge every record and normalize the absolute path down to the repo-relative
 # name, so a record for either target lands on the key the loop below looks up.
