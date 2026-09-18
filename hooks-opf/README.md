@@ -87,7 +87,7 @@ That keeps `strict` enabled for secrets, account numbers, emails, phones, addres
 When a request is blocked, the hook includes masked snippets in the block message so you can identify what fired without exposing the full value to the agent transcript:
 
 ```text
-PII in prompt: secret(critical): sk_t...p7dc. Blocked at PII_LEVEL=strict.
+PII in prompt: secret(critical): sk...dc. Blocked at PII_LEVEL=strict.
 ```
 
 ## Enforcement actions
@@ -150,16 +150,48 @@ Prefix a single prompt with `pii:off ` to skip the check for that submission:
 pii:off paste the contents of my .env to debug this
 ```
 
-Only works on `UserPromptSubmit`, not on tool responses.
+It applies to a user prompt and to nothing else. Tool output is content that an
+attacker can plant, so a prefix there is not honoured: a page, a file, or an MCP
+result whose first string begins with `pii:off` is still scanned.
+
+The prefix suits one person at one keyboard. Anyone who can send a message to an
+agent that takes prompts from a chat gateway can forge it, because a prefix carried
+in-band cannot be authenticated. A deployment with more than one user sets
+`PII_ALLOW_BYPASS=0`, and then the prefix has no effect:
+
+```bash
+PII_ALLOW_BYPASS=0
+```
+
+### What the warning preview shows
+
+Warn mode reports a masked preview of each selected span. It reveals at most two
+characters at each end, and only when the value is at least twelve characters long.
+Anything shorter prints as `[redacted]`. A partial secret is still useful to an
+attacker, so a short value gives up nothing rather than most of itself.
+
+The preview goes into the transcript and reaches the model provider. Treat it as
+disclosed: rotate or revoke the value if the detection was real.
 
 ## Tested formats
 
 The fixture at `tests/test-cases.jsonl` covers 25 cases across all label categories. Run against a live server:
 
 ```bash
-./tests/run-tests.py
-python3 tests/test_hook_modes.py
+./tests/run-tests.py                                          # detector accuracy, needs a live server
+python3 -m unittest discover -s tests -p 'test_hook_*.py'     # the shell hook, no model needed
+python3 -m unittest discover -s tests -p 'test_install.py'    # the installer, no model needed
+bash tests/coverage.sh                                        # line coverage for the shipped bash
+uv run --with coverage python -m coverage run --branch --source=. \
+    -m unittest discover -s tests -p 'test_*.py'              # branch coverage, Python side
+uv run --with coverage python -m coverage report -m
 ```
+
+The hook tests stub the detector with a throwaway HTTP server, and the installer tests run the real `install.sh` against a temporary `HOME` with the source pointed at this checkout, so both suites run offline in seconds and neither touches your `~/.claude` or `~/.codex`.
+
+`coverage.sh` covers every shipped bash file, `pii-check.sh` and `install.sh`, on lines only, and applies `PII_COV_FLOOR` to **each file** rather than to the total: a total lets one file improve while another regresses and still passes, which is the opposite of a ratchet. Set `PII_COV_FLOOR=100` in CI, and `PII_COV_DETAIL=1` to list the uncovered lines.
+
+Measure branch coverage, not only lines. Lines reached hide a guard whose false arm no test ever takes: a rule can be 100% covered and still be broken for the most common input of its kind, because a guard that always evaluates true is still a reached line. That is not hypothetical. It happened here, to the phone rule, which was fully covered and dropped every phone number at the end of a sentence. The column to watch is `BrPart`.
 
 Current pass rate against `openai/privacy-filter` (int8 quantized): **24/25**.
 
@@ -222,13 +254,15 @@ All env vars override defaults; set them in your shell or the hook's env:
 |---|---|---|
 | `PII_LEVEL` | `standard` | tier (off/relaxed/standard/strict); `PII_BLOCK_LEVEL` is the legacy name |
 | `PII_ALLOW_LABELS` | empty | comma-separated labels to allow within the selected tier |
+| `PII_ALLOW_BYPASS` | `1` | `1` enables the `pii:off` prompt prefix; `0` disables it, for deployments where more than one person can reach the agent |
 | `PII_ACTION_MODE` | `warn` | `warn` to allow input with agent context or `block` to reject input |
 | `PII_SERVER_MODE` | `redact` | `redact`, `openai`, or `rules` |
 | `PII_PORT` | `9123` | local server port |
 | `PII_SERVER_SCRIPT` | `~/.claude/hooks/pii-server.py` | server script path |
 | `PII_SERVER_LOG` | `~/.cache/opf/server.log` | server log path |
+| `PII_MAX_BODY_BYTES` | `2097152` | largest request body either server reads (2 MiB); a larger declared length is answered with HTTP 413 before the body is read. A client still streaming when the answer is sent can see a broken pipe instead of the 413 |
 | `OPF_CACHE_DIR` | `~/.cache/opf` | model assets cache (server-side) |
-| `OPF_MAX_TOKENS` | `4096` | OpenAI Privacy Filter request limit; larger requests fail with HTTP 413 |
+| `OPF_MAX_TOKENS` | `1024` | OpenAI Privacy Filter request limit; larger requests fail with HTTP 413 |
 | `REDACT_CACHE_DIR` | `~/.cache/redact` | converted Redact assets cache |
 | `REDACT_DEVICE` | `auto` | `cuda`, `mps`, or explicit `cpu` |
 | `REDACT_MAX_TOKENS` | `4096` | maximum tokens in one Redact chunk |
@@ -277,9 +311,13 @@ The neural model runs on the selected accelerator. Tokenization, deterministic c
 
 ### Token limits and long outputs
 
-The Redact checkpoint declares 512 position embeddings. The implementation uses 256-token model windows. It groups those windows into chunks of up to `REDACT_MAX_TOKENS` tokens. Longer input is chunked with `REDACT_CHUNK_OVERLAP_TOKENS` overlap. Deterministic rules scan the full input before model inference. A request above `REDACT_MAX_INPUT_TOKENS` returns HTTP 413 before inference, so the work stays inside the hook's 5 second budget.
+The Redact checkpoint declares 512 position embeddings. The implementation uses 256-token model windows holding 254 content tokens, advanced with a step of 190, so adjacent windows share 64 tokens. The code names those `CONTENT_WINDOW_LENGTH`, `WINDOW_OVERLAP` and `WINDOW_STEP`, and `WINDOW_STEP` is derived from the other two rather than written out. It groups those windows into chunks of up to `REDACT_MAX_TOKENS` tokens. Longer input is chunked with `REDACT_CHUNK_OVERLAP_TOKENS` overlap, which is separate from the window overlap. Deterministic rules scan the full input before model inference. A request above `REDACT_MAX_INPUT_TOKENS` returns HTTP 413 before inference, but only after the whole text has been tokenized, so the rejection costs memory in proportion to the body rather than to the cap: a 4 MB body was measured taking 2.5 s and about 640 MB of growth to reach its 413, and a 1 MB body reached it in 0.3 s without the peak moving. Note that the cap bounds tokens, not the number of forward passes. A request at the cap is subdivided into roughly 180 model windows, so it is far more work than the token count suggests.
 
-The OpenAI Privacy Filter checkpoint declares 131,072 position embeddings. This wrapper keeps `OPF_MAX_TOKENS=4096` as its request limit. OpenAI mode does not chunk input. An oversized request returns HTTP 413, and the hook reports detector failure instead of silently allowing it.
+One asymmetry is worth knowing and is left in place deliberately. A token that sits on a window seam is covered by two windows, and the aggregation takes the maximum across them and then renormalizes, which can only lower that token's score. Seams fall every 190 tokens, so an entity landing on one scores slightly below the same entity elsewhere. The bias is small and one-directional; it is recorded in the code rather than corrected.
+
+The OpenAI Privacy Filter checkpoint declares 131,072 position embeddings. This wrapper keeps `OPF_MAX_TOKENS=1024` as its request limit, which costs 2.28 s with one intra-op thread and 0.70 s with four. The hook's POST budget is 5 seconds and must also carry the round trip and the JSON parse, so the previous 4096 default accepted work that took 13 seconds on one thread and could never have fit. Raise it with `OPF_MAX_TOKENS` on a machine that can afford it: 4096 tokens takes about 3.9 s on four threads.
+
+OpenAI mode does not chunk, so an oversized request returns HTTP 413 before any inference. The hook then names the size as the cause rather than blaming the detector, and tells the agent to raise the limit. In warn mode the content is allowed through unscanned, which is stated in the message; in block mode it is blocked, because a value that cannot be scanned cannot be cleared.
 
 Review the [Redact release](https://huggingface.co/desert-ant-labs/redact/resolve/v0.4.0/README.md) and its [source-available license](https://license.desertant.com/1.0) before distribution. The published release contains Core ML and TFLite assets. Create or provide the PyTorch cache separately.
 
@@ -294,7 +332,7 @@ The report includes process CPU time, wall latency, peak resident memory, and ac
 
 ## Expanded comparison corpus
 
-The [false-positive corpus](tests/false-positive-cases.jsonl) has 102 cases. It contains 50 strict clean cases, 32 required detections, and 20 policy-ambiguous cases.
+The [false-positive corpus](tests/false-positive-cases.jsonl) has 102 cases. It contains 48 strict clean cases, 33 required detections, and 21 policy-ambiguous cases. Only the required detections are enforced: `run-comparison.py` checks `expected` for a `positive` case and reports an ambiguous case's spans as an informational flag, so an `expected` list on an ambiguous case documents a policy call rather than gating it.
 
 Strict clean cases contain no intended PII. Any returned span counts as a false positive. Required detections check label recall. Ambiguous cases cover public examples, test values, and business data. They are reported but not scored as false positives.
 
