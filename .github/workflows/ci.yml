@@ -1,0 +1,39 @@
+name: ci
+
+# The offline suites only. pii_opf and redact_server need torch and onnxruntime,
+# so they are not run here; every other suite is hermetic and needs no model.
+#
+# coverage.sh is the single entry point: it runs that same set of suites and
+# enforces PII_COV_FLOOR per file, so a developer and CI run one identical
+# command rather than two lists that drift apart.
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install jq
+        run: sudo apt-get update && sudo apt-get install --yes jq
+
+      - name: Show the tool versions the hook depends on
+        run: |
+          bash --version | head -1
+          python3 --version
+          jq --version
+          curl --version | head -1
+          lsof -v 2>&1 | head -1
+
+      - name: Offline suites and the coverage floor
+        working-directory: hooks-opf
+        run: PII_COV_FLOOR=100 bash tests/coverage.sh

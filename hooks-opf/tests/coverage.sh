@@ -36,9 +36,15 @@ ROOT="$(cd "$DIR/../.." && pwd)"
 # The bash this project ships. Both are driven by the offline tests, so one trace
 # run covers them.
 TARGETS=("hooks-opf/pii-check.sh" "hooks-opf/install.sh")
-# The test files that drive them. Deliberately not test_*.py: the model-backed
-# suites need torch and onnxruntime, and would fail or crawl here.
-TEST_PATTERNS=("test_hook_*.py" "test_install.py")
+# The suites that need no model, which is also the set CI runs on a pull request.
+# Deliberately not test_*.py: test_pii_opf and test_redact_server need torch and
+# onnxruntime, so they would either crawl or fail on a runner without them.
+TEST_PATTERNS=(
+    "test_hook_*.py"
+    "test_install.py"
+    "test_pii_rules.py"
+    "test_pii_server.py"
+)
 
 TRACE=$(mktemp "${TMPDIR:-/tmp}/pii_cov.XXXXXX")
 HITS=$(mktemp "${TMPDIR:-/tmp}/pii_hits.XXXXXX")
