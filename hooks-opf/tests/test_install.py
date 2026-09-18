@@ -340,12 +340,21 @@ class CodexWiringTests(InstallerHarness):
 
         self.assertFalse((self.home / ".codex" / "hooks.json").exists())
 
-    def test_codex_gets_no_tool_input_entry(self) -> None:
-        """Only the Claude side has a pre-tool event wired, so do not invent one."""
+    def test_codex_gets_a_tool_input_entry_with_a_wildcard_matcher(self) -> None:
+        """Codex resolves Edit, Write and apply_patch to one name and renames its shell
+        tool across versions, so the wildcard is the stable choice, as for its post-tool
+        entry. The hook filters the text itself."""
         self.add_agent("codex")
         self.run_installer()
 
-        self.assertNotIn("PreToolUse", self.codex_settings()["hooks"])
+        hook = str(self.installed_dir() / "pii-check.sh")
+        self.assertEqual(
+            self.commands(self.codex_settings(), "PreToolUse"),
+            [f"{hook} --mode codex-pretool"],
+        )
+        self.assertEqual(
+            self.entries(self.codex_settings(), "PreToolUse")[0]["matcher"], "*"
+        )
 
     def test_both_agents_share_one_installed_script(self) -> None:
         self.add_agent("claude")

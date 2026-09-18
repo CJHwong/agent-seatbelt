@@ -133,7 +133,7 @@ extract_text() {
         prompt)
             printf '%s' "$payload" | jq -r '.prompt // empty'
             ;;
-        claude-pretool)
+        claude-pretool|codex-pretool)
             leaf_strings tool_input
             ;;
         claude-posttool|codex-posttool)
@@ -191,7 +191,7 @@ event_subject() {
             detected_location="in the user prompt"
             allowed_subject="The user prompt"
             ;;
-        claude-pretool)
+        claude-pretool|codex-pretool)
             event_name="PreToolUse"
             detected_location="in the tool input"
             allowed_subject="The tool input"
@@ -212,17 +212,20 @@ event_subject() {
 # Emit a block in the shape the event expects. This is not cosmetic. Claude Code's
 # PreToolUse takes hookSpecificOutput.permissionDecision, and a top-level decision is
 # dropped silently there, with no error: the hook looks right and stops nothing. The
-# other events, including both Codex post-tool modes, take the top-level shape. Codex
-# also still accepts the top-level shape for PreToolUse, so a future codex-pretool
-# mode belongs in the else branch rather than needing a third.
+# other events take the top-level shape. Codex still accepts the top-level shape for
+# PreToolUse as well, but its own documentation prefers the deny shape, so both
+# pre-tool modes use it and the two runtimes cannot drift apart.
 block_response() {
     local reason="$1"
-    if [ "$emit_mode" = "claude-pretool" ]; then
+    case "$emit_mode" in
+        claude-pretool|codex-pretool)
         jq -cn --arg reason "$reason" \
             '{hookSpecificOutput: {hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: $reason}}'
-    else
-        jq -cn --arg reason "$reason" '{decision: "block", reason: $reason}'
-    fi
+            ;;
+        *)
+            jq -cn --arg reason "$reason" '{decision: "block", reason: $reason}'
+            ;;
+    esac
 }
 
 detector_failure() {
@@ -443,7 +446,7 @@ case "$emit_mode" in
     prompt)
         reason="PII in prompt: ${selected_spans_masked}. Blocked at PII_LEVEL=${LEVEL}. ${hint}"
         ;;
-    claude-pretool)
+    claude-pretool|codex-pretool)
         reason="PII in tool input: ${selected_spans_masked}. Blocked at PII_LEVEL=${LEVEL}. ${hint} The tool did not run, so the value has not left this machine. Do not send it another way."
         ;;
     claude-posttool|codex-posttool)
