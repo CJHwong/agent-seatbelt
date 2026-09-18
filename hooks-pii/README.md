@@ -55,12 +55,6 @@ Flags:
 ... | bash -s -- --no-pilot      # skip the pilot warm-up run
 ```
 
-The suite was called `hooks-opf` until it stopped being named after one of its
-detection backends. The old URL still works: `hooks-opf/install.sh` is a stub that
-fetches this installer and passes the flags through. GitHub's raw URL cannot
-redirect, so the stub is what keeps a command someone already wrote down working.
-Nothing else lives at the old path.
-
 Before wiring, the installer does a pilot run: it starts the selected server once, smoke-tests it, and leaves it warm. The OpenAI model downloads to `~/.cache/opf/`. The Redact cache must already exist. Pass `--no-pilot` to skip the pilot.
 
 The installer is idempotent. Running it again does not duplicate hook entries. It updates matching entries in place.

@@ -18,7 +18,7 @@
 
 set -euo pipefail
 
-REPO_BASE="${HOOKS_PII_BASE_URL:-${HOOKS_OPF_BASE_URL:-https://raw.githubusercontent.com/CJHwong/agent-seatbelt/main/hooks-pii}}"
+REPO_BASE="${HOOKS_PII_BASE_URL:-https://raw.githubusercontent.com/CJHwong/agent-seatbelt/main/hooks-pii}"
 HOOKS_DIR="$HOME/.claude/hooks"
 SERVER_DEST="$HOOKS_DIR/pii-server.py"
 TORCH_DEST="$HOOKS_DIR/pii_redact_torch.py"
@@ -76,7 +76,6 @@ Usage: install.sh [--prompt-only] [--no-codex] [--no-pilot]
 
 Environment: PII_SERVER_MODE, PII_ACTION_MODE, PII_LEVEL, PII_PORT,
 PII_SERVER_LOG, PII_SKIP_EVENT_PATH, HOOKS_PII_BASE_URL.
-HOOKS_OPF_BASE_URL is still read when HOOKS_PII_BASE_URL is unset.
 
 Full notes: https://github.com/CJHwong/agent-seatbelt/blob/main/hooks-pii/README.md
 USAGE
