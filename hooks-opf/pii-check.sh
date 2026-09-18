@@ -54,40 +54,48 @@ ACTION_MODE="${PII_ACTION_MODE:-warn}"
 # prefix, and a prefix carried in-band cannot be authenticated.
 ALLOW_BYPASS="${PII_ALLOW_BYPASS:-1}"
 
-# Say that scanning was skipped, and why, instead of exiting silently. A silent exit
-# downgrades a block-mode deployment to no scanning at all, and the transcript shows
-# nothing. jq may itself be the thing that is missing, so that case writes the JSON
-# literally rather than through jq.
+# Say that scanning was skipped, why, and how to restore it, instead of exiting
+# silently. A silent exit downgrades the deployment to no scanning at all, and the
+# transcript shows nothing.
+#
+# Every trigger here is a standing condition rather than a one-off: a missing tool or
+# a bad variable stays that way, so the next request is unscanned too. The message
+# says so, because "nothing in this request was checked" reads as a single miss. The
+# agent gets the fact that whoever relies on this check does not know it is off, and
+# decides for itself whether and how to pass that on.
+#
+# jq may itself be the thing that is missing, so that case writes the JSON literally.
 scanner_skipped() {
     local detail="$1"
-    local tail_note="Nothing in this request was checked for sensitive data. Treat the content as sensitive."
+    local remedy="$2"
+    local summary="PII scanner skipped: ${detail}. ${remedy}. Nothing was checked, and the scanner stays off until this is fixed."
     if command -v jq >/dev/null 2>&1; then
-        jq -cn --arg message "PII scanner skipped: ${detail}." \
-            --arg context "PII scanner skipped: ${detail}. ${tail_note}" \
+        jq -cn --arg message "$summary" \
+            --arg context "${summary} Whatever this request carried reached the agent unscanned, so treat it as sensitive. Whoever relies on this check does not know it is off." \
             '{continue: true, systemMessage: $message, hookSpecificOutput: {hookEventName: "UserPromptSubmit", additionalContext: $context}}'
     else
-        printf '{"continue":true,"systemMessage":"PII scanner skipped: %s.","hookSpecificOutput":{"hookEventName":"UserPromptSubmit","additionalContext":"PII scanner skipped: %s. %s"}}\n' \
-            "$detail" "$detail" "$tail_note"
+        printf '{"continue":true,"systemMessage":"%s","hookSpecificOutput":{"hookEventName":"UserPromptSubmit","additionalContext":"%s Whatever this request carried reached the agent unscanned, so treat it as sensitive. Whoever relies on this check does not know it is off."}}\n' \
+            "$summary" "$summary"
     fi
     exit 0
 }
 
-command -v jq >/dev/null 2>&1 || scanner_skipped "jq is not installed"
-command -v curl >/dev/null 2>&1 || scanner_skipped "curl is not installed"
+command -v jq >/dev/null 2>&1 || scanner_skipped "jq is not installed, so the scanner cannot run" "Install jq"
+command -v curl >/dev/null 2>&1 || scanner_skipped "curl is not installed, so the scanner cannot reach the detector" "Install curl"
 
 case "$SERVER_MODE" in
     redact|openai|rules) ;;
-    *) scanner_skipped "PII_SERVER_MODE is '${SERVER_MODE}', which is not redact, openai, or rules" ;;
+    *) scanner_skipped "PII_SERVER_MODE is '${SERVER_MODE}', which is not redact, openai, or rules" "Set it to one of those three" ;;
 esac
 
 case "$ACTION_MODE" in
     block|warn) ;;
-    *) scanner_skipped "PII_ACTION_MODE is '${ACTION_MODE}', which is neither block nor warn. Blocking needs the exact value 'block'" ;;
+    *) scanner_skipped "PII_ACTION_MODE is '${ACTION_MODE}', which is neither block nor warn" "Set it to block or warn, spelled exactly" ;;
 esac
 
 case "$ALLOW_BYPASS" in
     0|1) ;;
-    *) scanner_skipped "PII_ALLOW_BYPASS is '${ALLOW_BYPASS}', which is neither 0 nor 1" ;;
+    *) scanner_skipped "PII_ALLOW_BYPASS is '${ALLOW_BYPASS}', which is neither 0 nor 1" "Set it to 0 or 1" ;;
 esac
 
 # --- Category tiers ---
@@ -103,34 +111,42 @@ mkdir -p "$(dirname "$SERVER_LOG")"
 payload=$(cat)
 
 # --- Extract text based on mode ---
-# Tool responses vary in shape per tool: Bash uses .stdout, Read uses .file.content,
-# WebFetch/MCP tools use .text or nested fields. Rather than chase each shape, we
-# recursively collect every leaf string under .tool_response — the NER labels
-# patterns, so incidental strings (paths, type markers) are inert.
+# Tool inputs and tool responses vary in shape per tool: Bash uses .command, Read
+# uses .file_path, WebFetch uses .url, and each tool reports its result differently.
+# Rather than chase each shape, one recursion collects every leaf string under the
+# field that matters — the NER labels patterns, so incidental strings (paths, type
+# markers) are inert. The same recursion serves an input and a response.
+leaf_strings() {
+    printf '%s' "$payload" | jq -r --arg field "$1" '
+        (.[$field] // empty) |
+        if type == "string" then .
+        elif type == "object" then [.. | strings] | join("\n")
+        else empty end
+    '
+}
+
+# The order in the auto branch matters. A PostToolUse payload carries BOTH
+# .tool_input and .tool_response, so the response is tested first: reading the input
+# of a call that already ran would scan the request and miss the result.
 extract_text() {
     case "$MODE" in
         prompt)
             printf '%s' "$payload" | jq -r '.prompt // empty'
             ;;
+        claude-pretool)
+            leaf_strings tool_input
+            ;;
         claude-posttool|codex-posttool)
-            printf '%s' "$payload" | jq -r '
-                (.tool_response // empty) |
-                if type == "string" then .
-                elif type == "object" then [.. | strings] | join("\n")
-                else empty end
-            '
+            leaf_strings tool_response
             ;;
         *)
-            # Auto-detect: prompt field first, then tool_response in either shape.
-            printf '%s' "$payload" | jq -r '
-                if has("prompt") then (.prompt // empty)
-                else
-                    (.tool_response // empty) |
-                    if type == "string" then .
-                    elif type == "object" then [.. | strings] | join("\n")
-                    else empty end
-                end
-            '
+            if printf '%s' "$payload" | jq -e 'has("prompt")' >/dev/null 2>&1; then
+                printf '%s' "$payload" | jq -r '.prompt // empty'
+            elif printf '%s' "$payload" | jq -e 'has("tool_response")' >/dev/null 2>&1; then
+                leaf_strings tool_response
+            else
+                leaf_strings tool_input
+            fi
             ;;
     esac
 }
@@ -139,7 +155,7 @@ if ! text=$(extract_text 2>/dev/null); then
     # The payload could not be parsed at all. Under set -e an unguarded substitution
     # here aborted the whole script with jq's exit status and no output, which a
     # runtime reads as "no decision" and therefore as a pass.
-    scanner_skipped "the hook could not parse its own input, so it could not extract any text to scan"
+    scanner_skipped "the hook could not parse its own input, so it could not extract any text to scan" "Check that the runtime sends a JSON payload"
 fi
 [ -z "$text" ] && exit 0
 
@@ -149,10 +165,12 @@ fi
 # Detect the event contract before the server call so failures use the same output shape.
 emit_mode="$MODE"
 if [ "$emit_mode" = "auto" ]; then
-    if printf '%s' "$payload" | jq -e '.prompt' >/dev/null 2>&1; then
+    if printf '%s' "$payload" | jq -e 'has("prompt")' >/dev/null 2>&1; then
         emit_mode="prompt"
-    else
+    elif printf '%s' "$payload" | jq -e 'has("tool_response")' >/dev/null 2>&1; then
         emit_mode="claude-posttool"
+    else
+        emit_mode="claude-pretool"
     fi
 fi
 
@@ -173,6 +191,11 @@ event_subject() {
             detected_location="in the user prompt"
             allowed_subject="The user prompt"
             ;;
+        claude-pretool)
+            event_name="PreToolUse"
+            detected_location="in the tool input"
+            allowed_subject="The tool input"
+            ;;
         claude-posttool|codex-posttool)
             event_name="PostToolUse"
             detected_location="in tool output"
@@ -184,6 +207,22 @@ event_subject() {
             allowed_subject="The input"
             ;;
     esac
+}
+
+# Emit a block in the shape the event expects. This is not cosmetic. Claude Code's
+# PreToolUse takes hookSpecificOutput.permissionDecision, and a top-level decision is
+# dropped silently there, with no error: the hook looks right and stops nothing. The
+# other events, including both Codex post-tool modes, take the top-level shape. Codex
+# also still accepts the top-level shape for PreToolUse, so a future codex-pretool
+# mode belongs in the else branch rather than needing a third.
+block_response() {
+    local reason="$1"
+    if [ "$emit_mode" = "claude-pretool" ]; then
+        jq -cn --arg reason "$reason" \
+            '{hookSpecificOutput: {hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: $reason}}'
+    else
+        jq -cn --arg reason "$reason" '{decision: "block", reason: $reason}'
+    fi
 }
 
 detector_failure() {
@@ -200,7 +239,7 @@ detector_failure() {
             '{continue: true, systemMessage: $message, hookSpecificOutput: {hookEventName: $event, additionalContext: $context}}'
     else
         local reason="PII detector unavailable while checking ${detected_location}. Blocked because PII_ACTION_MODE=block. ${detail}."
-        jq -cn --arg reason "$reason" '{decision: "block", reason: $reason}'
+        block_response "$reason"
     fi
     exit 0
 }
@@ -223,7 +262,7 @@ oversize_failure() {
             '{continue: true, systemMessage: $message, hookSpecificOutput: {hookEventName: $event, additionalContext: $context}}'
     else
         local reason="The input is too large for the detector to scan, so ${detected_location} can never be checked. This is not a retryable failure and the data is not a detector fault. ${advice} ${detail}."
-        jq -cn --arg reason "$reason" '{decision: "block", reason: $reason}'
+        block_response "$reason"
     fi
     exit 0
 }
@@ -365,23 +404,9 @@ selected_spans_masked=$(printf '%s' "$selected_spans" | jq -r \
     '[.[] | "\(.label)(\(.tier)): \(.masked)"] | unique | join(", ")')
 
 if [ "$ACTION_MODE" = "warn" ]; then
-    case "$emit_mode" in
-        prompt)
-            event_name="UserPromptSubmit"
-            detected_location="in the user prompt"
-            allowed_subject="The user prompt"
-            ;;
-        claude-posttool|codex-posttool)
-            event_name="PostToolUse"
-            detected_location="in tool output"
-            allowed_subject="The tool output"
-            ;;
-        *)
-            event_name="UserPromptSubmit"
-            detected_location="in the input"
-            allowed_subject="The input"
-            ;;
-    esac
+    # event_subject, not a second copy of it. The wording of an event lives in one
+    # place, so a new contract cannot be added to one copy and missed in the other.
+    event_subject
     warning_context="PII detector warning: possible sensitive data was identified ${detected_location}: ${selected_spans_masked}. ${allowed_subject} was allowed because PII_ACTION_MODE=warn. Check whether each detection is valid. If the detection is valid, do not repeat or expose the value. Use a redacted form. Rotate or revoke a valid secret."
     warning_message="PII detector warning: possible sensitive data was identified ${detected_location}: ${selected_spans_masked}. ${allowed_subject} was allowed because PII_ACTION_MODE=warn."
     jq -cn \
@@ -418,6 +443,9 @@ case "$emit_mode" in
     prompt)
         reason="PII in prompt: ${selected_spans_masked}. Blocked at PII_LEVEL=${LEVEL}. ${hint}"
         ;;
+    claude-pretool)
+        reason="PII in tool input: ${selected_spans_masked}. Blocked at PII_LEVEL=${LEVEL}. ${hint} The tool did not run, so the value has not left this machine. Do not send it another way."
+        ;;
     claude-posttool|codex-posttool)
         reason="PII in tool output: ${selected_spans_masked}. Blocked at PII_LEVEL=${LEVEL}. ${hint} Do not retry the same command. Treat every value in that output as already exposed: do not repeat it, and do not write it to a file or a message."
         ;;
@@ -426,4 +454,4 @@ case "$emit_mode" in
         ;;
 esac
 
-jq -cn --arg reason "$reason" '{decision: "block", reason: $reason}'
+block_response "$reason"
