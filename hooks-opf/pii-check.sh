@@ -209,6 +209,22 @@ event_subject() {
     esac
 }
 
+# Emit a block in the shape the event expects. This is not cosmetic. Claude Code's
+# PreToolUse takes hookSpecificOutput.permissionDecision, and a top-level decision is
+# dropped silently there, with no error: the hook looks right and stops nothing. The
+# other events, including both Codex post-tool modes, take the top-level shape. Codex
+# also still accepts the top-level shape for PreToolUse, so a future codex-pretool
+# mode belongs in the else branch rather than needing a third.
+block_response() {
+    local reason="$1"
+    if [ "$emit_mode" = "claude-pretool" ]; then
+        jq -cn --arg reason "$reason" \
+            '{hookSpecificOutput: {hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: $reason}}'
+    else
+        jq -cn --arg reason "$reason" '{decision: "block", reason: $reason}'
+    fi
+}
+
 detector_failure() {
     local detail="$1"
     event_subject
@@ -223,7 +239,7 @@ detector_failure() {
             '{continue: true, systemMessage: $message, hookSpecificOutput: {hookEventName: $event, additionalContext: $context}}'
     else
         local reason="PII detector unavailable while checking ${detected_location}. Blocked because PII_ACTION_MODE=block. ${detail}."
-        jq -cn --arg reason "$reason" '{decision: "block", reason: $reason}'
+        block_response "$reason"
     fi
     exit 0
 }
@@ -246,7 +262,7 @@ oversize_failure() {
             '{continue: true, systemMessage: $message, hookSpecificOutput: {hookEventName: $event, additionalContext: $context}}'
     else
         local reason="The input is too large for the detector to scan, so ${detected_location} can never be checked. This is not a retryable failure and the data is not a detector fault. ${advice} ${detail}."
-        jq -cn --arg reason "$reason" '{decision: "block", reason: $reason}'
+        block_response "$reason"
     fi
     exit 0
 }
@@ -438,4 +454,4 @@ case "$emit_mode" in
         ;;
 esac
 
-jq -cn --arg reason "$reason" '{decision: "block", reason: $reason}'
+block_response "$reason"

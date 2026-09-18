@@ -177,6 +177,10 @@ wire_agent() {
 
         # PreToolUse has no Codex equivalent wired, so it is Claude only. It is skipped
         # with the same flag as PostToolUse: --prompt-only means the prompt hook alone.
+        #
+        # The timeout has to exceed the hook's own detector budget: a timed-out hook
+        # fails open on PreToolUse, so the call would proceed unscanned and look checked.
+        # 20 seconds against a 5 second POST budget.
         if [ "$label" = "claude" ]; then
             local pretool_cmd="$CHECK_DEST --mode claude-pretool"
             local pretool_entry

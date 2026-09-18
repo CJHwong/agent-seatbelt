@@ -773,6 +773,18 @@ class PreToolUseTests(HookHarness):
     def command_payload(self, command: str) -> dict[str, object]:
         return {"tool_input": {"command": command}}
 
+    def is_blocked(self, hook_output: dict) -> bool:
+        """True whichever shape the event uses. The shape itself is pinned elsewhere."""
+        specific = hook_output.get("hookSpecificOutput") or {}
+        return (
+            specific.get("permissionDecision") == "deny"
+            or hook_output.get("decision") == "block"
+        )
+
+    def block_reason(self, hook_output: dict) -> str:
+        specific = hook_output.get("hookSpecificOutput") or {}
+        return specific.get("permissionDecisionReason") or hook_output.get("reason", "")
+
     def test_a_command_line_blocks_before_it_runs(self) -> None:
         hook_output = self.run_hook(
             "claude-pretool",
@@ -782,9 +794,9 @@ class PreToolUseTests(HookHarness):
             action_mode="block",
         )
 
-        self.assertEqual(hook_output["decision"], "block")
-        self.assertIn("PII in tool input", hook_output["reason"])
-        self.assertIn("has not left this machine", hook_output["reason"])
+        self.assertTrue(self.is_blocked(hook_output))
+        self.assertIn("PII in tool input", self.block_reason(hook_output))
+        self.assertIn("has not left this machine", self.block_reason(hook_output))
 
     def test_warn_mode_names_the_pretool_event(self) -> None:
         hook_output = self.run_hook(
@@ -806,7 +818,7 @@ class PreToolUseTests(HookHarness):
             action_mode="block",
         )
 
-        self.assertEqual(hook_output["decision"], "block")
+        self.assertTrue(self.is_blocked(hook_output))
 
     def test_nested_arguments_are_scanned(self) -> None:
         """An MCP tool's arguments are a payload like any other, at any depth."""
@@ -821,7 +833,7 @@ class PreToolUseTests(HookHarness):
             action_mode="block",
         )
 
-        self.assertEqual(hook_output["decision"], "block")
+        self.assertTrue(self.is_blocked(hook_output))
 
     def test_an_empty_tool_input_is_silent(self) -> None:
         result = self.run_hook_raw("claude-pretool", {"tool_input": {}})
@@ -838,7 +850,7 @@ class PreToolUseTests(HookHarness):
             action_mode="block",
         )
 
-        self.assertEqual(hook_output["decision"], "block")
+        self.assertTrue(self.is_blocked(hook_output))
 
     def test_auto_prefers_the_response_when_the_call_already_ran(self) -> None:
         """A PostToolUse payload carries both fields, and the response is what happened.
@@ -855,15 +867,81 @@ class PreToolUseTests(HookHarness):
             action_mode="block",
         )
 
-        self.assertIn("PII in tool output", hook_output["reason"])
-        self.assertNotIn("PII in tool input", hook_output["reason"])
+        self.assertIn("PII in tool output", self.block_reason(hook_output))
+        self.assertNotIn("PII in tool input", self.block_reason(hook_output))
 
     def test_auto_selects_the_tool_input_when_no_call_has_run(self) -> None:
         hook_output = self.run_hook(
             "auto", self.command_payload("curl https://host/"), action_mode="block"
         )
 
-        self.assertIn("PII in tool input", hook_output["reason"])
+        self.assertIn("PII in tool input", self.block_reason(hook_output))
+
+
+class BlockShapeTests(HookHarness):
+    """Each event gets the shape its runtime accepts, and that is not cosmetic.
+
+    Claude Code's PreToolUse takes hookSpecificOutput.permissionDecision. A top-level
+    decision is dropped silently there, with no error, so the old shape produced a
+    hook that looked correct and stopped nothing. A live run showed exactly that: the
+    hook emitted decision:block and the command ran.
+    """
+
+    def test_pretool_blocks_with_permission_decision(self) -> None:
+        hook_output = self.run_hook(
+            "claude-pretool", {"tool_input": {"command": "x"}}, action_mode="block"
+        )
+
+        self.assertNotIn("decision", hook_output)
+        hook_specific = hook_output["hookSpecificOutput"]
+        self.assertEqual(hook_specific["hookEventName"], "PreToolUse")
+        self.assertEqual(hook_specific["permissionDecision"], "deny")
+        self.assertIn("PII in tool input", hook_specific["permissionDecisionReason"])
+
+    def test_the_other_events_still_block_with_a_top_level_decision(self) -> None:
+        for mode in ("prompt", "claude-posttool", "codex-posttool"):
+            with self.subTest(mode=mode):
+                payload = (
+                    {"prompt": "x"}
+                    if mode == "prompt"
+                    else {"tool_response": {"stdout": "x"}}
+                )
+                hook_output = self.run_hook(mode, payload, action_mode="block")
+
+                self.assertEqual(hook_output["decision"], "block")
+                self.assertNotIn("permissionDecision", json.dumps(hook_output))
+
+    def test_a_detector_failure_uses_the_pretool_shape_too(self) -> None:
+        """The shape follows the event, not whichever fault produced the block."""
+        with FakePiiHandler.unhealthy():
+            hook_output = self.run_hook(
+                "claude-pretool", {"tool_input": {"command": "x"}}, action_mode="block"
+            )
+
+        self.assertEqual(
+            hook_output["hookSpecificOutput"]["permissionDecision"], "deny"
+        )
+
+    def test_an_oversized_input_uses_the_pretool_shape_too(self) -> None:
+        FakePiiHandler.response_status = 413
+        try:
+            hook_output = self.run_hook(
+                "claude-pretool", {"tool_input": {"command": "x"}}, action_mode="block"
+            )
+        finally:
+            FakePiiHandler.response_status = 200
+
+        self.assertEqual(
+            hook_output["hookSpecificOutput"]["permissionDecision"], "deny"
+        )
+
+    def test_an_unknown_event_keeps_the_top_level_shape(self) -> None:
+        """An unrecognised mode still scans, and the generic shape is the safe default."""
+        hook_output = self.run_hook(
+            "unrecognized-mode", {"prompt": "x"}, action_mode="block"
+        )
+
+        self.assertEqual(hook_output["decision"], "block")
 
 
 if __name__ == "__main__":

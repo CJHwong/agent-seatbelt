@@ -23,6 +23,11 @@ This is the content-level companion to `agent-seatbelt`'s file-level sandbox. Th
     than binaries. `Read` and `NotebookRead` are absent because their input is a path, and
     `Edit`/`Write` because scanning what the agent just wrote is wasted work. The detector only
     sees tool input when `--prompt-only` was not passed, the same flag that skips `PostToolUse`.
+  - A timed-out hook **fails open** on PreToolUse: the call continues through the normal
+    permission flow, so a stalled scanner is not a gate. The hook's own POST budget is 5
+    seconds and the entry allows 20, so the scanner has to finish inside that. If you
+    raise `REDACT_MAX_INPUT_TOKENS` or point `PII_PORT` at a slower host, check the two
+    numbers still fit.
   - `PostToolUse` → blocks or warns on tool responses containing PII before the next LLM turn. Claude Code uses a scoped matcher for `Bash`, `Read`, `NotebookRead`, `WebFetch`, `WebSearch`, `Agent`/`Task` (subagent results), `exec_command`, and MCP tools. Codex uses `*` because its tool identifiers vary by runtime. The hook filters returned text, including structural tool output.
 
 Supported agents (auto-detected by directory presence):
