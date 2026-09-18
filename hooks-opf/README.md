@@ -17,12 +17,14 @@ This is the content-level companion to `agent-seatbelt`'s file-level sandbox. Th
   - `UserPromptSubmit` → blocks or warns on prompts containing PII before they reach the model provider
   - `PreToolUse` → blocks or warns on a tool call's **input** before it runs. This is the only
     point where the value has not left the machine: blocking here stops the command, where
-    blocking on tool output is a report after the fact. Claude Code only, with a scoped matcher
+    blocking on tool output is a report after the fact. Claude Code uses a scoped matcher
     for `Bash`, `exec_command`, `WebFetch`, `WebSearch`, `Agent`/`Task` and MCP tools. `Bash`
     covers `wget`, `curl`, `scp` and every other command, because the matcher names tools rather
     than binaries. `Read` and `NotebookRead` are absent because their input is a path, and
-    `Edit`/`Write` because scanning what the agent just wrote is wasted work. The detector only
-    sees tool input when `--prompt-only` was not passed, the same flag that skips `PostToolUse`.
+    `Edit`/`Write` because scanning what the agent just wrote is wasted work. Codex uses `*`,
+    because it resolves `Edit`, `Write` and `apply_patch` to one tool name and renames its shell
+    tool across versions, so a scoped pattern there would be unstable. The detector only sees
+    tool input when `--prompt-only` was not passed, the same flag that skips `PostToolUse`.
   - A timed-out hook **fails open** on PreToolUse: the call continues through the normal
     permission flow, so a stalled scanner is not a gate. The hook's own POST budget is 5
     seconds and the entry allows 20, so the scanner has to finish inside that. If you
@@ -32,10 +34,10 @@ This is the content-level companion to `agent-seatbelt`'s file-level sandbox. Th
 
 Supported agents (auto-detected by directory presence):
 
-| Agent | Config file | PostToolUse mode |
-|---|---|---|
-| Claude Code | `~/.claude/settings.json` | `claude-posttool` |
-| Codex | `~/.codex/hooks.json` | `codex-posttool` |
+| Agent | Config file | PostToolUse mode | PreToolUse mode |
+|---|---|---|---|
+| Claude Code | `~/.claude/settings.json` | `claude-posttool` | `claude-pretool` |
+| Codex | `~/.codex/hooks.json` | `codex-posttool` | `codex-pretool` |
 
 Scripts always land in `~/.claude/hooks/`. Both agents reference the same scripts — no duplication.
 
@@ -239,6 +241,19 @@ This is a high-recall filter, not a hard gate. Three failure modes worth knowing
 1. **Adversarial reformatting bypass.** A motivated agent (or a model trying to satisfy a "show me the file" prompt) can reshape tool output past the NER's pattern matching: `od -c file`, `base64 file`, `xxd file`, `tr a-z A-Z < file`, splitting bytes across lines, etc. Observed empirically — given a blocked `cat secrets.txt`, a model adapted within one turn to `od -c` and the byte-spread output flowed through unblocked. The NER labels patterns it recognizes; spread-out or re-encoded versions of the same content are not labeled. Content-based filtering can't close this gap without semantic execution; treat the hook as defense-in-depth alongside the file-level sandbox, not a perimeter.
 
 2. **Codex trust requirement.** Codex CLI gates external hooks behind a per-hook trust list. Until you trust each command, Codex registers the hook in `~/.codex/hooks.json` but does not invoke it. Trust lives in `~/.codex/config.toml` under `[hooks.state]`, keyed by `<hooks.json path>:<event>:<group>:<index>`, with `enabled = true` and a `trusted_hash` for the command. Review and trust via `/hooks` in the Codex TUI. Re-running the installer after a command change requires trust again. A fresh live test with `codex-cli 0.154.0` confirmed both `UserPromptSubmit` and `PostToolUse` blocking for unified shell output. Warning mode also displayed the masked `systemMessage` and continued the turn. Claude Code runs both hooks without a trust step.
+
+   Two constraints apply to a Codex PreToolUse deny. Its hook output schema sets
+   `additionalProperties: false`, so one unexpected key discards the entire reply, and a
+   discarded reply does not block. And `ask`, `continue: false`, `stopReason` and
+   `suppressOutput` are parsed but unsupported: returning one marks the run `Failed` while
+   the tool call proceeds. The `deny` shape this hook emits carries only keys Codex knows.
+   A `deny` with a non-empty reason is `Blocked`; anything malformed is not.
+
+   Trust is recorded against the command string, and this hook's path is fixed, so a content
+   update does not force a re-trust. Worth knowing for what it implies: existing trust then
+   covers future changes to the script's content. Claude Code behaves the same way, so it is
+   not a Codex-specific weakness, but it is why a hook's content deserves the same review as
+   its wiring.
 
    Claude Code has a separate PostToolUse caveat. Its `decision: "block"` response leaves the original tool output visible. Use `updatedToolOutput` when the model must not receive the original output. The current block path does not provide that replacement.
 

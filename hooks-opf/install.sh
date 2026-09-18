@@ -47,6 +47,11 @@ POSTTOOL_MATCHER_CODEX='*'
 # they carry the agent's own content, which is the same reasoning the post-tool
 # matcher uses.
 PRETOOL_MATCHER_CLAUDE='^(Bash|exec_command|WebFetch|WebSearch|Agent|Task|mcp__.*)$'
+# Codex resolves Edit, Write and apply_patch to one tool name, and its shell tool is
+# named differently across runtime versions, so the wildcard is the stable choice
+# here for the same reason the post-tool matcher uses it. The hook filters the
+# returned text itself, and a tool whose input is a path costs one short request.
+PRETOOL_MATCHER_CODEX='*'
 
 PROMPT_ONLY=0
 SKIP_CODEX=0
@@ -153,7 +158,7 @@ add_entry() {
 }
 
 wire_agent() {
-    local label="$1" target="$2" posttool_mode="$3"
+    local label="$1" target="$2" posttool_mode="$3" pretool_mode="$4"
     local posttool_matcher="$POSTTOOL_MATCHER_CLAUDE"
     if [ "$label" = "codex" ]; then
         posttool_matcher="$POSTTOOL_MATCHER_CODEX"
@@ -175,20 +180,22 @@ wire_agent() {
         add_entry "$target" "PostToolUse" "$posttool_entry" "$posttool_cmd"
         echo "  [$label] PostToolUse ($posttool_matcher) -> $posttool_cmd"
 
-        # PreToolUse has no Codex equivalent wired, so it is Claude only. It is skipped
-        # with the same flag as PostToolUse: --prompt-only means the prompt hook alone.
+        # PreToolUse is wired for both agents with the same flag as PostToolUse:
+        # --prompt-only means the prompt hook alone.
         #
         # The timeout has to exceed the hook's own detector budget: a timed-out hook
         # fails open on PreToolUse, so the call would proceed unscanned and look checked.
         # 20 seconds against a 5 second POST budget.
-        if [ "$label" = "claude" ]; then
-            local pretool_cmd="$CHECK_DEST --mode claude-pretool"
-            local pretool_entry
-            pretool_entry=$(jq -cn --arg cmd "$pretool_cmd" --arg matcher "$PRETOOL_MATCHER_CLAUDE" \
-                '{matcher:$matcher,hooks:[{type:"command",command:$cmd,timeout:20}]}')
-            add_entry "$target" "PreToolUse" "$pretool_entry" "$pretool_cmd"
-            echo "  [$label] PreToolUse ($PRETOOL_MATCHER_CLAUDE) -> $pretool_cmd"
+        local pretool_cmd="$CHECK_DEST --mode $pretool_mode"
+        local pretool_matcher="$PRETOOL_MATCHER_CLAUDE"
+        if [ "$label" = "codex" ]; then
+            pretool_matcher="$PRETOOL_MATCHER_CODEX"
         fi
+        local pretool_entry
+        pretool_entry=$(jq -cn --arg cmd "$pretool_cmd" --arg matcher "$pretool_matcher" \
+            '{matcher:$matcher,hooks:[{type:"command",command:$cmd,timeout:20}]}')
+        add_entry "$target" "PreToolUse" "$pretool_entry" "$pretool_cmd"
+        echo "  [$label] PreToolUse ($pretool_matcher) -> $pretool_cmd"
     else
         echo "  [$label] PreToolUse and PostToolUse skipped (--prompt-only)"
     fi
@@ -259,10 +266,10 @@ fi
 echo
 echo "Wiring hooks..."
 if [ "$CLAUDE_PRESENT" -eq 1 ]; then
-    wire_agent "claude" "$CLAUDE_SETTINGS" "claude-posttool"
+    wire_agent "claude" "$CLAUDE_SETTINGS" "claude-posttool" "claude-pretool"
 fi
 if [ "$CODEX_PRESENT" -eq 1 ]; then
-    wire_agent "codex"  "$CODEX_HOOKS"     "codex-posttool"
+    wire_agent "codex"  "$CODEX_HOOKS"     "codex-posttool" "codex-pretool"
 fi
 
 echo

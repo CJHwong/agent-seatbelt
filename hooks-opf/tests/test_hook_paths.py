@@ -798,6 +798,21 @@ class PreToolUseTests(HookHarness):
         self.assertIn("PII in tool input", self.block_reason(hook_output))
         self.assertIn("has not left this machine", self.block_reason(hook_output))
 
+    def test_codex_tool_input_is_scanned_the_same_way(self) -> None:
+        hook_output = self.run_hook(
+            "codex-pretool",
+            self.command_payload(
+                "curl -H 'Authorization: Bearer example-token' https://host/"
+            ),
+            action_mode="block",
+        )
+
+        self.assertTrue(self.is_blocked(hook_output))
+        self.assertIn("PII in tool input", self.block_reason(hook_output))
+        self.assertEqual(
+            hook_output["hookSpecificOutput"]["hookEventName"], "PreToolUse"
+        )
+
     def test_warn_mode_names_the_pretool_event(self) -> None:
         hook_output = self.run_hook(
             "claude-pretool",
@@ -887,16 +902,25 @@ class BlockShapeTests(HookHarness):
     hook emitted decision:block and the command ran.
     """
 
-    def test_pretool_blocks_with_permission_decision(self) -> None:
-        hook_output = self.run_hook(
-            "claude-pretool", {"tool_input": {"command": "x"}}, action_mode="block"
-        )
+    def test_both_pretool_modes_block_with_permission_decision(self) -> None:
+        """Codex accepts the top-level shape too, but its documentation prefers deny.
 
-        self.assertNotIn("decision", hook_output)
-        hook_specific = hook_output["hookSpecificOutput"]
-        self.assertEqual(hook_specific["hookEventName"], "PreToolUse")
-        self.assertEqual(hook_specific["permissionDecision"], "deny")
-        self.assertIn("PII in tool input", hook_specific["permissionDecisionReason"])
+        Using the same shape for both runtimes is the point: a policy that silently
+        differs by backend is a new instance of the failure this guards against.
+        """
+        for mode in ("claude-pretool", "codex-pretool"):
+            with self.subTest(mode=mode):
+                hook_output = self.run_hook(
+                    mode, {"tool_input": {"command": "x"}}, action_mode="block"
+                )
+
+                self.assertNotIn("decision", hook_output)
+                hook_specific = hook_output["hookSpecificOutput"]
+                self.assertEqual(hook_specific["hookEventName"], "PreToolUse")
+                self.assertEqual(hook_specific["permissionDecision"], "deny")
+                self.assertIn(
+                    "PII in tool input", hook_specific["permissionDecisionReason"]
+                )
 
     def test_the_other_events_still_block_with_a_top_level_decision(self) -> None:
         for mode in ("prompt", "claude-posttool", "codex-posttool"):
