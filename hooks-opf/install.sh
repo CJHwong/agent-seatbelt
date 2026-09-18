@@ -5,7 +5,7 @@
 #
 # Usage:
 #   curl -fsSL https://raw.githubusercontent.com/CJHwong/agent-seatbelt/main/hooks-opf/install.sh | bash
-#   curl -fsSL .../install.sh | bash -s -- --prompt-only   # skip PostToolUse
+#   curl -fsSL .../install.sh | bash -s -- --prompt-only   # skip the tool hooks
 #   curl -fsSL .../install.sh | bash -s -- --no-codex      # skip Codex even if present
 #   curl -fsSL .../install.sh | bash -s -- --no-pilot      # skip the model warm-up run
 #
@@ -39,6 +39,14 @@ ACTION_MODE="${PII_ACTION_MODE:-warn}"
 # identifiers vary by runtime, and the hook filters the returned text itself.
 POSTTOOL_MATCHER_CLAUDE='^(Bash|Read|NotebookRead|WebFetch|WebSearch|Agent|Task|exec_command|mcp__.*)$'
 POSTTOOL_MATCHER_CODEX='*'
+# Tools whose INPUT can carry a value that must not leave. The matcher names tools,
+# not binaries, so wget, curl, scp and every other command run inside Bash are covered
+# by that one entry, and a tool nobody has written yet needs one more. WebSearch is
+# here because a query string is URL-shaped, the same channel as WebFetch. Read and
+# NotebookRead are absent because their input is a path, and Edit and Write because
+# they carry the agent's own content, which is the same reasoning the post-tool
+# matcher uses.
+PRETOOL_MATCHER_CLAUDE='^(Bash|exec_command|WebFetch|WebSearch|Agent|Task|mcp__.*)$'
 
 PROMPT_ONLY=0
 SKIP_CODEX=0
@@ -166,8 +174,19 @@ wire_agent() {
             '{matcher:$matcher,hooks:[{type:"command",command:$cmd,timeout:20}]}')
         add_entry "$target" "PostToolUse" "$posttool_entry" "$posttool_cmd"
         echo "  [$label] PostToolUse ($posttool_matcher) -> $posttool_cmd"
+
+        # PreToolUse has no Codex equivalent wired, so it is Claude only. It is skipped
+        # with the same flag as PostToolUse: --prompt-only means the prompt hook alone.
+        if [ "$label" = "claude" ]; then
+            local pretool_cmd="$CHECK_DEST --mode claude-pretool"
+            local pretool_entry
+            pretool_entry=$(jq -cn --arg cmd "$pretool_cmd" --arg matcher "$PRETOOL_MATCHER_CLAUDE" \
+                '{matcher:$matcher,hooks:[{type:"command",command:$cmd,timeout:20}]}')
+            add_entry "$target" "PreToolUse" "$pretool_entry" "$pretool_cmd"
+            echo "  [$label] PreToolUse ($PRETOOL_MATCHER_CLAUDE) -> $pretool_cmd"
+        fi
     else
-        echo "  [$label] PostToolUse skipped (--prompt-only)"
+        echo "  [$label] PreToolUse and PostToolUse skipped (--prompt-only)"
     fi
 }
 

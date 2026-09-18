@@ -258,6 +258,51 @@ class ClaudeWiringTests(InstallerHarness):
         self.assertEqual(len(self.commands(document, "UserPromptSubmit")), 1)
         self.assertNotIn("PostToolUse", document["hooks"])
 
+    def test_the_tool_input_entry_is_wired(self) -> None:
+        """The one intercept point where the value has not left yet."""
+        self.add_agent("claude")
+        self.run_installer("--no-codex")
+
+        hook = str(self.installed_dir() / "pii-check.sh")
+        self.assertEqual(
+            self.commands(self.settings(), "PreToolUse"),
+            [f"{hook} --mode claude-pretool"],
+        )
+
+    def test_the_tool_input_matcher_covers_commands_not_paths(self) -> None:
+        """The matcher names tools, so one Bash entry covers wget, curl and scp.
+
+        Read's input is a path and Write's is the agent's own content, so neither is
+        worth scanning before it runs. This is the same reasoning the post-tool
+        matcher uses to leave Edit and Write out.
+        """
+        self.add_agent("claude")
+        self.run_installer("--no-codex")
+
+        pattern = self.entries(self.settings(), "PreToolUse")[0]["matcher"]
+        for scanned in (
+            "Bash",
+            "exec_command",
+            "WebFetch",
+            "WebSearch",
+            "Agent",
+            "Task",
+            "mcp__github__push",
+        ):
+            self.assertRegex(scanned, pattern, f"{scanned} should be scanned")
+        for skipped in ("Read", "NotebookRead", "Edit", "Write", "Glob", "LS"):
+            self.assertIsNone(
+                re.fullmatch(pattern, skipped), f"{skipped} should not be scanned"
+            )
+
+    def test_prompt_only_skips_the_tool_input_entry_too(self) -> None:
+        self.add_agent("claude")
+        self.run_installer("--no-codex", "--prompt-only")
+
+        document = self.settings()
+        self.assertNotIn("PreToolUse", document["hooks"])
+        self.assertNotIn("PostToolUse", document["hooks"])
+
 
 class CodexWiringTests(InstallerHarness):
     """Codex reads a different file and needs a different matcher."""
@@ -294,6 +339,13 @@ class CodexWiringTests(InstallerHarness):
         self.run_installer("--no-codex")
 
         self.assertFalse((self.home / ".codex" / "hooks.json").exists())
+
+    def test_codex_gets_no_tool_input_entry(self) -> None:
+        """Only the Claude side has a pre-tool event wired, so do not invent one."""
+        self.add_agent("codex")
+        self.run_installer()
+
+        self.assertNotIn("PreToolUse", self.codex_settings()["hooks"])
 
     def test_both_agents_share_one_installed_script(self) -> None:
         self.add_agent("claude")

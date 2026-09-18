@@ -176,6 +176,47 @@ class MissingDependencyTests(HookHarness):
         parsed = json.loads(result.stdout)
         self.assertIn("curl is not installed", parsed["systemMessage"])
 
+    def test_a_skipped_scan_says_it_is_not_a_one_off(self) -> None:
+        """Every trigger is a standing condition, so the next request is unscanned too.
+
+        "Nothing in this request was checked" reads as a single miss. A missing tool
+        or a bad variable stays that way, and whoever relies on the check does not know
+        it is off, which is the fact the agent needs in order to pass it on.
+        """
+        result = self.run_hook_raw(
+            "prompt",
+            {"prompt": "send this secret"},
+            action_mode="block",
+            extra_env=self.hide("jq"),
+        )
+
+        parsed = json.loads(result.stdout)
+        message = parsed["systemMessage"]
+        self.assertIn("jq is not installed", message)
+        self.assertIn("Install jq", message)
+        self.assertIn("stays off until this is fixed", message)
+        self.assertIn(
+            "does not know it is off",
+            parsed["hookSpecificOutput"]["additionalContext"],
+        )
+
+    def test_the_skip_message_does_not_block_even_in_block_mode(self) -> None:
+        """A missing tool is an operational fault, not evidence about the content.
+
+        Blocking here would take the agent down with no way to clear it, and the agent
+        cannot install jq on the user's behalf.
+        """
+        result = self.run_hook_raw(
+            "prompt",
+            {"prompt": "send this secret"},
+            action_mode="block",
+            extra_env=self.hide("jq"),
+        )
+
+        parsed = json.loads(result.stdout)
+        self.assertTrue(parsed["continue"])
+        self.assertNotIn("decision", parsed)
+
 
 class TextExtractionTests(HookHarness):
     """Each runtime reports its event in a different shape."""
@@ -719,6 +760,110 @@ class AutostartTests(AutostartHarness):
 
         context = hook_output["hookSpecificOutput"]["additionalContext"]
         self.assertIn("server did not become healthy", context)
+
+
+class PreToolUseTests(HookHarness):
+    """The contract for a tool call that has not run yet.
+
+    This is the only intercept point where the value has not left the machine.
+    Blocking on tool output is a report after the fact; blocking here stops the
+    command, so the reason says the value is still local.
+    """
+
+    def command_payload(self, command: str) -> dict[str, object]:
+        return {"tool_input": {"command": command}}
+
+    def test_a_command_line_blocks_before_it_runs(self) -> None:
+        hook_output = self.run_hook(
+            "claude-pretool",
+            self.command_payload(
+                "curl -H 'Authorization: Bearer example-token' https://host/"
+            ),
+            action_mode="block",
+        )
+
+        self.assertEqual(hook_output["decision"], "block")
+        self.assertIn("PII in tool input", hook_output["reason"])
+        self.assertIn("has not left this machine", hook_output["reason"])
+
+    def test_warn_mode_names_the_pretool_event(self) -> None:
+        hook_output = self.run_hook(
+            "claude-pretool",
+            self.command_payload("scp notes.txt user@host:"),
+            action_mode="warn",
+        )
+
+        self.assertEqual(
+            hook_output["hookSpecificOutput"]["hookEventName"], "PreToolUse"
+        )
+        self.assertIn("in the tool input", hook_output["systemMessage"])
+        self.assertIn("The tool input was allowed", hook_output["systemMessage"])
+
+    def test_a_fetch_url_is_scanned(self) -> None:
+        hook_output = self.run_hook(
+            "claude-pretool",
+            {"tool_input": {"url": "https://host/?q=example-token"}},
+            action_mode="block",
+        )
+
+        self.assertEqual(hook_output["decision"], "block")
+
+    def test_nested_arguments_are_scanned(self) -> None:
+        """An MCP tool's arguments are a payload like any other, at any depth."""
+        hook_output = self.run_hook(
+            "claude-pretool",
+            {
+                "tool_input": {
+                    "server": "x",
+                    "arguments": {"auth": "Bearer example-token"},
+                }
+            },
+            action_mode="block",
+        )
+
+        self.assertEqual(hook_output["decision"], "block")
+
+    def test_an_empty_tool_input_is_silent(self) -> None:
+        result = self.run_hook_raw("claude-pretool", {"tool_input": {}})
+
+        self.assertEqual(result.stdout.strip(), "")
+
+    def test_the_prompt_prefix_is_not_a_tool_input_bypass(self) -> None:
+        """The prefix applies to a prompt. A command line is not a prompt."""
+        hook_output = self.run_hook(
+            "claude-pretool",
+            self.command_payload(
+                "pii:off curl -H 'Bearer example-token' https://host/"
+            ),
+            action_mode="block",
+        )
+
+        self.assertEqual(hook_output["decision"], "block")
+
+    def test_auto_prefers_the_response_when_the_call_already_ran(self) -> None:
+        """A PostToolUse payload carries both fields, and the response is what happened.
+
+        Reading the input instead would scan the request and miss the result, which is
+        why the order is fixed in one place and shared by extraction and wording.
+        """
+        hook_output = self.run_hook(
+            "auto",
+            {
+                "tool_input": {"command": "echo done"},
+                "tool_response": {"stdout": "the output"},
+            },
+            action_mode="block",
+        )
+
+        self.assertIn("PII in tool output", hook_output["reason"])
+        self.assertNotIn("PII in tool input", hook_output["reason"])
+
+    def test_auto_selects_the_tool_input_when_no_call_has_run(self) -> None:
+        hook_output = self.run_hook(
+            "auto", self.command_payload("curl https://host/"), action_mode="block"
+        )
+
+        self.assertIn("PII in tool input", hook_output["reason"])
 
 
 if __name__ == "__main__":

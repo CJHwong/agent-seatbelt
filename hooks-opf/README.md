@@ -15,6 +15,14 @@ This is the content-level companion to `agent-seatbelt`'s file-level sandbox. Th
 - `~/.claude/hooks/redact_server.py` — local Redact model adapter used by `pii-server.py`
 - For each detected agent, two entries in its hooks config:
   - `UserPromptSubmit` → blocks or warns on prompts containing PII before they reach the model provider
+  - `PreToolUse` → blocks or warns on a tool call's **input** before it runs. This is the only
+    point where the value has not left the machine: blocking here stops the command, where
+    blocking on tool output is a report after the fact. Claude Code only, with a scoped matcher
+    for `Bash`, `exec_command`, `WebFetch`, `WebSearch`, `Agent`/`Task` and MCP tools. `Bash`
+    covers `wget`, `curl`, `scp` and every other command, because the matcher names tools rather
+    than binaries. `Read` and `NotebookRead` are absent because their input is a path, and
+    `Edit`/`Write` because scanning what the agent just wrote is wasted work. The detector only
+    sees tool input when `--prompt-only` was not passed, the same flag that skips `PostToolUse`.
   - `PostToolUse` → blocks or warns on tool responses containing PII before the next LLM turn. Claude Code uses a scoped matcher for `Bash`, `Read`, `NotebookRead`, `WebFetch`, `WebSearch`, `Agent`/`Task` (subagent results), `exec_command`, and MCP tools. Codex uses `*` because its tool identifiers vary by runtime. The hook filters returned text, including structural tool output.
 
 Supported agents (auto-detected by directory presence):
@@ -35,7 +43,7 @@ curl -fsSL https://raw.githubusercontent.com/CJHwong/agent-seatbelt/main/hooks-o
 Flags:
 
 ```bash
-... | bash -s -- --prompt-only   # skip PostToolUse wiring on both agents
+... | bash -s -- --prompt-only   # skip both tool hooks, keeping the prompt hook alone
 ... | bash -s -- --no-codex      # ignore Codex even if ~/.codex/ exists
 ... | bash -s -- --no-pilot      # skip the pilot warm-up run
 ```
@@ -95,6 +103,13 @@ PII in prompt: secret(critical): sk...dc. Blocked at PII_LEVEL=strict.
 The default `PII_ACTION_MODE=warn` allows input and adds the masked detector summary to both `systemMessage` and `hookSpecificOutput.additionalContext`.
 
 Set `PII_ACTION_MODE=block` to reject input when a span matches the selected `PII_LEVEL`. Set `PII_ACTION_MODE=warn` to allow the input. The hook then adds a masked detector summary to the agent context. It also tells the agent to check whether each detection is valid. If valid, the agent must avoid repeating the value and use a redacted form. The warning recommends secret rotation or revocation when applicable.
+
+A skipped scan says so. Each trigger is a standing condition, not a one-off: a missing `jq`
+or a misspelled `PII_ACTION_MODE` stays that way, so the next request is unscanned too. The
+message carries the cause, the fix, and the fact that the scanner stays off until someone acts,
+which is what an agent needs in order to tell the user that a check they rely on is not running.
+It does not block, even in block mode: a missing tool is an operational fault rather than
+evidence about the content, and blocking would take the agent down with no way for it to clear.
 
 Both action modes honour `PII_LEVEL`. Warn mode reports the same spans that block mode would reject. It does not expose the full value. A span below the level goes to stderr as `PII below level:`, and the agent never receives it. `PII_ALLOW_LABELS` removes a label in both modes.
 
@@ -232,6 +247,7 @@ prompt ──> UserPromptSubmit ──> pii-check.sh --mode prompt ──> pii-s
                                        └── blocks or warns based on PII_ACTION_MODE
                                        └── prompt sent to Anthropic if clean
 
+Claude tool call ──> PreToolUse ──> pii-check.sh --mode claude-pretool ──> pii-server.py
 Claude tool runs ──> PostToolUse ──> pii-check.sh --mode claude-posttool ──> pii-server.py
                                        │
                                        └── blocks or warns based on PII_ACTION_MODE
