@@ -11,7 +11,7 @@ isolation it needs:
 
   HOME                 a temporary directory, so every write lands there and the
                        real ~/.claude and ~/.codex are never referenced
-  HOOKS_OPF_BASE_URL   file:// pointing at this checkout, so nothing reaches the
+  HOOKS_PII_BASE_URL   file:// pointing at this checkout, so nothing reaches the
                        network and the installed files are this repo's
   --no-pilot           so no model is resolved, downloaded, or left running
 
@@ -53,7 +53,8 @@ BASH = shutil.which("bash") or "/bin/bash"
 # a HOME apart from the two agent configuration files.
 HOOK_FILES = (
     "pii-server.py",
-    "redact_server.py",
+    "pii_redact_torch.py",
+    "pii_redact_lite.py",
     "pii_rules.py",
     "pii_opf.py",
     "pii-check.sh",
@@ -82,6 +83,7 @@ class InstallerHarness(unittest.TestCase):
         source: Path | None = None,
         pilot: bool = False,
         piped: bool = False,
+        legacy_base_url: bool = False,
     ) -> subprocess.CompletedProcess[str]:
         """Run the real installer against the temporary HOME.
 
@@ -90,12 +92,20 @@ class InstallerHarness(unittest.TestCase):
         run, which is off by default because it resolves model dependencies and
         leaves a listening process behind. `piped` feeds the script on stdin the way
         a `curl | bash` install does, which leaves `$0` as "bash" instead of a path.
+        `legacy_base_url` points the installer through HOOKS_OPF_BASE_URL, the name
+        it read before the suite had one of its own.
         """
         environment = os.environ.copy()
+        base_url_variable = (
+            "HOOKS_OPF_BASE_URL" if legacy_base_url else "HOOKS_PII_BASE_URL"
+        )
+        # Both names are cleared first so an inherited one cannot decide the test.
+        for name in ("HOOKS_OPF_BASE_URL", "HOOKS_PII_BASE_URL"):
+            environment.pop(name, None)
         environment.update(
             {
                 "HOME": str(self.home),
-                "HOOKS_OPF_BASE_URL": f"file://{source or HOOKS_DIR}",
+                base_url_variable: f"file://{source or HOOKS_DIR}",
                 "PII_PORT": str(free_port()),
                 "PII_SERVER_LOG": str(self.home / "server.log"),
             }
@@ -719,7 +729,7 @@ class HelpTests(InstallerHarness):
         result = self.run_installer("--help")
 
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn("Installs hooks-opf", result.stdout)
+        self.assertIn("Installs hooks-pii", result.stdout)
         self.assertEqual(self.files_under_home(), set())
 
     def test_help_works_when_piped(self) -> None:
@@ -733,6 +743,22 @@ class HelpTests(InstallerHarness):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("Usage: install.sh", result.stdout)
         self.assertEqual(self.files_under_home(), set())
+
+
+class LegacyBaseUrlTests(InstallerHarness):
+    """The rename must not break a caller that still sets the old variable.
+
+    The runtime files that used to live under `~/.cache/opf` are moved by hand,
+    so nothing here covers that.
+    """
+
+    def test_the_old_base_url_variable_still_points_the_installer(self) -> None:
+        self.add_agent("claude")
+
+        result = self.run_installer(legacy_base_url=True)
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertTrue((self.home / ".claude" / "hooks" / "pii-check.sh").exists())
 
 
 if __name__ == "__main__":

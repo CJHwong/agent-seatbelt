@@ -1,4 +1,4 @@
-# hooks-opf
+# hooks-pii
 
 Userland PII detector for AI coding agents. Catches secrets and personal data flowing **into** the agent's prompt or **out of** its tool responses, before the LLM ever sees the bytes.
 
@@ -12,7 +12,7 @@ This is the content-level companion to `agent-seatbelt`'s file-level sandbox. Th
 
 - `~/.claude/hooks/pii-check.sh` — the hook binary, called on prompt submit and tool response
 - `~/.claude/hooks/pii-server.py` — local HTTP server that loads the selected model and returns labeled spans
-- `~/.claude/hooks/redact_server.py` — local Redact model adapter used by `pii-server.py`
+- `~/.claude/hooks/pii_redact_torch.py` — local Redact model adapter used by `pii-server.py`
 - For each detected agent, two entries in its hooks config:
   - `UserPromptSubmit` → blocks or warns on prompts containing PII before they reach the model provider
   - `PreToolUse` → blocks or warns on a tool call's **input** before it runs. This is the only
@@ -44,7 +44,7 @@ Scripts always land in `~/.claude/hooks/`. Both agents reference the same script
 ## Install
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/CJHwong/agent-seatbelt/main/hooks-opf/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/CJHwong/agent-seatbelt/main/hooks-pii/install.sh | bash
 ```
 
 Flags:
@@ -54,6 +54,12 @@ Flags:
 ... | bash -s -- --no-codex      # ignore Codex even if ~/.codex/ exists
 ... | bash -s -- --no-pilot      # skip the pilot warm-up run
 ```
+
+The suite was called `hooks-opf` until it stopped being named after one of its
+detection backends. The old URL still works: `hooks-opf/install.sh` is a stub that
+fetches this installer and passes the flags through. GitHub's raw URL cannot
+redirect, so the stub is what keeps a command someone already wrote down working.
+Nothing else lives at the old path.
 
 Before wiring, the installer does a pilot run: it starts the selected server once, smoke-tests it, and leaves it warm. The OpenAI model downloads to `~/.cache/opf/`. The Redact cache must already exist. Pass `--no-pilot` to skip the pilot.
 
@@ -308,27 +314,51 @@ All env vars override defaults; set them in your shell or the hook's env:
 | `PII_ALLOW_LABELS` | empty | comma-separated labels to allow within the selected tier |
 | `PII_ALLOW_BYPASS` | `1` | `1` enables the `pii:off` prompt prefix; `0` disables it, for deployments where more than one person can reach the agent |
 | `PII_ACTION_MODE` | `warn` | `warn` to allow input with agent context or `block` to reject input |
-| `PII_SERVER_MODE` | `redact` | `redact`, `openai`, or `rules` |
+| `PII_SERVER_MODE` | `redact` | `redact` (LiteRT graph), `redact-torch` (checkpoint), `openai`, or `rules` |
 | `PII_PORT` | `9123` | local server port |
 | `PII_SERVER_SCRIPT` | `~/.claude/hooks/pii-server.py` | server script path |
-| `PII_SERVER_LOG` | `~/.cache/opf/server.log` | server log path |
+| `PII_SERVER_LOG` | `~/.cache/pii/server.log` | server log path |
 | `PII_MAX_BODY_BYTES` | `2097152` | largest request body either server reads (2 MiB); a larger declared length is answered with HTTP 413 before the body is read. A client still streaming when the answer is sent can see a broken pipe instead of the 413 |
-| `OPF_CACHE_DIR` | `~/.cache/opf` | model assets cache (server-side) |
+| `OPF_CACHE_DIR` | `~/.cache/opf` | OpenAI Privacy Filter assets, this backend only |
 | `OPF_MAX_TOKENS` | `1024` | OpenAI Privacy Filter request limit; larger requests fail with HTTP 413 |
 | `REDACT_CACHE_DIR` | `~/.cache/redact` | converted Redact assets cache |
-| `REDACT_DEVICE` | `auto` | `cuda`, `mps`, or explicit `cpu` |
+| `REDACT_DEVICE` | `auto` | `redact-torch` only: `cuda`, `mps`, or explicit `cpu`. `redact` is always CPU |
 | `REDACT_MAX_TOKENS` | `4096` | maximum tokens in one Redact chunk |
 | `REDACT_CHUNK_OVERLAP_TOKENS` | `128` | token overlap between adjacent Redact chunks |
 | `REDACT_MAX_INPUT_TOKENS` | `32768` | whole-request token cap; larger requests fail with HTTP 413 before inference |
 
-## Redact GPU mode
+## Redact modes
 
-The shared server uses Desert Ant Redact by default. It selects NVIDIA `cuda` first, then Apple Metal Performance Shaders (`mps`). It fails if no accelerator exists. Set `REDACT_DEVICE=cpu` only for an explicit CPU run.
+Redact is the default detector and it has two backends, which differ in where the
+weights come from and in what they need to run.
 
-Select the default mode on this Apple Silicon machine:
+`redact` runs the published LiteRT graph. It downloads `redact.tflite`,
+`config.json` and `tokenizer.json` from the Redact release at v0.4.0 on first use,
+needs no accelerator, and runs on a machine with nothing prepared. It is what a
+fresh install gets.
+
+`redact-torch` runs the PyTorch checkpoint instead. It needs `redact.pt` already
+in the cache, which the public release no longer publishes, so it is for a host
+that has one. Where it can run it is 2 to 3 times faster: it batches eight windows
+into one forward pass, which `redact` cannot do because its graph is fixed at one
+window per call, and it can use a GPU where `redact` has no working accelerator.
+
+The two agree: on the repo's own 440-case corpora they produce identical spans,
+and on six long documents they agree on five exactly and differ by one span on the
+sixth.
+
+Select the default:
 
 ```bash
-PII_SERVER_MODE=redact REDACT_DEVICE=mps uv run hooks-opf/pii-server.py --port 9123
+PII_SERVER_MODE=redact uv run hooks-pii/pii-server.py --port 9123
+```
+
+Select the checkpoint backend, which needs `~/.cache/redact/redact.pt` and an
+accelerator. It selects NVIDIA `cuda` first, then Apple Metal Performance Shaders
+(`mps`), and fails if no accelerator exists:
+
+```bash
+PII_SERVER_MODE=redact-torch REDACT_DEVICE=mps uv run hooks-pii/pii-server.py --port 9123
 ```
 
 Check the selected device:
@@ -340,26 +370,26 @@ curl -sS http://127.0.0.1:9123/health
 The health response identifies the active mode and device:
 
 ```json
-{"status":"ok","mode":"redact","device":"mps"}
+{"status":"ok","mode":"redact","device":"cpu"}
 ```
 
 Select OpenAI as the secondary mode. Stop the existing server before changing modes on the same port:
 
 ```bash
-PII_SERVER_MODE=openai uv run hooks-opf/pii-server.py --mode openai --port 9123
+PII_SERVER_MODE=openai uv run hooks-pii/pii-server.py --mode openai --port 9123
 ```
 
 Select the rules-only mode on a machine with no accelerator, or one too slow for the model:
 
 ```bash
-PII_SERVER_MODE=rules uv run hooks-opf/pii-server.py --mode rules --port 9123
+PII_SERVER_MODE=rules uv run hooks-pii/pii-server.py --mode rules --port 9123
 ```
 
 Rules mode runs the deterministic checks only. It loads no checkpoint and uses no accelerator. It reports `{"status":"ok","mode":"rules","device":"cpu"}`. It finds secrets, account numbers, emails, phone numbers, URLs, IP addresses, and dates. It does not find person names or postal addresses, because those need the neural model. On the 25-case fixture it scores 21 of 25; the four misses are the two person-name and two address cases.
 
 Rules mode needs no dependencies. `pii-server.py` imports the standard library alone, so the hook starts it with the system `python3` instead of `uv run`. That avoids resolving the script's declared model dependencies, which include torch. The other two modes still start under `uv run`.
 
-The neural model runs on the selected accelerator. Tokenization, deterministic checks, and span cleanup run on the CPU. Configure the mode with `REDACT_CACHE_DIR`, `REDACT_MIN_SCORE`, `REDACT_BATCH_SIZE`, `REDACT_MAX_TOKENS`, `REDACT_CHUNK_OVERLAP_TOKENS`, and `REDACT_MAX_INPUT_TOKENS`.
+In `redact-torch` the neural model runs on the selected accelerator. Tokenization, deterministic checks, and span cleanup run on the CPU, and so does everything in `redact`, whose graph is CPU only. Configure the mode with `REDACT_CACHE_DIR`, `REDACT_MIN_SCORE`, `REDACT_BATCH_SIZE` (`redact-torch` only, because the LiteRT graph cannot batch), `REDACT_MAX_TOKENS`, `REDACT_CHUNK_OVERLAP_TOKENS`, and `REDACT_MAX_INPUT_TOKENS`.
 
 ### Token limits and long outputs
 
@@ -371,13 +401,13 @@ The OpenAI Privacy Filter checkpoint declares 131,072 position embeddings. This 
 
 OpenAI mode does not chunk, so an oversized request returns HTTP 413 before any inference. The hook then names the size as the cause rather than blaming the detector, and tells the agent to raise the limit. In warn mode the content is allowed through unscanned, which is stated in the message; in block mode it is blocked, because a value that cannot be scanned cannot be cleared.
 
-Review the [Redact release](https://huggingface.co/desert-ant-labs/redact/resolve/v0.4.0/README.md) and its [source-available license](https://license.desertant.com/1.0) before distribution. The published release contains Core ML and TFLite assets. Create or provide the PyTorch cache separately.
+Review the [Redact release](https://huggingface.co/desert-ant-labs/redact/resolve/v0.4.0/README.md) and its [source-available license](https://license.desertant.com/1.0) before distribution. The release publishes `redact.tflite` and a compiled Core ML model. It does not publish `redact.pt`: every published revision is missing it, and the one commit that still lists it answers 403 from the storage layer. So `redact-torch` needs a checkpoint that was prepared separately, which is why `redact` is the default.
 
 Measure resource use on the final holdout corpus:
 
 ```bash
-uv run hooks-opf/tests/run-resource-comparison.py --mode local
-uv run hooks-opf/tests/run-resource-comparison.py --mode openai
+uv run hooks-pii/tests/run-resource-comparison.py --mode local
+uv run hooks-pii/tests/run-resource-comparison.py --mode openai
 ```
 
 The report includes process CPU time, wall latency, peak resident memory, and accelerator allocation. PyTorch MPS does not expose a reliable GPU utilization percentage.
@@ -391,7 +421,7 @@ Strict clean cases contain no intended PII. Any returned span counts as a false 
 The [comparison runner](tests/run-comparison.py) accepts any server with the shared `POST /` contract:
 
 ```bash
-uv run hooks-opf/tests/run-comparison.py \
+uv run hooks-pii/tests/run-comparison.py \
   --server redact=http://127.0.0.1:9124 \
   --server openai=http://127.0.0.1:9123
 ```
@@ -405,11 +435,18 @@ Exclude labels that a model documents as unsupported. For example, Rampart does 
 ## Uninstall
 
 ```bash
-rm ~/.claude/hooks/pii-check.sh ~/.claude/hooks/pii-server.py ~/.claude/hooks/redact_server.py
+rm ~/.claude/hooks/pii-check.sh ~/.claude/hooks/pii-server.py ~/.claude/hooks/pii_redact_torch.py
 # then edit ~/.claude/settings.json and ~/.codex/hooks.json and remove the entries
 ```
 
-Model cache lives at `~/.cache/opf/` — remove that too if you want it gone.
+Runtime files live under `~/.cache/pii/` (the server log and the skip events).
+Each backend keeps its model assets in its own cache: `~/.cache/opf/` for the
+OpenAI Privacy Filter, `~/.cache/redact/` for Redact. Remove those too if you
+want them gone.
+
+An install made before the suite had its own directory kept `server.log` and
+`pii-skips.log` under `~/.cache/opf/`. Move them to `~/.cache/pii/` by hand if
+you want to keep the history; a stale one left behind is simply not read.
 
 ## License
 

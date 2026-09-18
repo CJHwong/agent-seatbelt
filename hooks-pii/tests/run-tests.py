@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run hooks-opf test cases against a live pii-server.
+"""Run hooks-pii test cases against a live pii-server.
 
 Usage:
     ./run-tests.py [--fixture PATH] [--server URL]
@@ -22,7 +22,9 @@ from pathlib import Path
 
 
 def run(fixture: Path, server: str) -> int:
-    cases = [json.loads(line) for line in fixture.read_text().splitlines() if line.strip()]
+    cases = [
+        json.loads(line) for line in fixture.read_text().splitlines() if line.strip()
+    ]
 
     results: dict[str, dict[str, int]] = {}
     failures: list[tuple[int, str, list[str]]] = []

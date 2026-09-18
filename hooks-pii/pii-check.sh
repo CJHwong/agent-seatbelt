@@ -47,7 +47,7 @@ PREDICT="http://$HOST:$PORT/"
 # session and every user on the host, so a second one skipped its own start, waited
 # out the full health poll, and then failed closed.
 LOCK="${TMPDIR:-/tmp}/pii-server.$(id -u).${PORT}.starting"
-SERVER_LOG="${PII_SERVER_LOG:-$HOME/.cache/opf/server.log}"
+SERVER_LOG="${PII_SERVER_LOG:-$HOME/.cache/pii/server.log}"
 ACTION_MODE="${PII_ACTION_MODE:-warn}"
 # Default 1 keeps the documented one-shot bypass working for existing users. A
 # multi-user deployment sets 0, because anyone who can reach the agent can forge the
@@ -63,10 +63,10 @@ ALLOW_BYPASS="${PII_ALLOW_BYPASS:-1}"
 # daemon is the component that sees enough state to tell the two apart.
 #
 # One line per skipped request. Rotation belongs to whatever reads it.
-SKIP_LOG="${PII_SKIP_LOG:-$HOME/.cache/opf/pii-skips.log}"
+SKIP_EVENT_PATH="${PII_SKIP_EVENT_PATH:-$HOME/.cache/pii/pii-skips.log}"
 signal_skip() {
-    mkdir -p "$(dirname "$SKIP_LOG")" 2>/dev/null || true
-    printf '%s %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$1" >>"$SKIP_LOG" 2>/dev/null || true
+    mkdir -p "$(dirname "$SKIP_EVENT_PATH")" 2>/dev/null || true
+    printf '%s %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$1" >>"$SKIP_EVENT_PATH" 2>/dev/null || true
 }
 
 # Say that scanning was skipped, why, and how to restore it, instead of exiting
@@ -100,8 +100,8 @@ command -v jq >/dev/null 2>&1 || scanner_skipped "jq is not installed, so the sc
 command -v curl >/dev/null 2>&1 || scanner_skipped "curl is not installed, so the scanner cannot reach the detector" "Install curl"
 
 case "$SERVER_MODE" in
-    redact|openai|rules) ;;
-    *) scanner_skipped "PII_SERVER_MODE is '${SERVER_MODE}', which is not redact, openai, or rules" "Set it to one of those three" ;;
+    redact|redact-torch|openai|rules) ;;
+    *) scanner_skipped "PII_SERVER_MODE is '${SERVER_MODE}', which is not redact, redact-torch, openai, or rules" "Set it to one of those four" ;;
 esac
 
 case "$ACTION_MODE" in

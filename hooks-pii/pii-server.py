@@ -1,6 +1,7 @@
 # /// script
 # requires-python = ">=3.11"
 # dependencies = [
+#     "ai-edge-litert>=2.0",
 #     "huggingface_hub>=0.23,<2",
 #     "onnxruntime>=1.17",
 #     "tokenizers>=0.15",
@@ -10,6 +11,10 @@
 # ]
 # ///
 """Local PII server with Redact as the default mode.
+
+`redact` runs the published LiteRT graph, which a fresh install can download.
+`redact-torch` runs the checkpoint that release no longer publishes, for a host
+that already has one.
 
 POST / {"text": "..."} -> {"spans": [{"start": int, "end": int, "label": str, "text": str}, ...]}
 """
@@ -27,7 +32,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
 
-SUPPORTED_MODES = ("redact", "openai", "rules")
+SUPPORTED_MODES = ("redact", "redact-torch", "openai", "rules")
 DEFAULT_MODE = "redact"
 DEFAULT_MAX_BODY_BYTES = 2 * 1024 * 1024
 HANDLER_TIMEOUT_SECONDS = 30
@@ -54,7 +59,7 @@ def max_body_bytes() -> int:
 
 def health_payload(mode: str, model: object, busy: bool = False) -> dict[str, object]:
     payload: dict[str, object] = {"status": "ok", "mode": mode}
-    if mode == "redact":
+    if mode in ("redact", "redact-torch"):
         payload["device"] = str(getattr(model, "device", "unknown"))
     else:
         payload["device"] = "cpu"
@@ -97,11 +102,17 @@ def load_selected_model(mode: str) -> object:
         from pii_opf import Model, ensure_assets
 
         return Model(ensure_assets())
+    if mode == "redact-torch":
+        # The checkpoint backend, kept for a host that already has redact.pt.
+        from pii_redact_torch import RedactModel, ensure_assets as ensure_torch_assets
 
-    from redact_server import RedactModel, ensure_assets as ensure_redact_assets
+        requested_device = os.environ.get("REDACT_DEVICE", "auto")
+        return RedactModel(ensure_torch_assets(), requested_device)
 
-    requested_device = os.environ.get("REDACT_DEVICE", "auto")
-    return RedactModel(ensure_redact_assets(), requested_device)
+    # The default. Downloads its own assets, so a fresh install can provision it.
+    from pii_redact_lite import LitertRedactModel, ensure_assets as ensure_graph_assets
+
+    return LitertRedactModel(ensure_graph_assets())
 
 
 class Handler(BaseHTTPRequestHandler):

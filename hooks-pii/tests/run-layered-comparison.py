@@ -45,7 +45,7 @@ from final_holdout_cases import (  # noqa: E402  # ty: ignore[unresolved-import]
     validate_final_holdout_cases,
 )
 from holdout_cases import HOLDOUT_CASES, validate_holdout_cases  # noqa: E402  # ty: ignore[unresolved-import]
-from redact_server import (  # noqa: E402  # ty: ignore[unresolved-import]
+from pii_redact_torch import (  # noqa: E402  # ty: ignore[unresolved-import]
     RedactModel,
     deterministic_spans,
     merge_spans,

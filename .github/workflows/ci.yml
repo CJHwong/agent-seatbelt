@@ -1,6 +1,6 @@
 name: ci
 
-# The offline suites only. pii_opf and redact_server need torch and onnxruntime,
+# The offline suites only. pii_opf and pii_redact_torch need torch and onnxruntime,
 # so they are not run here; every other suite is hermetic and needs no model.
 #
 # coverage.sh is the single entry point: it runs that same set of suites and
@@ -52,7 +52,7 @@ jobs:
           claude --version
 
       - name: Offline suites and the coverage floor
-        working-directory: hooks-opf
+        working-directory: hooks-pii
         # PII_COV_DETAIL prints the uncovered lines, so a failure here says which
         # line regressed rather than only that the floor was missed.
         run: PII_COV_FLOOR=100 PII_COV_DETAIL=1 bash tests/coverage.sh
