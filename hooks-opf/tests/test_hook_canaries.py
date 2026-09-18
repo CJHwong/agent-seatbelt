@@ -80,11 +80,12 @@ class CanaryHarness(unittest.TestCase):
         self.addCleanup(self._project_dir.cleanup)
         self.project = Path(self._project_dir.name)
         self.sentinel = self.project / "sentinel"
-        self.stub_port = free_port()
         # A marker in the prompt, so the stub can say whether the prompt reached the
         # API. Counting requests cannot: the CLI may ask for a session title even when
         # the prompt hook blocked.
         self.marker = "canary-marker-9f3a1c"
+        self.last_run: subprocess.CompletedProcess[str] | None = None
+        self.last_state: dict = {}
 
     def wire(self, event: str, hook_mode: str, action_mode: str) -> None:
         """Point one event at the repo's hook, with the mode inside the command.
@@ -120,13 +121,13 @@ class CanaryHarness(unittest.TestCase):
                                 ],
                             }
                         ]
-                    },
-                    "permissions": {"allow": ["Bash"]},
+                    }
                 }
             )
         )
 
     def start_stub(self) -> None:
+        self.stub_port = free_port()
         self.stub = subprocess.Popen(
             [
                 sys.executable,
@@ -162,7 +163,17 @@ class CanaryHarness(unittest.TestCase):
                 time.sleep(0.05)
         self.fail("the stub never answered")
 
-    def run_cli(self, prompt: str) -> subprocess.CompletedProcess[str]:
+    def run_turn(
+        self, event: str, hook_mode: str, action_mode: str, prompt: str
+    ) -> subprocess.CompletedProcess[str]:
+        """Wire one mode, run one turn against its own stub, and keep the evidence.
+
+        Every turn gets a fresh stub because the scripted tool call is issued once: a
+        reused stub answers the second turn with text, so that turn has no tool call
+        in it and a missing sentinel would mean nothing.
+        """
+        self.wire(event, hook_mode, action_mode)
+        self.start_stub()
         environment = os.environ.copy()
         environment.update(
             {
@@ -171,8 +182,12 @@ class CanaryHarness(unittest.TestCase):
                 "ANTHROPIC_MODEL": "claude-sonnet-5",
             }
         )
-        return subprocess.run(
-            ["claude", "-p", prompt],
+        self.last_run = subprocess.run(
+            # --allowedTools is not decoration. Without it the tool call runs only if
+            # the machine already trusts the workspace, which made this suite pass on
+            # one platform and fail on another with the same CLI version. A test that
+            # depends on machine-level trust is not a test.
+            ["claude", "-p", prompt, "--allowedTools", "Bash"],
             cwd=self.project,
             env=environment,
             stdin=subprocess.DEVNULL,
@@ -181,58 +196,45 @@ class CanaryHarness(unittest.TestCase):
             check=False,
             timeout=180,
         )
+        self.last_state = self.stub_state()
+        return self.last_run
+
+    def diagnostics(self) -> str:
+        """What to print when an assertion fails, so one CI run is enough to diagnose."""
+        run = self.last_run
+        if run is None:
+            return "no run recorded"
+        return (
+            f"cli exit {run.returncode}\n"
+            f"cli stdout: {run.stdout.strip()[-400:]}\n"
+            f"cli stderr: {run.stderr.strip()[-400:]}\n"
+            f"stub state: {json.dumps(self.last_state)[:600]}"
+        )
 
 
 class ControlRefusalTests(CanaryHarness):
-    """A control exists only when its refusal is observable."""
+    """A control exists only when its refusal is observable.
 
-    def test_the_control_runs_when_it_is_off(self) -> None:
-        """The baseline. Without it, a missing sentinel proves nothing.
-
-        If the harness cannot make the sentinel appear with the control disabled, then
-        every other assertion here is measuring the harness, not the hook.
-        """
-        self.wire("PreToolUse", "claude-pretool", "warn")
-        self.start_stub()
-
-        self.run_cli("anything")
-
-        self.assertTrue(
-            self.sentinel.exists(),
-            "the sentinel never appeared even with the control in warn mode, so this "
-            "harness cannot tell a block from a run that never happened",
-        )
+    Each test runs the turn twice, control off and control on, inside one test. Kept
+    apart, a block test passes whenever the harness cannot produce the effect at all,
+    which is how a broken harness reads as a working control. The first half of each
+    test exists to make that impossible.
+    """
 
     def test_pretooluse_deny_stops_the_command(self) -> None:
-        """The canary for the defect this suite exists for.
-
-        A shape assertion passed while the command ran: the hook returned a perfectly
-        formed block that the runtime dropped silently.
-        """
-        self.wire("PreToolUse", "claude-pretool", "block")
-        self.start_stub()
-
-        self.run_cli("anything")
-
-        self.assertFalse(self.sentinel.exists(), "the control did not stop the command")
-        self.assertGreater(
-            self.stub_state()["requests"],
-            0,
-            "the stub was never asked for anything, so no tool call was attempted and "
-            "the missing sentinel says nothing",
-        )
-
-    def test_the_prompt_control_runs_when_it_is_off(self) -> None:
-        """The baseline for the prompt path."""
-        self.wire("UserPromptSubmit", "prompt", "warn")
-        self.start_stub()
-
-        self.run_cli(f"please remember {self.marker}")
-
+        """The canary for the defect this suite exists for."""
+        self.run_turn("PreToolUse", "claude-pretool", "warn", "anything")
         self.assertTrue(
             self.sentinel.exists(),
-            "the prompt did not reach the tool even with the control in warn mode, so "
-            "a missing sentinel proves nothing about the block",
+            "the harness could not make the sentinel appear with the control off, so a "
+            f"missing sentinel would prove nothing.\n{self.diagnostics()}",
+        )
+
+        self.sentinel.unlink(missing_ok=True)
+        self.run_turn("PreToolUse", "claude-pretool", "block", "anything")
+        self.assertFalse(
+            self.sentinel.exists(),
+            f"the control did not stop the command.\n{self.diagnostics()}",
         )
 
     def test_prompt_block_stops_the_turn(self) -> None:
@@ -244,15 +246,19 @@ class ControlRefusalTests(CanaryHarness):
         would assert a guarantee this runtime does not offer. The turn never starting
         is the guarantee the hook does offer, and a tool call is what proves it ran.
         """
-        self.wire("UserPromptSubmit", "prompt", "block")
-        self.start_stub()
+        prompt = f"please remember {self.marker}"
+        self.run_turn("UserPromptSubmit", "prompt", "warn", prompt)
+        self.assertTrue(
+            self.sentinel.exists(),
+            "the harness could not get a turn to run with the control off, so a "
+            f"missing sentinel would prove nothing.\n{self.diagnostics()}",
+        )
 
-        self.run_cli(f"please remember {self.marker}")
-
+        self.sentinel.unlink(missing_ok=True)
+        self.run_turn("UserPromptSubmit", "prompt", "block", prompt)
         self.assertFalse(
             self.sentinel.exists(),
-            f"the turn ran although the prompt hook blocked it; the stub saw "
-            f"{self.stub_state()['detail']}",
+            f"the turn ran although the prompt hook blocked it.\n{self.diagnostics()}",
         )
 
 

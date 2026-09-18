@@ -219,9 +219,11 @@ A response test cannot catch a control that is wired up wrong. A hook has two wa
 
 The scripted API is what makes this a test. With a real model in the loop, the model decides whether to call the tool at all, and it will refuse a prompt that reads like a probe, so an absent side effect proves nothing. `tests/stub_anthropic_api.py` answers instead.
 
-Every control is measured twice, once off and once on. "The sentinel is absent" alone cannot tell a refused call from a call that never happened.
+Every control is measured twice inside the same test, once off and once on. Kept apart, a block test passes whenever the harness cannot produce the effect at all, which is how a broken harness reads as a working control.
 
-The suite needs `claude` on `PATH` and skips without it, so CI reports it as skipped. Run it where you update the CLI, because that is what it is watching.
+The suite passes `--allowedTools Bash` to the CLI. That is not decoration: without it the scripted tool call runs only where the machine already trusts the workspace. The suite passed on macOS and failed on Linux with the same CLI version until that flag went in.
+
+CI installs the current CLI release on purpose, because noticing a hook contract change is what this suite is for. It skips wherever `claude` is absent, and the suite table reports the skip count, so a green run cannot quietly mean "not checked".
 
 Measured on Claude Code 2.1.276: PreToolUse refuses on a nested `permissionDecision`, on a top-level `decision`, and on exit code 2. The hook emits the nested form because Claude Code documents it, not because the other two fail. One consequence is worth knowing: Claude Code asks the provider for a session title before any hook runs, and that call carries the prompt text, so a blocked prompt still reaches the provider once. The turn never starts, which is the guarantee the hook offers.
 
