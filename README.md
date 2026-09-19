@@ -3,7 +3,7 @@
 Defense-in-depth for AI coding agents on macOS.
 
 - **Sandbox (`sb`)** — Apple Seatbelt wrapper that blocks reads of your secrets and writes outside your project, even with `--dangerously-skip-permissions`. Two files, no dependencies.
-- **PII hooks (`hooks-pii/`)** — Userland PII detector. Runs [Desert Ant Redact](https://huggingface.co/desert-ant-labs/redact) by default, with the [OpenAI Privacy Filter](https://huggingface.co/openai/privacy-filter) and a deterministic rules-only mode as alternatives. Catches secrets and personal data flowing into prompts or out of tool responses before the LLM sees them.
+- **PII hooks (`hooks-pii/`)** — Userland PII detector. Runs [Desert Ant Redact](https://desertant.com) by default, with the [OpenAI Privacy Filter](https://huggingface.co/openai/privacy-filter) and a deterministic rules-only mode as alternatives. Catches secrets and personal data flowing into prompts or out of tool responses before the LLM sees them.
 
 The sandbox is a file-level gate. The hooks are a content-level filter. Each closes a hole the other can't.
 
@@ -94,7 +94,7 @@ Pick based on what you want. If you want something you can read in 10 minutes an
 
 Content-level filter that runs alongside the sandbox. The sandbox stops the agent from *reading* your secrets; PII hooks stop secrets and PII from *flowing through prompts or tool responses* even when they enter the process some other way (env vars, credential helpers, paste).
 
-Powered by [Desert Ant Redact](https://huggingface.co/desert-ant-labs/redact) by default: a 24 MB LiteRT graph at v0.4.0 that downloads on first use, runs locally, and needs no accelerator. Three alternatives are available: `redact-torch` for a host that already has the PyTorch checkpoint, `openai` for the [OpenAI Privacy Filter](https://huggingface.co/openai/privacy-filter) (int8 ONNX, ~30 MB), and `rules` for the deterministic checks alone. Nothing leaves the machine.
+Powered by [Desert Ant Redact](https://desertant.com) by default: a 24 MB LiteRT graph at v0.4.0 that downloads on first use, runs locally, and needs no accelerator. Three alternatives are available: `redact-torch` for a host that already has the PyTorch checkpoint, `openai` for the [OpenAI Privacy Filter](https://huggingface.co/openai/privacy-filter) (int8 ONNX, ~30 MB), and `rules` for the deterministic checks alone. Nothing leaves the machine.
 
 ## Install
 
