@@ -4,7 +4,9 @@
 from __future__ import annotations
 
 import json
+import tempfile
 import unittest
+from pathlib import Path
 
 from hook_harness import FakePiiHandler, HookHarness
 
@@ -101,6 +103,77 @@ class HookModeTests(HookHarness):
 
         self.assertEqual(hook_output["decision"], "block")
         self.assertIn("PII detector unavailable", hook_output["reason"])
+
+    def test_the_user_message_names_the_cause_of_a_detector_failure(self) -> None:
+        """The person who can restart the server reads systemMessage, not the context.
+
+        Without the cause, every one of the failure branches produces the same
+        sentence, so a recurring failure cannot be told apart from a one-off.
+        """
+        FakePiiHandler.response_status = 500
+        try:
+            hook_output = self.run_hook(
+                "prompt",
+                {"prompt": "send this secret"},
+                action_mode="warn",
+            )
+        finally:
+            FakePiiHandler.response_status = 200
+
+        self.assertIn("HTTP status '500'", hook_output["systemMessage"])
+
+    def test_a_detector_failure_is_recorded_on_the_host(self) -> None:
+        """A skipped scan reaches the host log whether a tool or the detector caused it.
+
+        The in-band warning goes to the agent, and the agent is the one party the hook
+        cannot vouch for. A detector failure leaves the request unscanned exactly as a
+        missing tool does, so it needs the same host-side line.
+        """
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            skip_log = Path(temporary_directory) / "pii-skips.log"
+            FakePiiHandler.response_status = 500
+            try:
+                self.run_hook(
+                    "prompt",
+                    {"prompt": "send this secret"},
+                    action_mode="warn",
+                    extra_env={"PII_SKIP_EVENT_PATH": str(skip_log)},
+                )
+            finally:
+                FakePiiHandler.response_status = 200
+
+            self.assertTrue(skip_log.exists(), "no host-side line was written")
+            self.assertIn("HTTP status '500'", skip_log.read_text())
+
+    def test_the_user_message_names_the_cause_of_an_oversize_failure(self) -> None:
+        FakePiiHandler.response_status = 413
+        try:
+            hook_output = self.run_hook(
+                "prompt",
+                {"prompt": "send this secret"},
+                action_mode="warn",
+            )
+        finally:
+            FakePiiHandler.response_status = 200
+
+        self.assertIn("HTTP 413", hook_output["systemMessage"])
+
+    def test_an_oversize_failure_is_recorded_on_the_host(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            skip_log = Path(temporary_directory) / "pii-skips.log"
+            FakePiiHandler.response_status = 413
+            try:
+                self.run_hook(
+                    "prompt",
+                    {"prompt": "send this secret"},
+                    action_mode="warn",
+                    extra_env={"PII_SKIP_EVENT_PATH": str(skip_log)},
+                )
+            finally:
+                FakePiiHandler.response_status = 200
+
+            self.assertTrue(skip_log.exists(), "no host-side line was written")
+            self.assertIn("HTTP 413", skip_log.read_text())
 
     def test_oversized_input_is_not_reported_as_a_dead_detector(self) -> None:
         """A 413 is a rejected input, not a broken detector, and the agent can act on it."""
