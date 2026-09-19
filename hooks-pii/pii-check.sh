@@ -247,9 +247,17 @@ block_response() {
 detector_failure() {
     local detail="$1"
     event_subject
+    # A dead detector leaves the request unscanned exactly as a missing tool does, so
+    # it earns the same host-side line. Without it this branch is invisible: the agent
+    # holds the only copy of the cause, and nothing on the host can tell a recurring
+    # failure from a one-off.
+    signal_skip "$detail"
 
     if [ "$ACTION_MODE" = "warn" ]; then
-        local warning_message="PII detector unavailable while checking ${detected_location}. ${allowed_subject} was allowed because PII_ACTION_MODE=warn, but the detector did not complete. Treat the content as sensitive."
+        # The cause belongs in the message the human reads. All six failure branches
+        # share this sentence, so without the detail a restart-the-server fault and a
+        # malformed-response fault look identical.
+        local warning_message="PII detector unavailable while checking ${detected_location}. ${allowed_subject} was allowed because PII_ACTION_MODE=warn, but the detector did not complete. Treat the content as sensitive. ${detail}."
         local warning_context="PII detector unavailable while checking ${detected_location}. ${allowed_subject} was allowed because PII_ACTION_MODE=warn, but the detector did not complete. Do not repeat or expose unscanned values. ${detail}."
         jq -cn \
             --arg message "$warning_message" \
@@ -270,9 +278,10 @@ oversize_failure() {
     local detail="$1"
     event_subject
     local advice="Raise the detector's input limit, or lower PII_LEVEL, if this content has to be checked."
+    signal_skip "$detail"
 
     if [ "$ACTION_MODE" = "warn" ]; then
-        local warning_message="The input was too large for the detector to scan while checking ${detected_location}, so ${allowed_subject} went unscanned. ${advice}"
+        local warning_message="The input was too large for the detector to scan while checking ${detected_location}, so ${allowed_subject} went unscanned. ${advice} ${detail}."
         local warning_context="The input was too large for the detector to scan while checking ${detected_location}, so ${allowed_subject} went unscanned. Do not treat it as checked. ${detail}."
         jq -cn \
             --arg message "$warning_message" \

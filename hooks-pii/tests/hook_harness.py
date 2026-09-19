@@ -37,6 +37,7 @@ HOOK_ENV_KEYS = (
     "PII_LEVEL",
     "PII_BLOCK_LEVEL",
     "PII_ALLOW_LABELS",
+    "PII_SKIP_EVENT_PATH",
 )
 
 REQUIRED_TOOLS = ("curl", "jq")

@@ -118,6 +118,11 @@ which is what an agent needs in order to tell the user that a check they rely on
 It does not block, even in block mode: a missing tool is an operational fault rather than
 evidence about the content, and blocking would take the agent down with no way for it to clear.
 
+A detector failure reads the same way. The detector can be unreachable, stuck on the wrong
+mode, or answering with a shape the hook cannot use, and each one names itself in the message
+and writes one line to `~/.cache/pii/pii-skips.log`. An oversized input does too. Both leave
+the request unscanned, so both are recorded where a person can read them without the agent.
+
 Both action modes honour `PII_LEVEL`. Warn mode reports the same spans that block mode would reject. It does not expose the full value. A span below the level goes to stderr as `PII below level:`, and the agent never receives it. `PII_ALLOW_LABELS` removes a label in both modes.
 
 At `PII_LEVEL=relaxed` with `PII_ACTION_MODE=warn`, a prompt carrying only a name and a phone number produces no agent-visible warning. Raise the level to see those categories again.
