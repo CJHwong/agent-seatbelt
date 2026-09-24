@@ -578,9 +578,9 @@ GITLEAKS_RULES: tuple[
 # above do not. Betterleaks keeps the gitleaks rule shape, so the regexes are
 # rewritten the same way. Its filters are expressions that drop a finding. The
 # port reads four of them: an entropy threshold, and a secret that matches,
-# contains, or fails to match a listed value. The tokenRatio filter needs a BPE
-# tokenizer, so the port leaves it out. A rule that reports only next to another
-# rule's match is left out too. Ids carry the source, as in
+# contains, or fails to match a listed value. A fifth, tokenRatio, is in
+# TOKEN_RATIO_CEILINGS below. A rule that reports only next to another rule's
+# match is left out. Ids carry the source, as in
 # "betterleaks/lob-api-key", because some ids also name a gitleaks rule.
 
 BETTERLEAKS_RULES: tuple[
@@ -1717,6 +1717,386 @@ MICROSOFT_RULES: tuple[
     ),
 )
 
+# Provider token patterns written for this project, for GitHub types that no
+# rule above covers. Each has a documented format: a fixed prefix or structure
+# that a vendor page, a vendor SDK, or an open scanner states. The comment on
+# each rule names that source. A type whose format no source states has no
+# rule, because a keyword and a length alone flag too much ordinary text.
+# A key that is a short prefix and letters and digits must not touch a base64
+# character. A long base64 blob holds any four-letter prefix sooner or later.
+SEATBELT_RULES: tuple[
+    tuple[str, str, tuple[str, ...], float | None, tuple[str, ...]], ...
+] = (
+    # https://github.com/amzn/amazon-payments-magento-2-plugin/blob/master/view/adminhtml/web/js/validation-mixin.js
+    (
+        "seatbelt/amazon-oauth-client-id",
+        "\\bamzn1\\.application-oa2-client\\.[0-9a-z]{32}\\b",
+        ("amzn1.application-oa2-client.",),
+        None,
+        (),
+    ),
+    # https://github.com/Azure/azure-sdk-for-python/blob/main/sdk/communication/azure-communication-identity/azure/communication/identity/_shared/utils.py
+    (
+        "seatbelt/azure-communication-services-connection-string",
+        "(?i:endpoint)=https://[A-Za-z0-9.-]+\\.communication\\.azure\\.com/?;(?i:accesskey)=(?P<value>[A-Za-z0-9+/]{20,}={0,2})",
+        (
+            "communication.azure.com",
+            "accesskey=",
+        ),
+        None,
+        (),
+    ),
+    # https://devblogs.microsoft.com/iotdev/understand-different-connection-strings-in-azure-iot-hub/
+    (
+        "seatbelt/azure-iot-device-connection-string",
+        "\\b(?i:hostname)=[A-Za-z0-9.-]+\\.azure-devices\\.net;(?i:deviceid)=[^;\\s\\\"']+;(?i:sharedaccesskey)=(?P<value>[A-Za-z0-9+/]{20,}={0,2})",
+        (
+            "azure-devices.net",
+            "deviceid=",
+            "sharedaccesskey=",
+        ),
+        None,
+        (),
+    ),
+    # https://devblogs.microsoft.com/iotdev/understand-different-connection-strings-in-azure-iot-hub/
+    (
+        "seatbelt/azure-iot-hub-connection-string",
+        "\\b(?i:hostname)=[A-Za-z0-9.-]+\\.azure-devices\\.net;(?i:sharedaccesskeyname)=[^;\\s\\\"']+;(?i:sharedaccesskey)=(?P<value>[A-Za-z0-9+/]{20,}={0,2})",
+        (
+            "azure-devices.net",
+            "sharedaccesskeyname=",
+        ),
+        None,
+        (),
+    ),
+    # https://github.com/Azure/azure-iot-sdk-csharp/blob/main/provisioning/service/src/Auth/ServiceConnectionString.cs
+    (
+        "seatbelt/azure-iot-provisioning-connection-string",
+        "\\b(?i:hostname)=[A-Za-z0-9.-]+\\.azure-devices-provisioning\\.net;(?i:sharedaccesskeyname)=[^;\\s\\\"']+;(?i:sharedaccesskey)=(?P<value>[A-Za-z0-9+/]{20,}={0,2})",
+        (
+            "azure-devices-provisioning.net",
+            "sharedaccesskeyname=",
+        ),
+        None,
+        (),
+    ),
+    # https://learn.microsoft.com/en-us/azure/azure-signalr/concept-connection-string
+    (
+        "seatbelt/azure-signalr-connection-string",
+        "(?i:endpoint)=https://[A-Za-z0-9.-]+\\.service\\.signalr\\.net(?::\\d+)?/?;(?i:accesskey)=(?P<value>[A-Za-z0-9+/]{20,}={0,2})",
+        (
+            "service.signalr.net",
+            "accesskey=",
+        ),
+        None,
+        (),
+    ),
+    # https://learn.microsoft.com/en-us/dotnet/api/overview/azure/microsoft.azure.webjobs.extensions.webpubsub-readme?view=azure-dotnet
+    (
+        "seatbelt/azure-web-pub-sub-connection-string",
+        "(?i:endpoint)=https://[A-Za-z0-9.-]+\\.webpubsub\\.azure\\.com(?::\\d+)?/?;(?i:accesskey)=(?P<value>[A-Za-z0-9+/]{20,}={0,2})",
+        (
+            "webpubsub.azure.com",
+            "accesskey=",
+        ),
+        None,
+        (),
+    ),
+    # https://buildkite.com/docs/platform/security/tokens
+    (
+        "seatbelt/buildkite-packages-token",
+        "\\bbkpt_[A-Za-z0-9_-]{150,250}(?![A-Za-z0-9_-])",
+        ("bkpt_",),
+        None,
+        (),
+    ),
+    # https://forum.cfx.re/raw/3598425
+    (
+        "seatbelt/cfxre-server-key",
+        "\\bcfxk_[A-Za-z0-9]{16,32}_[A-Za-z0-9]{4,7}\\b",
+        ("cfxk_",),
+        None,
+        (),
+    ),
+    # https://github.com/trufflesecurity/trufflehog/blob/main/pkg/detectors/contentfulpersonalaccesstoken/contentfulpersonalaccesstoken.go
+    (
+        "seatbelt/contentful-personal-access-token",
+        "\\bCFPAT-[A-Za-z0-9_-]{40,50}(?![A-Za-z0-9_-])",
+        ("cfpat-",),
+        None,
+        (),
+    ),
+    # https://docs.datadoghq.com/account_management/personal-access-tokens/
+    (
+        "seatbelt/datadog-pat",
+        "\\bddpat_[A-Za-z0-9]+_[A-Za-z0-9]{30,90}\\b",
+        ("ddpat_",),
+        None,
+        (),
+    ),
+    # https://docs.doppler.com/reference/auth-token-formats
+    (
+        "seatbelt/doppler-audit-token",
+        "\\bdp\\.audit\\.[a-zA-Z0-9]{40,44}\\b",
+        ("dp.audit.",),
+        None,
+        (),
+    ),
+    # https://docs.doppler.com/reference/auth-token-formats
+    (
+        "seatbelt/doppler-scim-token",
+        "\\bdp\\.scim\\.[a-zA-Z0-9]{40,44}\\b",
+        ("dp.scim.",),
+        None,
+        (),
+    ),
+    # https://docs.doppler.com/reference/auth-token-formats
+    (
+        "seatbelt/doppler-service-account-token",
+        "\\bdp\\.sa\\.[a-zA-Z0-9]{40,44}\\b",
+        ("dp.sa.",),
+        None,
+        (),
+    ),
+    # https://github.com/betterleaks/betterleaks/blob/main/config/betterleaks.toml
+    (
+        "seatbelt/ebay-production-client-secret",
+        "\\bPRD-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4,12}\\b",
+        ("prd-",),
+        None,
+        (),
+    ),
+    # https://github.com/trufflesecurity/trufflehog/blob/main/pkg/detectors/flutterwave/flutterwave.go
+    (
+        "seatbelt/flutterwave-live-api-secret-key",
+        "\\bFLWSECK-[0-9a-zA-Z]{32}-X\\b",
+        ("flwseck-",),
+        None,
+        (),
+    ),
+    # https://docs.cloud.google.com/storage/docs/authentication/hmackeys
+    (
+        "seatbelt/google-cloud-storage-service-account-access-key-id",
+        "(?<![A-Za-z0-9+/])GOOG[A-Z0-9]{57}(?![A-Za-z0-9+/])",
+        ("goog",),
+        None,
+        (),
+    ),
+    # https://github.com/trufflesecurity/trufflehog/blob/main/pkg/detectors/googleoauth2/googleoauth2_access_token.go
+    (
+        "seatbelt/google-oauth-access-token",
+        "\\bya29\\.[0-9A-Za-z_-]{10,}",
+        ("ya29.",),
+        None,
+        (),
+    ),
+    # https://github.com/trufflesecurity/trufflehog/blob/main/pkg/detectors/hubspot_apikey/v2/apikey.go
+    (
+        "seatbelt/hubspot-personal-access-key",
+        "\\bpat-(?:na1|eu1)-[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\\b",
+        ("pat-",),
+        None,
+        (),
+    ),
+    # https://github.com/gitleaks/gitleaks/blob/master/cmd/generate/config/rules/artifactory.go
+    (
+        "seatbelt/jfrog-platform-api-key",
+        "(?<![A-Za-z0-9+/])AKCp[A-Za-z0-9]{69}(?![A-Za-z0-9+/])",
+        ("akcp",),
+        None,
+        (),
+    ),
+    # https://docs.mapbox.com/api/accounts/tokens/
+    (
+        "seatbelt/mapbox-secret-access-token",
+        "\\bsk\\.eyJ[A-Za-z0-9_-]{20,}\\.[A-Za-z0-9_-]{20,}(?![A-Za-z0-9_-])",
+        ("sk.ey",),
+        None,
+        (),
+    ),
+    # https://docs.midtrans.com/docs/api-authorization-headers
+    (
+        "seatbelt/midtrans-sandbox-server-key",
+        "\\bSB-Mid-server-[A-Za-z0-9_-]{10,}\\b",
+        ("sb-mid-server-",),
+        None,
+        (),
+    ),
+    # https://github.com/newrelic/rusty-hog/blob/master/README.md
+    (
+        "seatbelt/new-relic-insights-query-key",
+        "\\bNRIQ-[A-Za-z0-9_-]{32}(?![A-Za-z0-9_-])",
+        ("nriq-",),
+        None,
+        (),
+    ),
+    # https://github.com/newrelic/rusty-hog/blob/master/README.md
+    (
+        "seatbelt/new-relic-rest-api-key",
+        "\\bNRRA-[a-fA-F0-9]{42}\\b",
+        ("nrra-",),
+        None,
+        (),
+    ),
+    # https://gitlab.com/gitlab-org/security-products/secret-detection/secret-detection-rules/-/blob/main/rules/mit/onfido/onfido.toml
+    (
+        "seatbelt/onfido-live-api-token",
+        "\\bapi_live(?:_us|_ca)?\\.[A-Za-z0-9_-]{11}\\.[A-Za-z0-9_-]{32}(?![A-Za-z0-9_-])",
+        ("api_live",),
+        None,
+        (),
+    ),
+    # https://documentation.identity.entrust.com/api/latest/
+    (
+        "seatbelt/onfido-sandbox-api-token",
+        "\\bapi_sandbox(?:_us|_ca)?\\.[A-Za-z0-9_-]{11}\\.[A-Za-z0-9_-]{32}(?![A-Za-z0-9_-])",
+        ("api_sandbox",),
+        None,
+        (),
+    ),
+    # https://developer.paddle.com/changelog/2025/api-key-improvements
+    (
+        "seatbelt/paddle-sandbox-api-key",
+        "\\bpdl_sdbx_apikey_[a-z0-9]{26}_[A-Za-z0-9]{22}_[A-Za-z0-9]{3}\\b",
+        ("pdl_sdbx_apikey_",),
+        None,
+        (),
+    ),
+    # https://pangea.cloud/docs/admin-guide/projects/credentials
+    (
+        "seatbelt/pangea-token",
+        "\\bpts_[A-Za-z0-9]{20,60}\\b",
+        ("pts_",),
+        None,
+        (),
+    ),
+    # https://docs.withpersona.com/api-keys
+    (
+        "seatbelt/persona-sandbox-api-key",
+        "\\bpersona_sandbox_[A-Za-z0-9_-]{20,80}(?![A-Za-z0-9_-])",
+        ("persona_sandbox_",),
+        None,
+        (),
+    ),
+    # https://developers.pinterest.com/docs/getting-started/set-up-authentication-and-authorization/
+    (
+        "seatbelt/pinterest-refresh-token",
+        "\\bpinr_[A-Za-z0-9_-]{20,200}(?![A-Za-z0-9_-])",
+        ("pinr_",),
+        None,
+        (),
+    ),
+    # https://github.com/google/osv-scalibr/blob/main/veles/secrets/postmanapikey/detector.go
+    (
+        "seatbelt/postman-collection-key",
+        "\\bPMAT-[A-Za-z0-9]{26}\\b",
+        ("pmat-",),
+        None,
+        (),
+    ),
+    # https://docs.rainforestpay.com/reference/authentication
+    (
+        "seatbelt/rainforest-sandbox-api-key",
+        "\\bsbx_apikey_[a-f0-9]{64}\\b",
+        ("sbx_apikey_",),
+        None,
+        (),
+    ),
+    # https://github.com/google/osv-scalibr/blob/main/veles/secrets/salesforceoauth2access/detector.go
+    (
+        "seatbelt/salesforce-access-token",
+        "\\b00D[A-Za-z0-9]{12,15}![A-Za-z0-9._-]{30,260}",
+        ("00d",),
+        None,
+        (),
+    ),
+    # https://github.com/getsentry/sentry/blob/master/src/sentry/types/token.py
+    (
+        "seatbelt/sentry-integration-token",
+        "\\bsntryi_[a-f0-9]{64}\\b",
+        ("sntryi_",),
+        None,
+        (),
+    ),
+    # https://github.com/google/osv-scalibr/blob/main/veles/secrets/squareapikey/detector.go
+    (
+        "seatbelt/square-production-application-secret",
+        "\\bsq0csp-[A-Za-z0-9_-]{43}(?![A-Za-z0-9_-])",
+        ("sq0csp-",),
+        None,
+        (),
+    ),
+    # https://github.com/trufflesecurity/trufflehog/blob/main/pkg/detectors/squareapp/squareapp.go
+    (
+        "seatbelt/square-sandbox-application-secret",
+        "\\bsandbox-sq0csb-[A-Za-z0-9_-]{40,50}(?![A-Za-z0-9_-])",
+        ("sandbox-sq0csb-",),
+        None,
+        (),
+    ),
+    # https://github.com/google/osv-scalibr/blob/main/veles/secrets/supabase/detector.go
+    (
+        "seatbelt/supabase-secret-key",
+        "\\bsb_secret_[A-Za-z0-9_-]{31,36}(?![A-Za-z0-9_-])",
+        ("sb_secret_",),
+        None,
+        (),
+    ),
+    # https://gitlab.com/gitlab-org/security-products/secret-detection/secret-detection-rules/-/blob/main/rules/mit/tencent/tencent.toml
+    (
+        "seatbelt/tencent-cloud-secret-id",
+        "(?<![A-Za-z0-9+/])AKID[A-Za-z0-9]{32}(?![A-Za-z0-9+/])",
+        ("akid",),
+        None,
+        (),
+    ),
+    # https://gitlab.com/gitlab-org/security-products/secret-detection/secret-detection-rules/-/blob/main/rules/mit/volcengine/volcengine.toml
+    (
+        "seatbelt/volcengine-access-key-id",
+        "(?<![A-Za-z0-9+/])AKLT[A-Za-z0-9]{30,44}(?![A-Za-z0-9+/])",
+        ("aklt",),
+        None,
+        (),
+    ),
+    # https://gitlab.com/gitlab-org/security-products/secret-detection/secret-detection-rules/-/blob/main/rules/mit/yandexcloud/yandexcloud.toml
+    (
+        "seatbelt/yandex-cloud-iam-cookie",
+        "\\bc1\\.[A-Za-z0-9_-]+={0,2}\\.[A-Za-z0-9_-]{86}={0,2}(?![A-Za-z0-9_=-])",
+        ("c1.",),
+        None,
+        (),
+    ),
+    # https://yandex.cloud/en/docs/smartcaptcha/concepts/keys
+    (
+        "seatbelt/yandex-cloud-smartcaptcha-server-key",
+        "\\bysc2_[A-Za-z0-9_-]{20,}(?![A-Za-z0-9_-])",
+        ("ysc2_",),
+        None,
+        (),
+    ),
+    # https://github.com/trufflesecurity/trufflehog/blob/main/pkg/detectors/yandex/yandex.go
+    (
+        "seatbelt/yandex-dictionary-api-key",
+        "\\bdict\\.1\\.1\\.\\d{8}T\\d{6}Z\\.[0-9a-f]{16}\\.[0-9a-f]{40}\\b",
+        ("dict.1.1.",),
+        None,
+        (),
+    ),
+    # https://yandex.cloud/en/docs/iam/concepts/authorization/oauth-token
+    (
+        "seatbelt/yandex-passport-oauth-token",
+        "\\by[0-3]_[A-Za-z0-9_-]{30,120}(?![A-Za-z0-9_-])",
+        (
+            "y0_",
+            "y1_",
+            "y2_",
+            "y3_",
+        ),
+        3.5,
+        (),
+    ),
+)
+
 # The allowlist gitleaks applies to the secret of every rule, from the same
 # config. Betterleaks keeps the same list as its global filter. It holds
 # template variables, runs of one letter, local paths, and two stopwords.
@@ -1738,4 +2118,37 @@ SHARED_ALLOWLIST: tuple[str, ...] = (
     r"abcdefghijklmnopqrstuvwxyz",
 )
 
-PORTED_RULES = GITLEAKS_RULES + BETTERLEAKS_RULES + MICROSOFT_RULES
+# A rule drops a secret whose length over its cl100k_base token count is at or
+# above its ceiling, as betterleaks does. Words and identifiers take few tokens
+# for their length, and a random key takes many. The Yandex token prefix is also
+# the start of identifiers like "y0_offset_...", so it takes the same check.
+TOKEN_RATIO_CEILINGS: dict[str, float] = {
+    "betterleaks/adafruit-api-key": 2.5,
+    "betterleaks/airtable-api-key": 2.5,
+    "betterleaks/aiven-auth-token": 2.5,
+    "betterleaks/bitbucket-data-center-token": 2.5,
+    "betterleaks/bitrise-access-token": 2.5,
+    "betterleaks/circleci-personal-token": 2.5,
+    "betterleaks/circleci-project-token": 2.5,
+    "betterleaks/cisco-meraki-api-key": 2.5,
+    "betterleaks/dropbox-long-lived-api-token": 2.5,
+    "betterleaks/dropbox-short-lived-api-token": 2.5,
+    "betterleaks/flickr-access-token": 2.5,
+    "betterleaks/intercom-api-key": 2.5,
+    "betterleaks/launchdarkly-access-token": 2.5,
+    "betterleaks/messagebird-api-token": 2.5,
+    "betterleaks/mistral-api-key": 2.5,
+    "betterleaks/new-relic-user-api-key": 2.5,
+    "betterleaks/openweather-api-key": 2.5,
+    "betterleaks/plivo-auth-id": 2.5,
+    "betterleaks/vercel-api-token": 2.5,
+    "betterleaks/vercel-app-access-token": 2.5,
+    "betterleaks/vercel-app-refresh-token": 2.5,
+    "betterleaks/vercel-integration-token": 2.5,
+    "betterleaks/vercel-personal-access-token": 2.5,
+    "betterleaks/weatherstack-api-key.1": 2.5,
+    "betterleaks/weights-and-biases-api-key": 2.5,
+    "seatbelt/yandex-passport-oauth-token": 2.5,
+}
+
+PORTED_RULES = GITLEAKS_RULES + BETTERLEAKS_RULES + MICROSOFT_RULES + SEATBELT_RULES

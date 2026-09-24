@@ -796,7 +796,7 @@ def corpus_texts() -> list[tuple[str, str]]:
 # The values are random strings shaped by each rule, not real credentials.
 PORTED_SAMPLES = [
     json.loads(line)
-    for source in ("gitleaks", "betterleaks", "microsoft")
+    for source in ("gitleaks", "betterleaks", "microsoft", "seatbelt")
     for line in (TESTS_DIR / f"{source}-samples.jsonl").read_text().splitlines()
 ]
 
@@ -877,6 +877,22 @@ class PortedRuleTests(unittest.TestCase):
                 {"rubygems_" + "0123456789abcdef" * 3},
             )
 
+    def test_a_secret_that_tokenizes_like_words_is_not_reported(self) -> None:
+        # 60 characters in 14 tokens is a ratio of 4.3, over the ceiling of 2.5.
+        words = "vcp_the_production_deployment_token_for_our_marketing_webapp"
+        with only_ported_rule("betterleaks/vercel-personal-access-token"):
+            self.assertEqual(span_texts(f'token = "{words}"'), set())
+            random = "vcp_" + "Kx8mQ2vLp9ZrT4wNc7YhB3" * 2 + "q0Wn7Rt4Bz9L"
+            self.assertEqual(span_texts(f'token = "{random}"'), {random})
+
+    def test_a_prefix_inside_a_base64_run_is_not_a_key(self) -> None:
+        # A long base64 blob, an embedded image, holds any short prefix sooner
+        # or later. "/" is a word boundary, but it is a base64 character.
+        key = "AKLT" + "Kx8mQ2vLp9ZrT4wNc7YhB3q0Wn7Rt4Bz9L"
+        with only_ported_rule("seatbelt/volcengine-access-key-id"):
+            self.assertEqual(span_texts(f"iVBORw0KGgo+Qm9/{key}/x9Tq+Lm2"), set())
+            self.assertEqual(span_texts(f"VOLC_ACCESSKEY={key}\n"), {key})
+
     def test_an_allowlisted_secret_is_not_reported(self) -> None:
         # gitleaks lists this key as a known sample value.
         text = 'key: "AIzaSyabcdefghijklmnopqrstuvwxyz1234567"'
@@ -906,6 +922,34 @@ class PortedRuleTests(unittest.TestCase):
         # Every ported rule covers a type, and every name is a rule.
         self.assertLessEqual(set(pii_rules.PORTED_PATTERNS), named)
         self.assertLessEqual(named, set(pii_rules.PORTED_PATTERNS) | rule_patterns)
+
+
+class TokenCountTests(unittest.TestCase):
+    def test_the_vocabulary_keeps_every_rank(self) -> None:
+        ranks = pii_rules._cl100k_ranks()
+        self.assertEqual(sorted(ranks.values()), list(range(100256)))
+        # Ranks from OpenAI's tiktoken.
+        self.assertEqual(ranks[b"hello"], 15339)
+        self.assertEqual(ranks[b" world"], 1917)
+
+    def test_the_count_matches_the_tokenizer_betterleaks_uses(self) -> None:
+        # Counted with tiktoken-go v0.1.8, cl100k_base, as betterleaks counts.
+        # OpenAI's tiktoken gives the same counts.
+        expected = {
+            "hello world": 2,
+            "vcp_the_production_deployment_token_for_our_marketing_webapp": 14,
+            "Kx8mQ2vLp9ZrT4wNc7YhB3": 22,
+            "0123456789abcdef": 5,
+            "it's we'll THEY'RE": 6,
+            "a  b\n\n  c   ": 7,
+            "naïve café 東京タワー": 11,
+            "__init__.py -- ++==": 7,
+            "½ ² Ⅻ 3.14159": 11,
+            "": 0,
+        }
+        for text, count in expected.items():
+            with self.subTest(text=text):
+                self.assertEqual(pii_rules._token_count(text), count)
 
 
 def python_engine():

@@ -61,6 +61,7 @@ HOOK_FILES = (
     "pii_redact_lite.py",
     "pii_rules.py",
     "pii_secret_patterns.py",
+    "cl100k_base.tokens.gz",
     "pii_opf.py",
     "pii-check.sh",
 )
