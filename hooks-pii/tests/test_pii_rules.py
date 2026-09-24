@@ -43,6 +43,14 @@ def span_texts(text: str) -> set[str]:
     return {str(span["text"]) for span in pii_rules.deterministic_spans(text)}
 
 
+def labeled_texts(text: str) -> set[tuple[str, str]]:
+    """Return (text, label) for each deterministic span."""
+    return {
+        (str(span["text"]), str(span["label"]))
+        for span in pii_rules.deterministic_spans(text)
+    }
+
+
 def span_tuples(text: str) -> list[tuple[int, int, str]]:
     """Return (start, end, label) for each deterministic span, in order."""
     return [
@@ -798,6 +806,53 @@ def only_gitleaks_rule(rule_id: str):
     return mock.patch.multiple(
         pii_rules, SECRET_RULES=(), GITLEAKS_CHECKS=checks, _NATIVE_ENGINE=None
     )
+
+
+class RuleFalsePositiveTests(unittest.TestCase):
+    """Clean text the rules once flagged, next to the secret each rule is for."""
+
+    def test_the_rules_flag_none_of_these_clean_cases(self) -> None:
+        cases = {
+            case["id"]: case["text"]
+            for case in map(
+                json.loads,
+                (TESTS_DIR / "false-positive-cases.jsonl").read_text().splitlines(),
+            )
+        }
+        # The URL rule reports every URL, a public one included, by design.
+        for case_id in [f"clean-{number:03}" for number in range(51, 58)]:
+            with self.subTest(case=case_id):
+                labels = {
+                    span["label"]
+                    for span in pii_rules.deterministic_spans(cases[case_id])
+                }
+                self.assertLessEqual(labels, {"private_url"})
+
+    def test_a_secret_keyword_joined_to_a_word_is_not_a_secret_context(self) -> None:
+        self.assertEqual(span_texts("docs/code-security/secret-scanning/alerts"), set())
+        link = "https://onetimesecret.com/secret/4f9k2m8q1x7w3z6b5n0p"
+        self.assertIn(("/4f9k2m8q1x7w3z6b5n0p", "secret"), labeled_texts(link))
+        self.assertEqual(span_texts("secret: q8Rv2LmX7pWz4NbK"), {"q8Rv2LmX7pWz4NbK"})
+        self.assertEqual(span_texts("secret q8Rv2LmX7pWz4NbK"), {"q8Rv2LmX7pWz4NbK"})
+
+    def test_one_quoted_name_per_line_is_not_a_csv_header(self) -> None:
+        self.assertEqual(span_texts('    "password",\n    "hunter2value",\n'), set())
+        self.assertEqual(
+            span_texts("password,\nhunter2value,\n"),
+            set(),
+        )
+
+    def test_a_generic_context_value_of_lowercase_words_is_not_a_secret(self) -> None:
+        self.assertEqual(span_texts("airtable-api-key: keyword-context rule"), set())
+        self.assertEqual(span_texts("api-key: kx82mzq0dl"), {"kx82mzq0dl"})
+        # A password key still reads a passphrase of words, quoted or not.
+        for text in (
+            "password: correct-horse-battery-staple",
+            '"password": "correct-horse-battery-staple"',
+            '{"db_password": "correct-horse-battery-staple"}',
+        ):
+            with self.subTest(text=text):
+                self.assertEqual(span_texts(text), {"correct-horse-battery-staple"})
 
 
 class GitleaksRuleTests(unittest.TestCase):

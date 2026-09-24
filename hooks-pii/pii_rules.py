@@ -65,8 +65,10 @@ CARD_PATTERN = re.compile(r"(?<!\d)(?:\d{13,19}|\d{1,6}(?:[ -]\d{2,6}){1,5})(?!\
 #
 # The guard on the right differs per shape. A sentence may end on the number,
 # so a trailing full stop must not reject it. The dotted shape instead refuses
-# a fourth group, which is what makes it leave a dotted quad alone. The guard
-# on the left refuses a word character and a longer dotted run, nothing else.
+# a fourth group, which is what makes it leave a dotted quad alone. The bare
+# ten-digit run refuses a letter after it: that is the start of a hex id, like
+# a docker layer. The guard on the left refuses a word character and a longer
+# dotted run, nothing else.
 #
 # Two shapes are deliberately narrow. The 00 prefix needs a separator after the
 # country code, because a bare run behind it is a reference number and not a
@@ -79,7 +81,7 @@ PHONE_PATTERN = re.compile(
     r"|00\d{1,3}[ .-](?:\(\d{1,4}\)[ .-]?)?\d(?:[ .-]?\d){5,12}(?!\w)"
     r"|\(\d{1,4}\)[ .-]?\d(?:[ .-]?\d){6,12}(?!\w)"
     r"|\d{3}\.\d{3}\.\d{4}(?!\.?\d)"
-    r"|(?<!\d)\d{10}(?!\d)"
+    r"|(?<!\d)\d{10}(?!\w)"
     r"|(?<!\d[ -])\d{2,4}(?:[ -]\d{3,4}){0,2}[ -]\d{3,4}(?!\d)"
     r")"
 )
@@ -134,10 +136,13 @@ PROVIDER_SECRET_PATTERN = re.compile(
 )
 JWT_PATTERN = re.compile(r"\beyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\b")
 PRIVATE_KEY_PATTERN = re.compile(r"-----BEGIN (?:[A-Z0-9]+ )*PRIVATE KEY-----")
+# A value never starts with a hyphen. Joined to the keyword by one, it is the
+# rest of a name, like the secret-scanning path. A slash still joins them: a
+# one-time secret link carries its key right after /secret/.
 SECRET_CONTEXT_PATTERN = re.compile(
     r"(?i)\b(?:aws_secret_access_key|secret(?:\s+key|_access_key)?)"
     r"(?![a-z0-9_])"
-    r"\s*(?:(?:is|=|:)\s*)?(?P<value>[A-Za-z0-9/+=!@#$%^&*_-]{16,})"
+    r"\s*(?:(?:is|=|:)\s*)?(?P<value>(?!-)[A-Za-z0-9/+=!@#$%^&*_-]{16,})"
 )
 PASSWORD_CONTEXT_PATTERN = re.compile(
     r"(?i)\b(?:password|passphrase)\s*(?:is|=|:)\s*"
@@ -147,19 +152,28 @@ SECRET_CONTEXT_KEYS = (
     r"(?:api(?:[_-]?key|\s+key)|api[_-]?token|client[_-]?secret|"
     r"access[_-]?token|refresh[_-]?token|session[_-]?token|"
     r"private[_-]?(?:key|token)|auth[_-]?token|"
-    r"database[_-]?password|db[_-]?password|docker[_-]?password|"
-    r"aws[_-]?session[_-]?token|credential[_-]?value|password|passphrase|"
+    r"aws[_-]?session[_-]?token|credential[_-]?value|"
     r"secret(?:[_-]?(?:key|token|value|access[_-]?key))?|token|"
     r"x-api-key|_authToken|deploy[_-]?(?:secret|token)|"
     r"service[_-]?(?:secret|token))"
 )
-GENERIC_SECRET_CONTEXT_PATTERN = re.compile(
-    r"(?ix)(?<![a-z0-9])"
-    + SECRET_CONTEXT_KEYS
-    + r"(?![a-z0-9_])\s*[\"']?\s*(?:is|=|:)\s*"
+# The password keys run as their own pattern, because only the other keys
+# skip a value of plain words. See SECRET_ALLOWLISTS.
+PASSWORD_CONTEXT_KEYS = (
+    r"(?:database[_-]?password|db[_-]?password|docker[_-]?password|"
+    r"password|passphrase)"
+)
+CONTEXT_VALUE = (
+    r"(?![a-z0-9_])\s*[\"']?\s*(?:is|=|:)\s*"
     r"(?P<quote>[\"'`]?)(?P<value>"
     r"[a-z0-9][a-z0-9._~+/=:@$!%*&?{}-]{7,}"
     r")(?(quote)(?P=quote))"
+)
+GENERIC_SECRET_CONTEXT_PATTERN = re.compile(
+    r"(?ix)(?<![a-z0-9])" + SECRET_CONTEXT_KEYS + CONTEXT_VALUE
+)
+GENERIC_PASSWORD_CONTEXT_PATTERN = re.compile(
+    r"(?ix)(?<![a-z0-9])" + PASSWORD_CONTEXT_KEYS + CONTEXT_VALUE
 )
 BEARER_SECRET_PATTERN = re.compile(r"(?i)\bBearer\s+(?P<value>[A-Za-z0-9._~+/=-]{20,})")
 BASIC_SECRET_PATTERN = re.compile(r"(?i)\bBasic\s+(?P<value>[A-Za-z0-9+/]{16,}={0,2})")
@@ -303,10 +317,10 @@ RULE_KEYWORDS: dict[re.Pattern[str], tuple[str, ...]] = {
         "api",
         "secret",
         "token",
-        "pass",
         "private",
         "credential",
     ),
+    GENERIC_PASSWORD_CONTEXT_PATTERN: ("pass",),
     BEARER_SECRET_PATTERN: ("bearer",),
     BASIC_SECRET_PATTERN: ("basic",),
     DATABASE_URL_SECRET_PATTERN: ("://",),
@@ -596,6 +610,7 @@ SECRET_RULES: tuple[tuple[re.Pattern[str], str | None], ...] = (
     (PASSWORD_CONTEXT_PATTERN, "value"),
     (SECRET_CONTEXT_PATTERN, "value"),
     (GENERIC_SECRET_CONTEXT_PATTERN, "value"),
+    (GENERIC_PASSWORD_CONTEXT_PATTERN, "value"),
     (BEARER_SECRET_PATTERN, "value"),
     (BASIC_SECRET_PATTERN, "value"),
     (DATABASE_URL_SECRET_PATTERN, "value"),
@@ -610,6 +625,14 @@ SECRET_RULES: tuple[tuple[re.Pattern[str], str | None], ...] = (
     (STRUCTURED_SECRET_VALUE_PATTERN, "value"),
     (CJK_SECRET_CONTEXT_PATTERN, "value"),
 )
+
+# Values a rule matches that are not secrets. After an api-key or a token
+# keyword, lowercase words joined by hyphens are prose or a name, as in
+# "airtable-api-key: keyword-context rule". A token carries a digit or a capital.
+# The password rules keep no such list, because a passphrase is words.
+SECRET_ALLOWLISTS = {
+    GENERIC_SECRET_CONTEXT_PATTERN: (re.compile(r"\A[a-z]+(?:[-_][a-z]+)*\Z"),),
+}
 
 # What each engine answers: the matches of every pattern that matched.
 Matches = dict[re.Pattern[str], list]
@@ -629,7 +652,14 @@ def _scan_spans(text: str) -> list[dict[str, object]]:
     _append_ip_matches(found, spans)
 
     for pattern, group_name in SECRET_RULES:
-        _append_secret_matches(text, found, pattern, spans, group_name=group_name)
+        _append_secret_matches(
+            text,
+            found,
+            pattern,
+            spans,
+            group_name=group_name,
+            allowlist=SECRET_ALLOWLISTS.get(pattern, ()),
+        )
     for pattern, entropy_floor, allowlist in GITLEAKS_CHECKS:
         _append_secret_matches(
             text,
@@ -819,6 +849,11 @@ def _append_csv_secret_matches(
             continue
         delimiter = "\t" if "\t" in header_line else ","
         header_values = header_line.rstrip("\r\n").split(delimiter)
+        # A header names two columns or more. One name and a trailing comma is
+        # a line of code that lists quoted names, one per line.
+        if sum(bool(value.strip()) for value in header_values) < 2:
+            line_offset += len(header_line)
+            continue
         sensitive_columns = {
             column_index
             for column_index, header_value in enumerate(header_values)
