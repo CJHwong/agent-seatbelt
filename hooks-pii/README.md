@@ -13,6 +13,7 @@ This is the content-level companion to `agent-seatbelt`'s file-level sandbox. Th
 - `~/.claude/hooks/pii-check.sh` — the hook binary, called on prompt submit and tool response
 - `~/.claude/hooks/pii-server.py` — local HTTP server that loads the selected model and returns labeled spans
 - `~/.claude/hooks/pii_redact_torch.py` — local Redact model adapter used by `pii-server.py`
+- `~/.claude/hooks/pii_rules_native.abi3.so` — the native rules engine, on macOS arm64 and Linux x86_64 only. See [Native rules engine](#native-rules-engine)
 - For each detected agent, two entries in its hooks config:
   - `UserPromptSubmit` → blocks or warns on prompts containing PII before they reach the model provider
   - `PreToolUse` → blocks or warns on a tool call's **input** before it runs. This is the only
@@ -478,6 +479,7 @@ Exclude labels that a model documents as unsupported. For example, Rampart does 
 
 ```bash
 rm ~/.claude/hooks/pii-check.sh ~/.claude/hooks/pii-server.py ~/.claude/hooks/pii_redact_torch.py
+rm -f ~/.claude/hooks/pii_rules_native.abi3.so
 # then edit ~/.claude/settings.json and ~/.codex/hooks.json and remove the entries
 ```
 

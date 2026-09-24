@@ -13,6 +13,10 @@ isolation it needs:
                        real ~/.claude and ~/.codex are never referenced
   HOOKS_PII_BASE_URL   file:// pointing at this checkout, so nothing reaches the
                        network and the installed files are this repo's
+  HOOKS_PII_NATIVE_BASE_URL
+                       file:// pointing at stand-in release assets, and a stand-in
+                       uname that names the platform, so every platform branch
+                       runs on any machine
   --no-pilot           so no model is resolved, downloaded, or left running
 
 No test starts a server, downloads anything, or needs a model dependency.
@@ -61,6 +65,24 @@ HOOK_FILES = (
 )
 
 
+# The platforms the release carries a native build for, by uname -s and -m.
+NATIVE_ASSETS = {
+    ("Linux", "x86_64"): "pii_rules_native-linux-x86_64.abi3.so",
+    ("Darwin", "arm64"): "pii_rules_native-darwin-arm64.abi3.so",
+}
+NATIVE_FILE = "pii_rules_native.abi3.so"
+
+# Answers -s and -m from the environment and defers everything else. The shell
+# only reads these two, so the stand-in needs nothing more.
+FAKE_UNAME = """#!/bin/sh
+case "$1" in
+    -s) echo "$FAKE_UNAME_S" ;;
+    -m) echo "$FAKE_UNAME_M" ;;
+    *) exec /usr/bin/uname "$@" ;;
+esac
+"""
+
+
 def digest(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
@@ -72,6 +94,18 @@ class InstallerHarness(unittest.TestCase):
         self._temporary = tempfile.TemporaryDirectory(prefix="opf-install-test.")
         self.addCleanup(self._temporary.cleanup)
         self.home = Path(self._temporary.name)
+        # Outside HOME, so the files the installer writes stay the only files
+        # under it.
+        fixtures = tempfile.TemporaryDirectory(prefix="opf-install-fixtures.")
+        self.addCleanup(fixtures.cleanup)
+        self.release = Path(fixtures.name) / "release"
+        self.release.mkdir()
+        for asset in NATIVE_ASSETS.values():
+            (self.release / asset).write_text(f"stand-in {asset}\n")
+        self.fake_bin = Path(fixtures.name) / "bin"
+        self.fake_bin.mkdir()
+        (self.fake_bin / "uname").write_text(FAKE_UNAME)
+        (self.fake_bin / "uname").chmod(0o755)
 
     def add_agent(self, name: str) -> None:
         (self.home / f".{name}").mkdir(parents=True, exist_ok=True)
@@ -83,6 +117,7 @@ class InstallerHarness(unittest.TestCase):
         source: Path | None = None,
         pilot: bool = False,
         piped: bool = False,
+        platform: tuple[str, str] = ("Linux", "x86_64"),
     ) -> subprocess.CompletedProcess[str]:
         """Run the real installer against the temporary HOME.
 
@@ -91,6 +126,7 @@ class InstallerHarness(unittest.TestCase):
         run, which is off by default because it resolves model dependencies and
         leaves a listening process behind. `piped` feeds the script on stdin the way
         a `curl | bash` install does, which leaves `$0` as "bash" instead of a path.
+        `platform` is what uname reports, as (-s, -m).
         """
         environment = os.environ.copy()
         # Cleared first so an inherited one cannot decide the test.
@@ -99,6 +135,10 @@ class InstallerHarness(unittest.TestCase):
             {
                 "HOME": str(self.home),
                 "HOOKS_PII_BASE_URL": f"file://{source or HOOKS_DIR}",
+                "HOOKS_PII_NATIVE_BASE_URL": f"file://{self.release}",
+                "FAKE_UNAME_S": platform[0],
+                "FAKE_UNAME_M": platform[1],
+                "PATH": f"{self.fake_bin}{os.pathsep}{environment.get('PATH', '')}",
                 "PII_PORT": str(free_port()),
                 "PII_SERVER_LOG": str(self.home / "server.log"),
             }
@@ -203,6 +243,53 @@ class InstalledFileTests(InstallerHarness):
                 digest(HOOKS_DIR / name),
                 f"{name} was installed with different content",
             )
+
+
+class NativeEngineTests(InstallerHarness):
+    """The native rules engine is optional: its absence must never fail an install."""
+
+    def test_each_supported_platform_gets_its_own_build(self) -> None:
+        for platform, asset in NATIVE_ASSETS.items():
+            with self.subTest(platform=platform):
+                self.add_agent("claude")
+                result = self.run_installer("--no-codex", platform=platform)
+
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(
+                    digest(self.installed_dir() / NATIVE_FILE),
+                    digest(self.release / asset),
+                )
+                self.assertIn(
+                    f"Installed: {self.installed_dir() / NATIVE_FILE}", result.stdout
+                )
+
+    def test_another_platform_keeps_the_python_engine(self) -> None:
+        self.add_agent("claude")
+        # A build left from an earlier install must not outlive this one.
+        self.installed_dir().mkdir(parents=True)
+        (self.installed_dir() / NATIVE_FILE).write_text("stale")
+        result = self.run_installer("--no-codex", platform=("Linux", "aarch64"))
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertFalse((self.installed_dir() / NATIVE_FILE).exists())
+        self.assertIn(
+            "No native rules engine is built for Linux aarch64", result.stdout
+        )
+
+    def test_a_failed_download_keeps_the_python_engine(self) -> None:
+        self.add_agent("claude")
+        self.installed_dir().mkdir(parents=True)
+        (self.installed_dir() / NATIVE_FILE).write_text("stale")
+        for asset in NATIVE_ASSETS.values():
+            (self.release / asset).unlink()
+        result = self.run_installer("--no-codex")
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertFalse((self.installed_dir() / NATIVE_FILE).exists())
+        self.assertFalse((self.installed_dir() / f"{NATIVE_FILE}.part").exists())
+        self.assertIn(
+            "Could not download the native rules engine for linux-x86_64", result.stderr
+        )
 
 
 class ClaudeWiringTests(InstallerHarness):
@@ -670,6 +757,7 @@ class SideEffectTests(InstallerHarness):
             {
                 ".claude/settings.json",
                 *{f".claude/hooks/{name}" for name in HOOK_FILES},
+                f".claude/hooks/{NATIVE_FILE}",
             },
         )
 
