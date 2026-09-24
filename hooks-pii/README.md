@@ -404,8 +404,8 @@ Measured through the server on 1,000 real transcript inputs per machine. The tim
 
 | Machine | p99 input | Python `re` at p99 | Native at p99 | Inputs under 10 ms, native |
 |---|---|---|---|---|
-| Apple M1 Pro | 32 KB | 11 ms | 3 ms | 99.8% |
-| Celeron N3050 | 14 KB | 27 ms | 8 ms | 99.3% |
+| Apple M1 Pro | 35 KB | 16 ms | 3 ms | 99.8% |
+| Celeron N3050 | 14 KB | 31 ms | 9 ms | 99.2% |
 
 Both engines returned the same spans for all 2,000 inputs.
 
@@ -433,6 +433,12 @@ cp target/release/libpii_rules_native.so ../pii_rules_native.abi3.so      # Linu
 ```
 
 The file is built against the Python stable ABI, so one build loads on CPython 3.9 and later. Restart the server after you replace the file.
+
+### Provider token patterns
+
+`pii_secret_patterns.py` holds 71 provider token rules from [gitleaks](https://github.com/gitleaks/gitleaks) (MIT). They are the gitleaks rules that detect a secret type on GitHub's [secret scanning list](https://docs.github.com/en/code-security/secret-scanning/introduction/supported-secret-scanning-patterns). `tests/github-secret-types.tsv` lists each GitHub type and the rule that covers it. 82 of the 470 types have a rule. A rule reports a match only when the secret passes the gitleaks entropy floor and allowlist, and only when a gitleaks keyword is in the text.
+
+The port leaves out the gitleaks rules that pair a keyword with any string of the right length and have no entropy floor. gitleaks `adafruit-api-key`, for one, flags `adafruit_feed = "temperature-sensor-living-room-1"`.
 
 ### Token limits and long outputs
 

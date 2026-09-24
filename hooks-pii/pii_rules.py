@@ -7,10 +7,14 @@ hook all consume these spans. Nothing here loads a checkpoint.
 from __future__ import annotations
 
 import itertools
+import math
 import re
 import unicodedata
 from bisect import bisect_left
+from collections import Counter
 from typing import Protocol, cast
+
+from pii_secret_patterns import GITLEAKS_RULES
 
 
 SPAN_PRIORITY = {
@@ -213,6 +217,19 @@ MONTH_DATE_PATTERN = re.compile(
     r"september|october|november|december)\s+\d{1,2}(?:st|and|rd|th)?"
     r"(?:,\s*|\s+)(?:19|20)\d{2}\b"
 )
+GITLEAKS_PATTERNS = {
+    rule_id: re.compile(source) for rule_id, source, _, _, _ in GITLEAKS_RULES
+}
+# Each gitleaks pattern with the checks its secret must pass: the entropy it
+# must exceed, and the regexes that mark it as a known false positive.
+GITLEAKS_CHECKS = tuple(
+    (
+        GITLEAKS_PATTERNS[rule_id],
+        entropy_floor,
+        tuple(re.compile(allowed) for allowed in allowlist),
+    )
+    for rule_id, _, _, entropy_floor, allowlist in GITLEAKS_RULES
+)
 
 # Every rule pattern, with the literals it cannot match without. A pattern
 # whose keywords are all absent from the text is skipped, matched ignoring ASCII
@@ -324,6 +341,12 @@ RULE_KEYWORDS: dict[re.Pattern[str], tuple[str, ...]] = {
         "nov",
         "dec",
     ),
+    # gitleaks keywords are not all required by their pattern. They are the
+    # gate gitleaks itself applies, so gating on them keeps gitleaks' results.
+    **{
+        GITLEAKS_PATTERNS[rule_id]: keywords
+        for rule_id, _, keywords, _, _ in GITLEAKS_RULES
+    },
 }
 
 # The non-ASCII characters that IGNORECASE matches to an ASCII letter: the
@@ -607,6 +630,16 @@ def _scan_spans(text: str) -> list[dict[str, object]]:
 
     for pattern, group_name in SECRET_RULES:
         _append_secret_matches(text, found, pattern, spans, group_name=group_name)
+    for pattern, entropy_floor, allowlist in GITLEAKS_CHECKS:
+        _append_secret_matches(
+            text,
+            found,
+            pattern,
+            spans,
+            group_name="value" if "value" in pattern.groupindex else None,
+            entropy_floor=entropy_floor,
+            allowlist=allowlist,
+        )
     _append_csv_secret_matches(text, spans)
 
     _append_matches(text, found, ISO_DATE_PATTERN, "private_date", spans)
@@ -703,13 +736,31 @@ def _append_secret_matches(
     spans: list[dict[str, object]],
     *,
     group_name: str | None = None,
+    entropy_floor: float | None = None,
+    allowlist: tuple[re.Pattern[str], ...] = (),
 ) -> None:
     for match in found.get(pattern, ()):
         start, end = match.span(group_name) if group_name else match.span()
+        # gitleaks judges the secret as matched, before any trim.
+        secret = text[start:end]
+        if entropy_floor and _shannon_entropy(secret) <= entropy_floor:
+            continue
+        if any(allowed.search(secret) for allowed in allowlist):
+            continue
         end = _trim_secret_end(text, start, end)
         if start >= end or _is_secret_placeholder(text[start:end]):
             continue
         spans.append({"start": start, "end": end, "label": "secret"})
+
+
+def _shannon_entropy(value: str) -> float:
+    """Bits per character, as gitleaks computes it for its entropy floor."""
+    if not value:
+        return 0.0
+    length = len(value)
+    return -sum(
+        count / length * math.log2(count / length) for count in Counter(value).values()
+    )
 
 
 def _trim_secret_end(text: str, start: int, end: int) -> int:

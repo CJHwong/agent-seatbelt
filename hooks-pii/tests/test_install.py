@@ -60,6 +60,7 @@ HOOK_FILES = (
     "pii_redact_torch.py",
     "pii_redact_lite.py",
     "pii_rules.py",
+    "pii_secret_patterns.py",
     "pii_opf.py",
     "pii-check.sh",
 )

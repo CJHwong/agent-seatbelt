@@ -778,7 +778,74 @@ def corpus_texts() -> list[tuple[str, str]]:
         texts.append((case["id"], case["text"]))
     # The rule source itself: long, dense with keywords, and holding CJK text.
     texts.append(("pii_rules.py", Path(pii_rules.__file__).read_text()))
+    for sample in GITLEAKS_SAMPLES:
+        texts.append((f"gitleaks:{sample['rule']}", sample["text"]))
     return texts
+
+
+# One generated value per ported gitleaks rule, placed in a line of code.
+# The values are random strings shaped by each rule, not real credentials.
+GITLEAKS_SAMPLES = [
+    json.loads(line)
+    for line in (TESTS_DIR / "gitleaks-samples.jsonl").read_text().splitlines()
+]
+
+
+def only_gitleaks_rule(rule_id: str):
+    """Scan with one ported rule as the only secret rule."""
+    pattern = pii_rules.GITLEAKS_PATTERNS[rule_id]
+    checks = tuple(c for c in pii_rules.GITLEAKS_CHECKS if c[0] is pattern)
+    return mock.patch.multiple(
+        pii_rules, SECRET_RULES=(), GITLEAKS_CHECKS=checks, _NATIVE_ENGINE=None
+    )
+
+
+class GitleaksRuleTests(unittest.TestCase):
+    def test_every_rule_finds_its_sample(self) -> None:
+        self.assertEqual(
+            {sample["rule"] for sample in GITLEAKS_SAMPLES},
+            set(pii_rules.GITLEAKS_PATTERNS),
+        )
+        for sample in GITLEAKS_SAMPLES:
+            with self.subTest(rule=sample["rule"]), only_gitleaks_rule(sample["rule"]):
+                self.assertIn(sample["value"], span_texts(sample["text"]))
+
+    def test_a_secret_at_or_under_the_entropy_floor_is_not_reported(self) -> None:
+        # The rule's floor is 2 bits. "ab" repeated holds about 1.9.
+        text = "rubygems_" + "ab" * 24 + "\n"
+        with only_gitleaks_rule("rubygems-api-token"):
+            self.assertEqual(span_texts(text), set())
+            self.assertEqual(
+                span_texts("rubygems_" + "0123456789abcdef" * 3 + "\n"),
+                {"rubygems_" + "0123456789abcdef" * 3},
+            )
+
+    def test_an_allowlisted_secret_is_not_reported(self) -> None:
+        # gitleaks lists this key as a known sample value.
+        text = 'key: "AIzaSyabcdefghijklmnopqrstuvwxyz1234567"'
+        with only_gitleaks_rule("gcp-api-key"):
+            self.assertEqual(span_texts(text), set())
+
+    def test_the_ported_rules_add_nothing_to_the_other_cases(self) -> None:
+        for name, text in corpus_texts():
+            if name.startswith("gitleaks:"):
+                continue
+            with self.subTest(case=name), python_engine():
+                with mock.patch.object(pii_rules, "GITLEAKS_CHECKS", ()):
+                    without = pii_rules.deterministic_spans(text)
+                self.assertEqual(pii_rules.deterministic_spans(text), without)
+
+    def test_the_github_checklist_names_only_ported_rules(self) -> None:
+        rows = [
+            line.split("\t")
+            for line in (TESTS_DIR / "github-secret-types.tsv").read_text().splitlines()
+            if not line.startswith("#")
+        ]
+        self.assertEqual(
+            rows[0], ["secret_type", "provider", "push_protection", "gitleaks_id"]
+        )
+        named = {row[3] for row in rows[1:]} - {"-"}
+        self.assertEqual(named, set(pii_rules.GITLEAKS_PATTERNS))
 
 
 def python_engine():
@@ -789,7 +856,12 @@ class KeywordGateTests(unittest.TestCase):
     """A gate may only skip a pattern that could not have matched."""
 
     def test_the_gates_never_change_a_result(self) -> None:
-        ungated = {pattern: () for pattern in pii_rules.RULE_KEYWORDS}
+        # gitleaks keywords are rule semantics, not literals the pattern needs.
+        gitleaks = set(pii_rules.GITLEAKS_PATTERNS.values())
+        ungated = {
+            pattern: keywords if pattern in gitleaks else ()
+            for pattern, keywords in pii_rules.RULE_KEYWORDS.items()
+        }
         for name, text in corpus_texts():
             with self.subTest(case=name), python_engine():
                 gated_spans = pii_rules.deterministic_spans(text)
@@ -828,6 +900,7 @@ class KeywordGateTests(unittest.TestCase):
             for name, value in vars(pii_rules).items()
             if name.endswith("_PATTERN") and name not in not_rules
         }
+        declared.update(pii_rules.GITLEAKS_PATTERNS.values())
         self.assertEqual(declared, set(pii_rules.RULE_KEYWORDS))
 
 
