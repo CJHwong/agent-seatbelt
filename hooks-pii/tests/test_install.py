@@ -588,13 +588,21 @@ class PilotTests(InstallerHarness):
     )
 
     def start_fake(
-        self, port: int, mode: str = "rules", response: str | None = None
-    ) -> None:
+        self,
+        port: int,
+        mode: str = "rules",
+        response: str | None = None,
+        relative: bool = False,
+    ) -> subprocess.Popen:
+        """Start the stand-in. `relative` runs it by its bare name from its own
+        directory, as a server started by hand from the hooks directory runs."""
         environment = os.environ.copy()
         if response is not None:
             environment["FAKE_PII_RESPONSE"] = response
+        script = FAKE_SERVER.name if relative else str(FAKE_SERVER)
         server = subprocess.Popen(
-            [sys.executable, str(FAKE_SERVER), "--port", str(port), "--mode", mode],
+            [sys.executable, script, "--port", str(port), "--mode", mode],
+            cwd=FAKE_SERVER.parent,
             env=environment,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
@@ -611,7 +619,7 @@ class PilotTests(InstallerHarness):
                 check=False,
             )
             if probe.returncode == 0:
-                return
+                return server
             time.sleep(0.05)
         self.fail("the stand-in server never became healthy")
 
@@ -626,34 +634,146 @@ class PilotTests(InstallerHarness):
             server.kill()
             server.wait(timeout=5)
 
-    def test_pilot_reports_an_already_warm_server(self) -> None:
+    def install_over(self, port: int, *args: str, mode: str = "rules"):
+        return self.run_installer(
+            "--no-codex",
+            *args,
+            pilot="--no-pilot" not in args,
+            source=self.fake_source(),
+            extra_env={
+                "PII_PORT": str(port),
+                "PII_SERVER_MODE": mode,
+                "FAKE_PII_RESPONSE": self.SPAN_RESPONSE,
+            },
+        )
+
+    def health_mode(self, port: int) -> str:
+        probe = subprocess.run(
+            ["curl", "-sSf", "--max-time", "1", f"http://127.0.0.1:{port}/health"],
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        return json.loads(probe.stdout)["mode"] if probe.returncode == 0 else ""
+
+    def test_pilot_restarts_a_running_server(self) -> None:
+        """A running server keeps the code it started with, so it must stop."""
         self.add_agent("claude")
         port = free_port()
-        self.start_fake(port, mode="rules")
+        old = self.start_fake(port, mode="rules")
+
+        result = self.install_over(port)
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn(f"stopping the running server on 127.0.0.1:{port}", result.stdout)
+        self.assertIsNotNone(old.wait(timeout=5), "the old server is still running")
+        self.assertIn("server warm, smoke test flagged 1 span(s)", result.stdout)
+        self.assertEqual(self.health_mode(port), "rules")
+
+    def test_pilot_replaces_a_server_in_another_mode(self) -> None:
+        self.add_agent("claude")
+        port = free_port()
+        old = self.start_fake(port, mode="redact")
+
+        result = self.install_over(port, mode="rules")
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIsNotNone(old.wait(timeout=5), "the old server is still running")
+        self.assertEqual(self.health_mode(port), "rules")
+
+    def test_a_server_started_by_a_relative_path_is_stopped(self) -> None:
+        self.add_agent("claude")
+        port = free_port()
+        old = self.start_fake(port, relative=True)
+
+        result = self.install_over(port, "--no-pilot")
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIsNotNone(old.wait(timeout=5), "the old server is still running")
+
+    def test_no_pilot_still_stops_the_running_server(self) -> None:
+        """The next hook call then starts a server on the new code."""
+        self.add_agent("claude")
+        port = free_port()
+        old = self.start_fake(port)
+
+        result = self.install_over(port, "--no-pilot")
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIsNotNone(old.wait(timeout=5), "the old server is still running")
+        self.assertEqual(self.health_mode(port), "", "a server still answers")
+
+    def test_a_server_on_another_port_is_left_alone(self) -> None:
+        self.add_agent("claude")
+        other = self.start_fake(free_port())
+
+        result = self.install_over(free_port(), "--no-pilot")
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIsNone(other.poll(), "the server on the other port was stopped")
+
+    def test_a_server_the_installer_cannot_find_is_reported(self) -> None:
+        """Something else answers on the port. It is named, not killed."""
+        self.add_agent("claude")
+        port = free_port()
+        other = self.home / "detector.py"
+        shutil.copy2(FAKE_SERVER, other)
+        server = subprocess.Popen(
+            [sys.executable, str(other), "--port", str(port), "--mode", "rules"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        self.addCleanup(self.stop, server)
+        for _ in range(200):
+            if self.health_mode(port):
+                break
+            time.sleep(0.05)
+
+        result = self.install_over(port)
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("a server the installer cannot find still answers", result.stderr)
+        self.assertIsNone(
+            server.poll(), "the installer stopped a server it cannot name"
+        )
+
+    def test_a_server_that_will_not_stop_is_reported(self) -> None:
+        """The wait is 20 tries at half a second, so a stub stands in for sleep."""
+        self.add_agent("claude")
+        port = free_port()
+        stubborn = self.home / "stubborn_pii-server.py"
+        stubborn.write_text(
+            "import signal, time\n"
+            "signal.signal(signal.SIGTERM, signal.SIG_IGN)\n"
+            "time.sleep(60)\n"
+        )
+        server = subprocess.Popen(
+            [sys.executable, str(stubborn), "--port", str(port), "--mode", "rules"]
+        )
+        self.addCleanup(server.wait, 5)
+        self.addCleanup(server.kill)
+        # Let the interpreter install the handler before the installer signals it.
+        time.sleep(0.5)
+        stub_dir = self.home / "stubs"
+        stub_dir.mkdir()
+        (stub_dir / "sleep").write_text("#!/bin/sh\nexit 0\n")
+        (stub_dir / "sleep").chmod(0o755)
 
         result = self.run_installer(
             "--no-codex",
             pilot=True,
-            extra_env={"PII_PORT": str(port), "PII_SERVER_MODE": "rules"},
+            source=self.fake_source(),
+            extra_env={
+                "PII_PORT": str(port),
+                "PII_SERVER_MODE": "rules",
+                "PATH": f"{stub_dir}{os.pathsep}{os.environ['PATH']}",
+            },
         )
 
-        self.assertIn("server already warm", result.stdout)
-        self.assertIn("Model is warm", result.stdout)
-
-    def test_pilot_reports_a_mode_mismatch(self) -> None:
-        """A server on the port running the wrong mode is worth saying out loud."""
-        self.add_agent("claude")
-        port = free_port()
-        self.start_fake(port, mode="redact")
-
-        result = self.run_installer(
-            "--no-codex",
-            pilot=True,
-            extra_env={"PII_PORT": str(port), "PII_SERVER_MODE": "rules"},
-        )
-
-        self.assertIn("server mode is redact, requested rules", result.stderr)
-        self.assertIn("First matching prompt may be slow", result.stdout)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn(f"server pid {server.pid} did not stop", result.stderr)
+        self.assertNotIn("server warm", result.stdout)
+        self.assertIsNone(server.poll())
 
     def test_pilot_starts_a_cold_server_and_smoke_tests_it(self) -> None:
         self.add_agent("claude")

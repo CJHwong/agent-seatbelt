@@ -9,6 +9,7 @@
 #   curl -fsSL .../install.sh | bash -s -- --no-codex      # skip Codex even if present
 #   curl -fsSL .../install.sh | bash -s -- --no-pilot      # skip the model warm-up run
 #
+# A server already running on the port is stopped, so the new files take effect.
 # Before wiring, a pilot run resolves uv deps and starts the selected model, then
 # leaves the server warm so the first agent session skips the cold start. The
 # server is a shared singleton on 127.0.0.1:9123 that both agents reuse.
@@ -100,6 +101,7 @@ need_cmd() {
 
 need_cmd curl
 need_cmd jq
+need_cmd pgrep
 if [ "$SERVER_MODE" = "rules" ]; then
     need_cmd python3
 else
@@ -268,17 +270,9 @@ wire_agent() {
 # prompt pays the cold start, same as before this step existed.
 pilot_run() {
     local health="http://127.0.0.1:$PORT/health"
-    local existing_health existing_status existing_mode
-    existing_health=$(curl -sSf --max-time 1 "$health" 2>/dev/null || true)
-    existing_status=$(printf '%s' "$existing_health" | jq -r '.status // empty' 2>/dev/null || true)
-    if [ "$existing_status" = "ok" ]; then
-        existing_mode=$(printf '%s' "$existing_health" | jq -r '.mode // "unknown"' 2>/dev/null || true)
-        if [ "$existing_mode" = "$SERVER_MODE" ]; then
-            echo "  server already warm on 127.0.0.1:$PORT — nothing to do"
-            PILOT_OK=1
-        else
-            echo "  server mode is $existing_mode, requested $SERVER_MODE; restart the server" >&2
-        fi
+    if curl -sSf --max-time 1 "$health" >/dev/null 2>&1; then
+        echo "  a server the installer cannot find still answers on 127.0.0.1:$PORT;" >&2
+        echo "  stop it and rerun the installer" >&2
         return
     fi
     mkdir -p "$(dirname "$SERVER_LOG")"
@@ -315,8 +309,33 @@ pilot_run() {
     fi
 }
 
+# A running server keeps the code it started with, so the new files take effect
+# only once it stops. Match the script name and the port, not the path: a server
+# started by hand from the hooks directory shows only "pii-server.py".
+SERVER_PATTERN="pii[-_]server\.py .*--port $PORT( |\$)"
+stop_running_server() {
+    local pids
+    pids=$(pgrep -f "$SERVER_PATTERN" | tr '\n' ' ' || true)
+    [ -n "$pids" ] || return 0
+    echo "  stopping the running server on 127.0.0.1:$PORT (pid ${pids% })"
+    # shellcheck disable=SC2086 # one pid per word
+    kill $pids 2>/dev/null || true
+    for _ in $(seq 1 20); do
+        pgrep -f "$SERVER_PATTERN" >/dev/null || return 0
+        sleep 0.5
+    done
+    pids=$(pgrep -f "$SERVER_PATTERN" | tr '\n' ' ' || true)
+    echo "  server pid ${pids% } did not stop; stop it and rerun the installer" >&2
+    return 1
+}
+
+echo
+echo "Restarting the server..."
+SERVER_STOPPED=1
+stop_running_server || SERVER_STOPPED=0
+
 PILOT_OK=0
-if [ "$RUN_PILOT" -eq 1 ]; then
+if [ "$RUN_PILOT" -eq 1 ] && [ "$SERVER_STOPPED" -eq 1 ]; then
     echo
     echo "Pilot run (before wiring)..."
     pilot_run
