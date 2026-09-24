@@ -6,15 +6,18 @@ hook all consume these spans. Nothing here loads a checkpoint.
 
 from __future__ import annotations
 
+import functools
+import gzip
 import itertools
 import math
 import re
 import unicodedata
 from bisect import bisect_left
 from collections import Counter
+from pathlib import Path
 from typing import Protocol, cast
 
-from pii_secret_patterns import GITLEAKS_RULES
+from pii_secret_patterns import PORTED_RULES, SHARED_ALLOWLIST, TOKEN_RATIO_CEILINGS
 
 
 SPAN_PRIORITY = {
@@ -231,18 +234,24 @@ MONTH_DATE_PATTERN = re.compile(
     r"september|october|november|december)\s+\d{1,2}(?:st|and|rd|th)?"
     r"(?:,\s*|\s+)(?:19|20)\d{2}\b"
 )
-GITLEAKS_PATTERNS = {
-    rule_id: re.compile(source) for rule_id, source, _, _, _ in GITLEAKS_RULES
+PORTED_PATTERNS = {
+    rule_id: re.compile(source) for rule_id, source, _, _, _ in PORTED_RULES
 }
-# Each gitleaks pattern with the checks its secret must pass: the entropy it
-# must exceed, and the regexes that mark it as a known false positive.
-GITLEAKS_CHECKS = tuple(
+# Each ported pattern with the checks its secret must pass: the entropy it
+# must exceed, the token ratio it must stay under, and the regexes that mark it
+# as a known false positive, its own and the ones its source applies to every
+# rule. These replace the placeholder
+# check, which reads "$", "{" and "test_" as placeholders: a real Asaas key
+# starts with "$aact_", and a real Lob test key with "test_".
+_SHARED_ALLOWLIST = tuple(re.compile(allowed) for allowed in SHARED_ALLOWLIST)
+PORTED_CHECKS = tuple(
     (
-        GITLEAKS_PATTERNS[rule_id],
+        PORTED_PATTERNS[rule_id],
         entropy_floor,
-        tuple(re.compile(allowed) for allowed in allowlist),
+        TOKEN_RATIO_CEILINGS.get(rule_id),
+        tuple(re.compile(allowed) for allowed in allowlist) + _SHARED_ALLOWLIST,
     )
-    for rule_id, _, _, entropy_floor, allowlist in GITLEAKS_RULES
+    for rule_id, _, _, entropy_floor, allowlist in PORTED_RULES
 )
 
 # Every rule pattern, with the literals it cannot match without. A pattern
@@ -355,11 +364,11 @@ RULE_KEYWORDS: dict[re.Pattern[str], tuple[str, ...]] = {
         "nov",
         "dec",
     ),
-    # gitleaks keywords are not all required by their pattern. They are the
-    # gate gitleaks itself applies, so gating on them keeps gitleaks' results.
+    # Ported keywords are not all required by their pattern. They are the gate
+    # the source applies, so gating on them keeps the source's results.
     **{
-        GITLEAKS_PATTERNS[rule_id]: keywords
-        for rule_id, _, keywords, _, _ in GITLEAKS_RULES
+        PORTED_PATTERNS[rule_id]: keywords
+        for rule_id, _, keywords, _, _ in PORTED_RULES
     },
 }
 
@@ -660,7 +669,7 @@ def _scan_spans(text: str) -> list[dict[str, object]]:
             group_name=group_name,
             allowlist=SECRET_ALLOWLISTS.get(pattern, ()),
         )
-    for pattern, entropy_floor, allowlist in GITLEAKS_CHECKS:
+    for pattern, entropy_floor, token_ratio_ceiling, allowlist in PORTED_CHECKS:
         _append_secret_matches(
             text,
             found,
@@ -668,7 +677,9 @@ def _scan_spans(text: str) -> list[dict[str, object]]:
             spans,
             group_name="value" if "value" in pattern.groupindex else None,
             entropy_floor=entropy_floor,
+            token_ratio_ceiling=token_ratio_ceiling,
             allowlist=allowlist,
+            skip_placeholders=False,
         )
     _append_csv_secret_matches(text, spans)
 
@@ -767,18 +778,24 @@ def _append_secret_matches(
     *,
     group_name: str | None = None,
     entropy_floor: float | None = None,
+    token_ratio_ceiling: float | None = None,
     allowlist: tuple[re.Pattern[str], ...] = (),
+    skip_placeholders: bool = True,
 ) -> None:
     for match in found.get(pattern, ()):
         start, end = match.span(group_name) if group_name else match.span()
-        # gitleaks judges the secret as matched, before any trim.
+        # A ported rule judges the secret as matched, before any trim.
         secret = text[start:end]
         if entropy_floor and _shannon_entropy(secret) <= entropy_floor:
+            continue
+        if token_ratio_ceiling and _token_ratio(secret) >= token_ratio_ceiling:
             continue
         if any(allowed.search(secret) for allowed in allowlist):
             continue
         end = _trim_secret_end(text, start, end)
-        if start >= end or _is_secret_placeholder(text[start:end]):
+        if start >= end:
+            continue
+        if skip_placeholders and _is_secret_placeholder(text[start:end]):
             continue
         spans.append({"start": start, "end": end, "label": "secret"})
 
@@ -791,6 +808,77 @@ def _shannon_entropy(value: str) -> float:
     return -sum(
         count / length * math.log2(count / length) for count in Counter(value).values()
     )
+
+
+# The cl100k_base vocabulary, from the cl100k_base.tiktoken.gz that betterleaks
+# (MIT) embeds, sha256 4414e3fb432aa5c4a9a19d5b91fe5ab27fecb8f5347208696a01bc507e093696.
+# That file is one base64 token and its rank per line, 757 KB, over the repo's
+# 500 KB file limit. Its ranks run 0 to 100255 in order, so this file keeps each
+# token as one length byte and its bytes, in rank order, and its place is its
+# rank.
+_CL100K_PATH = Path(__file__).with_name("cl100k_base.tokens.gz")
+# The cl100k_base split, from tiktoken-go v0.1.8, the version betterleaks uses.
+# Python re has no \p{L} or \p{N}. A letter is [^\W\d_] and a number is \d, so
+# "neither" is [^\w] or "_". These agree with \p{L} and \p{N} on ASCII. They
+# differ on non-ASCII number characters like "²", which re reads as letters.
+# Every rule with a ceiling captures ASCII characters only, so none reaches it.
+_CL100K_SPLIT = re.compile(
+    r"(?i:'s|'t|'re|'ve|'m|'ll|'d)"
+    r"|(?:[^\w\r\n]|_)?[^\W\d_]+"
+    r"|\d{1,3}"
+    r"| ?(?:[^\w\s]|_)+[\r\n]*"
+    r"|\s*[\r\n]+"
+    r"|\s+(?!\S)"
+    r"|\s+"
+)
+
+
+@functools.cache
+def _cl100k_ranks() -> dict[bytes, int]:
+    """Load the vocabulary on first use. Most texts never reach a rule that needs it."""
+    payload = gzip.decompress(_CL100K_PATH.read_bytes())
+    ranks: dict[bytes, int] = {}
+    position = 0
+    while position < len(payload):
+        length = payload[position]
+        ranks[payload[position + 1 : position + 1 + length]] = len(ranks)
+        position += 1 + length
+    return ranks
+
+
+def _token_count(text: str) -> int:
+    """The number of cl100k_base tokens in text."""
+    ranks = _cl100k_ranks()
+    return sum(
+        _piece_token_count(piece.encode(), ranks)
+        for piece in _CL100K_SPLIT.findall(text)
+    )
+
+
+def _piece_token_count(piece: bytes, ranks: dict[bytes, int]) -> int:
+    """Merge the adjacent pair of lowest rank until no pair is in the vocabulary."""
+    if piece in ranks:
+        return 1
+    parts = [piece[index : index + 1] for index in range(len(piece))]
+    while len(parts) > 1:
+        mergeable = [
+            (ranks[left + right], index)
+            for index, (left, right) in enumerate(zip(parts, parts[1:]))
+            if left + right in ranks
+        ]
+        if not mergeable:
+            break
+        _, index = min(mergeable)
+        parts[index : index + 2] = [parts[index] + parts[index + 1]]
+    return len(parts)
+
+
+def _token_ratio(secret: str) -> float:
+    """Bytes per token, as betterleaks computes it. A short secret loses its line breaks."""
+    if len(secret.encode()) < 20:
+        secret = secret.replace("\n", "").replace("\r", "")
+    tokens = _token_count(secret)
+    return len(secret.encode()) / tokens if tokens else 0.0
 
 
 def _trim_secret_end(text: str, start: int, end: int) -> int:

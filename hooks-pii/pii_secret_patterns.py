@@ -568,3 +568,1627 @@ GITLEAKS_RULES: tuple[
         (r"s\.[A-Za-z]{24}",),
     ),
 )
+
+# Provider token patterns ported from betterleaks.
+#
+# Source: https://github.com/betterleaks/betterleaks, config/betterleaks.toml at
+# commit 2a387a5bad42 (2026-09-10). MIT License.
+#
+# The port keeps the rules that detect a GitHub secret type the gitleaks rules
+# above do not. Betterleaks keeps the gitleaks rule shape, so the regexes are
+# rewritten the same way. Its filters are expressions that drop a finding. The
+# port reads four of them: an entropy threshold, and a secret that matches,
+# contains, or fails to match a listed value. A fifth, tokenRatio, is in
+# TOKEN_RATIO_CEILINGS below. A rule that reports only next to another rule's
+# match is left out, unless the secret carries its own prefix. Then it reports
+# without the other match. Ids carry the source, as in
+# "betterleaks/lob-api-key", because some ids also name a gitleaks rule.
+
+BETTERLEAKS_RULES: tuple[
+    tuple[str, str, tuple[str, ...], float | None, tuple[str, ...]], ...
+] = (
+    (
+        "betterleaks/adafruit-api-key",
+        "(?i)(?:adafruit)(?:[ \\t\\w.-]{0,20})[\\s'\"]{0,3}(?:=|>|:{1,3}=|\\|\\||:|=>|\\?=|,)[\\x60'\"\\s=]{0,5}(?P<value>[a-z0-9_-]{32})(?:\\\\?['\"\\x60]|[\\s;]|\\\\[nr]|$)",
+        ("adafruit",),
+        3.4999999999999996,
+        (),
+    ),
+    (
+        "betterleaks/aikido-ci-token",
+        r"\b(?P<value>AIK_CI_[A-Za-z0-9]{20,44})\b",
+        ("aik_ci_",),
+        2.9999999999999996,
+        (),
+    ),
+    (
+        "betterleaks/airtable-api-key",
+        "(?i)(?:airtable)(?:[ \\t\\w.-]{0,20})[\\s'\"]{0,3}(?:=|>|:{1,3}=|\\|\\||:|=>|\\?=|,)[\\x60'\"\\s=]{0,5}(?P<value>[a-z0-9]{17})(?:\\\\?['\"\\x60]|[\\s;]|\\\\[nr]|$)",
+        ("airtable",),
+        2.9999999999999996,
+        (),
+    ),
+    (
+        "betterleaks/aiven-auth-token",
+        r"(?i:aiven)[\s\S]{0,32}?\b(?P<value>[A-Za-z0-9/+=]{372})(?:[^A-Za-z0-9/+=]|$)",
+        ("aiven",),
+        3.9999999999999996,
+        (),
+    ),
+    (
+        "betterleaks/apify-api-token",
+        r"\b(?P<value>apify_api_[A-Za-z0-9]{34,38})\b",
+        ("apify_api_",),
+        3.4999999999999996,
+        (),
+    ),
+    (
+        "betterleaks/asaas-api-token",
+        r"(?:^|[^A-Za-z0-9_-])(?P<value>\$aact_(?:prod|hmlg)_[A-Za-z0-9_-]{20,100})(?:[^A-Za-z0-9_-]|$)",
+        ("$aact_",),
+        3.4999999999999996,
+        (),
+    ),
+    (
+        "betterleaks/beamer-api-token",
+        "(?i)(?:beamer)(?:[ \\t\\w.-]{0,20})[\\s'\"]{0,3}(?:=|>|:{1,3}=|\\|\\||:|=>|\\?=|,)[\\x60'\"\\s=]{0,5}(?P<value>b_[a-z0-9=_\\-]{44})(?:\\\\?['\"\\x60]|[\\s;]|\\\\[nr]|$)",
+        ("beamer",),
+        None,
+        (),
+    ),
+    (
+        "betterleaks/bitbucket-data-center-token",
+        "\\b(?P<value>BBDC-[A-Za-z0-9+/=]{32,})(?:\\\\?['\"\\x60]|[\\s;]|\\\\[nr]|$)",
+        ("bbdc",),
+        3.4999999999999996,
+        (),
+    ),
+    (
+        "betterleaks/bitrise-access-token",
+        "(?i:(?:bitrise(?:[ _-]*(?:personal|workspace))?(?:[ _-]*(?:access|api))?[ _-]*token)(?:[ \\t\\w.-]{0,20})[\\s'\"]{0,3})(?:=|>|:{1,3}=|\\|\\||:|=>|\\?=|,)[\\x60'\"\\s=]{0,5}(?P<value>[A-Za-z0-9_-]{60,120})(?:\\\\?['\"\\x60]|[\\s;]|\\\\[nr]|$)",
+        ("bitrise",),
+        3.4999999999999996,
+        (),
+    ),
+    (
+        "betterleaks/buildkite-service-token",
+        r"\b(?P<value>bkaa_[A-Za-z0-9_-]{75}|bkaj_[A-Za-z0-9_-]{333}|bkar_[A-Za-z0-9_-]{73}|bkct_[A-Za-z0-9_-]{73}|bkpt_[A-Za-z0-9_-]{199}|bkpat_[A-Za-z0-9_-]{54}|bkps_[A-Za-z0-9_-]{64})(?:$|[^A-Za-z0-9_-])",
+        (
+            "bkaa_",
+            "bkaj_",
+            "bkar_",
+            "bkct_",
+            "bkpat_",
+            "bkps_",
+            "bkpt_",
+        ),
+        3.4999999999999996,
+        (),
+    ),
+    (
+        "betterleaks/buildkite-user-access-token",
+        r"\b(?P<value>bkua_(?:[a-z0-9]{40}|[a-z0-9]{53}))\b",
+        ("bkua_",),
+        3.4999999999999996,
+        (),
+    ),
+    (
+        "betterleaks/canadian-digital-service-notify-api-key",
+        r"(?i:\b(?P<value>ApiKey-v1\s+gcntfy-[a-z0-9_]+-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\b)",
+        ("gcntfy-",),
+        3.4999999999999996,
+        (),
+    ),
+    (
+        "betterleaks/circleci-personal-token",
+        r"\b(?P<value>CCIPAT_[a-zA-Z0-9]{22}_[a-z0-9]{40})",
+        ("ccipat_",),
+        3.4999999999999996,
+        (),
+    ),
+    (
+        "betterleaks/circleci-project-token",
+        "(?i)(?:circleci)(?:[ \\t\\w.-]{0,20})[\\s'\"]{0,3}(?:=|>|:{1,3}=|\\|\\||:|=>|\\?=|,)[\\x60'\"\\s=]{0,5}(?P<value>[a-f0-9]{40})(?:\\\\?['\"\\x60]|[\\s;]|\\\\[nr]|$)",
+        ("circleci",),
+        3.2999999999999994,
+        (),
+    ),
+    (
+        "betterleaks/cisco-meraki-api-key",
+        "(?i:(?:(?-i:[Mm]eraki|MERAKI))(?:[ \\t\\w.-]{0,20})[\\s'\"]{0,3})(?:=|>|:{1,3}=|\\|\\||:|=>|\\?=|,)[\\x60'\"\\s=]{0,5}(?P<value>[0-9a-f]{40})(?:\\\\?['\"\\x60]|[\\s;]|\\\\[nr]|$)",
+        ("meraki",),
+        3.2999999999999994,
+        (),
+    ),
+    (
+        "betterleaks/cloudsmith-api-key",
+        "\\b(?P<value>csa_[a-f0-9]{30}[A-Za-z0-9]{6})(?:\\\\?['\"\\x60]|[\\s;]|\\\\[nr]|$)",
+        ("csa_",),
+        None,
+        (),
+    ),
+    (
+        "betterleaks/cockroachlabs-cloud-api-key",
+        r"\b(?P<value>CCDB1_[A-Za-z0-9]{22}_[A-Za-z0-9]{40})\b",
+        ("ccdb1_",),
+        3.4999999999999996,
+        (),
+    ),
+    (
+        "betterleaks/databento-api-key",
+        "(?i)(?:databento)(?:[ \\t\\w.-]{0,20})[\\s'\"]{0,3}(?:=|>|:{1,3}=|\\|\\||:|=>|\\?=|,)[\\x60'\"\\s=]{0,5}(?P<value>db-[A-Za-z0-9]{29})(?:\\\\?['\"\\x60]|[\\s;]|\\\\[nr]|$)",
+        ("databento",),
+        None,
+        (),
+    ),
+    (
+        "betterleaks/databricks-api-token",
+        "\\b(?P<value>dapi[a-f0-9]{32}(?:-\\d)?)(?:\\\\?['\"\\x60]|[\\s;]|\\\\[nr]|$)",
+        ("dapi",),
+        2.9999999999999996,
+        (),
+    ),
+    (
+        "betterleaks/datadog-api-key",
+        "(?i)(?:datadog)(?:[ \\t\\w.-]{0,20})[\\s'\"]{0,3}(?:=|>|:{1,3}=|\\|\\||:|=>|\\?=|,)[\\x60'\"\\s=]{0,5}(?P<value>[a-z0-9]{32})(?:\\\\?['\"\\x60]|[\\s;]|\\\\[nr]|$)",
+        ("datadog",),
+        3.4999999999999996,
+        (),
+    ),
+    (
+        "betterleaks/datastax-astra-application-token",
+        r"\b(?P<value>AstraCS:[A-Za-z0-9]{20,})",
+        ("astracs:",),
+        3.9999999999999996,
+        (),
+    ),
+    (
+        "betterleaks/deepseek-api-key",
+        "(?i)(?:deepseek)(?:[ \\t\\w.-]{0,20})[\\s'\"]{0,3}(?:=|>|:{1,3}=|\\|\\||:|=>|\\?=|,)[\\x60'\"\\s=]{0,5}(?P<value>sk-[a-f0-9]{32})(?:\\\\?['\"\\x60]|[\\s;]|\\\\[nr]|$)",
+        ("deepseek",),
+        3.5,
+        (),
+    ),
+    (
+        "betterleaks/defined-networking-api-token",
+        "(?i)(?:dnkey)(?:[ \\t\\w.-]{0,20})[\\s'\"]{0,3}(?:=|>|:{1,3}=|\\|\\||:|=>|\\?=|,)[\\x60'\"\\s=]{0,5}(?P<value>dnkey-[a-z0-9=_\\-]{26}-[a-z0-9=_\\-]{52})(?:\\\\?['\"\\x60]|[\\s;]|\\\\[nr]|$)",
+        ("dnkey",),
+        None,
+        (),
+    ),
+    (
+        "betterleaks/devcycle-client-sdk-key",
+        r"\b(?P<value>dvc_client_[A-Za-z0-9]{8,32})",
+        ("dvc_client_",),
+        2.9999999999999996,
+        (),
+    ),
+    (
+        "betterleaks/devcycle-mobile-sdk-key",
+        r"\b(?P<value>dvc_mobile_[A-Za-z0-9]{8,32})",
+        ("dvc_mobile_",),
+        2.9999999999999996,
+        (),
+    ),
+    (
+        "betterleaks/devcycle-server-sdk-key",
+        r"\b(?P<value>dvc_server_[A-Za-z0-9]{8,32})",
+        ("dvc_server_",),
+        2.9999999999999996,
+        (),
+    ),
+    (
+        "betterleaks/docker-swarm-join-token",
+        r"\b(?P<value>SWMTKN-1-[a-z0-9]{50,60}-[a-z0-9]{24,30})",
+        ("swmtkn-1-",),
+        3.4999999999999996,
+        (),
+    ),
+    (
+        "betterleaks/docker-swarm-unlock-key",
+        r"\b(?P<value>SWMKEY-1-[A-Za-z0-9+/]{40,50})",
+        ("swmkey-1-",),
+        3.4999999999999996,
+        (),
+    ),
+    (
+        "betterleaks/dockerhub-organization-access-token",
+        "\\b(?P<value>dckr_oat_[A-Za-z0-9_-]{32})(?:\\\\?['\"\\x60]|[\\s;]|\\\\[nr]|$)",
+        ("dckr_oat_",),
+        3.4999999999999996,
+        (),
+    ),
+    (
+        "betterleaks/dockerhub-personal-access-token",
+        "\\b(?P<value>dckr_pat_[A-Za-z0-9_-]{27})(?:\\\\?['\"\\x60]|[\\s;]|\\\\[nr]|$)",
+        ("dckr_pat_",),
+        3.4999999999999996,
+        (),
+    ),
+    (
+        "betterleaks/dropbox-long-lived-api-token",
+        "(?i)(?:dropbox)(?:[ \\t\\w.-]{0,20})[\\s'\"]{0,3}(?:=|>|:{1,3}=|\\|\\||:|=>|\\?=|,)[\\x60'\"\\s=]{0,5}(?P<value>[a-z0-9]{11}(AAAAAAAAAA)[a-z0-9\\-_=]{43})(?:\\\\?['\"\\x60]|[\\s;]|\\\\[nr]|$)",
+        ("dropbox",),
+        3.4999999999999996,
+        (),
+    ),
+    (
+        "betterleaks/dropbox-short-lived-api-token",
+        "(?i)(?:dropbox)(?:[ \\t\\w.-]{0,20})[\\s'\"]{0,3}(?:=|>|:{1,3}=|\\|\\||:|=>|\\?=|,)[\\x60'\"\\s=]{0,5}(?P<value>sl\\.[a-z0-9\\-=_]{135})(?:\\\\?['\"\\x60]|[\\s;]|\\\\[nr]|$)",
+        ("dropbox",),
+        3.4999999999999996,
+        (),
+    ),
+    (
+        "betterleaks/ebay-client-id",
+        r"\b(?P<value>[a-zA-Z0-9_-]+-[a-zA-Z0-9_-]+-PRD-[a-f0-9]{8,12}-[a-f0-9]{8,12})",
+        ("-prd-",),
+        2.9999999999999996,
+        (),
+    ),
+    (
+        "betterleaks/elastic-cloud-api-key",
+        "\\b(?P<value>essu_[A-Za-z0-9_\\-]{60,200}={0,2})(?:\\\\?['\"\\x60]|[\\s;]|\\\\[nr]|$)",
+        ("essu_",),
+        None,
+        (),
+    ),
+    (
+        "betterleaks/figma-personal-access-token",
+        "(?i)\\b(?P<value>figd_[A-Z0-9_-]{38,42})(?:\\\\?['\"\\x60]|[\\s;]|\\\\[nr]|$)",
+        ("figd_",),
+        3.5,
+        (),
+    ),
+    (
+        "betterleaks/flickr-access-token",
+        "(?i)(?:flickr)(?:[ \\t\\w.-]{0,20})[\\s'\"]{0,3}(?:=|>|:{1,3}=|\\|\\||:|=>|\\?=|,)[\\x60'\"\\s=]{0,5}(?P<value>[a-z0-9]{32})(?:\\\\?['\"\\x60]|[\\s;]|\\\\[nr]|$)",
+        ("flickr",),
+        3.4999999999999996,
+        (),
+    ),
+    (
+        "betterleaks/gcp-service-account",
+        r'\{[^{]+(?:(?:"private_key"\s*:\s*"-----BEGIN (?:RSA )?PRIVATE KEY-----[^}]+auth_provider_x509_cert_url)|(?:auth_provider_x509_cert_url[^}]+"private_key"\s*:\s*"-----BEGIN (?:RSA )?PRIVATE KEY-----))[^}]+\}',
+        ("provider_x509",),
+        None,
+        (r"image\-pulling@authenticated\-image\-pulling\.iam\.gserviceaccount\.com",),
+    ),
+    (
+        "betterleaks/gocardless-api-token",
+        "(?i)(?:gocardless)(?:[ \\t\\w.-]{0,20})[\\s'\"]{0,3}(?:=|>|:{1,3}=|\\|\\||:|=>|\\?=|,)[\\x60'\"\\s=]{0,5}(?P<value>live_(?i:[a-z0-9\\-_=]{40}))(?:\\\\?['\"\\x60]|[\\s;]|\\\\[nr]|$)",
+        (
+            "gocardless",
+            "live_",
+        ),
+        3.4999999999999996,
+        (),
+    ),
+    (
+        "betterleaks/grafana-cloud-api-token",
+        "\\b(?P<value>glc_[A-Za-z0-9+/]{40,150}={0,2})(?:\\\\?['\"\\x60]|[\\s;]|\\\\[nr]|$)",
+        ("glc_",),
+        2.9999999999999996,
+        (),
+    ),
+    (
+        "betterleaks/heroku-api-key",
+        "(?i)(?:heroku)(?:[ \\t\\w.-]{0,20})[\\s'\"]{0,3}(?:=|>|:{1,3}=|\\|\\||:|=>|\\?=|,)[\\x60'\"\\s=]{0,5}(?P<value>[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})(?:\\\\?['\"\\x60]|[\\s;]|\\\\[nr]|$)",
+        ("heroku",),
+        None,
+        (),
+    ),
+    (
+        "betterleaks/highnote-secret-live-key",
+        "(?i:(?:highnote(?:[_. -]*(?:api))?[_. -]*(?:secret|key|token|sk[_. -]*live))(?:[ \\t\\w.-]{0,20})[\\s'\"]{0,3})(?:=|>|:{1,3}=|\\|\\||:|=>|\\?=|,)[\\x60'\"\\s=]{0,5}(?P<value>sk_live_a2V5Xz[A-Za-z0-9+/]{69}={0,2})(?:\\\\?['\"\\x60]|[\\s;]|\\\\[nr]|$)",
+        ("highnote",),
+        3.4999999999999996,
+        (),
+    ),
+    (
+        "betterleaks/ibm-cloud-user-api-key",
+        "(?i)(?:ibm(?:cloud)?|bx)(?:[ \\t\\w.-]{0,20})[\\s'\"]{0,3}(?:=|>|:{1,3}=|\\|\\||:|=>|\\?=|,)[\\x60'\"\\s=]{0,5}(?P<value>[a-z0-9_-]{42,44})(?:\\\\?['\"\\x60]|[\\s;]|\\\\[nr]|$)",
+        ("ibm",),
+        3.4999999999999996,
+        (),
+    ),
+    (
+        "betterleaks/intercom-api-key",
+        "(?i)(?:intercom)(?:[ \\t\\w.-]{0,20})[\\s'\"]{0,3}(?:=|>|:{1,3}=|\\|\\||:|=>|\\?=|,)[\\x60'\"\\s=]{0,5}(?P<value>[a-z0-9=_\\-]{60})(?:\\\\?['\"\\x60]|[\\s;]|\\\\[nr]|$)",
+        ("intercom",),
+        3.4999999999999996,
+        (),
+    ),
+    (
+        "betterleaks/langchain-langsmith-personal-access-token",
+        r"\b(?P<value>lsv2_pt_[0-9a-fA-F]{32}_[0-9a-fA-F]{10})",
+        ("lsv2_pt_",),
+        3.9999999999999996,
+        (),
+    ),
+    (
+        "betterleaks/langchain-langsmith-service-key",
+        r"\b(?P<value>lsv2_sk_[0-9a-fA-F]{32}_[0-9a-fA-F]{10})",
+        ("lsv2_sk_",),
+        3.9999999999999996,
+        (),
+    ),
+    (
+        "betterleaks/launchdarkly-access-token",
+        "(?i)(?:launchdarkly)(?:[ \\t\\w.-]{0,20})[\\s'\"]{0,3}(?:=|>|:{1,3}=|\\|\\||:|=>|\\?=|,)[\\x60'\"\\s=]{0,5}(?P<value>[a-z0-9=_\\-]{40})(?:\\\\?['\"\\x60]|[\\s;]|\\\\[nr]|$)",
+        ("launchdarkly",),
+        3.4999999999999996,
+        (),
+    ),
+    (
+        "betterleaks/lichess-personal-access-token",
+        "\\b(?P<value>lip_[A-Za-z0-9_]{16,60})(?:\\\\?['\"\\x60]|[\\s;]|\\\\[nr]|$)",
+        ("lip_",),
+        3.4999999999999996,
+        (),
+    ),
+    (
+        "betterleaks/lob-api-key",
+        "(?i)(?:lob)(?:[ \\t\\w.-]{0,20})[\\s'\"]{0,3}(?:=|>|:{1,3}=|\\|\\||:|=>|\\?=|,)[\\x60'\"\\s=]{0,5}(?P<value>(live|test)_[a-f0-9]{35})(?:\\\\?['\"\\x60]|[\\s;]|\\\\[nr]|$)",
+        (
+            "live_",
+            "test_",
+        ),
+        None,
+        (),
+    ),
+    (
+        "betterleaks/mailchimp-api-key",
+        "(?i)(?:MailchimpSDK.initialize|mailchimp)(?:[ \\t\\w.-]{0,20})[\\s'\"]{0,3}(?:=|>|:{1,3}=|\\|\\||:|=>|\\?=|,)[\\x60'\"\\s=]{0,5}(?P<value>[a-f0-9]{32}-us\\d\\d)(?:\\\\?['\"\\x60]|[\\s;]|\\\\[nr]|$)",
+        ("mailchimp",),
+        None,
+        (),
+    ),
+    (
+        "betterleaks/mailersend-api-token",
+        "\\b(?P<value>mlsn\\.[A-Za-z0-9]{30,100})(?:\\\\?['\"\\x60]|[\\s;]|\\\\[nr]|$)",
+        ("mlsn.",),
+        3.4999999999999996,
+        (),
+    ),
+    (
+        "betterleaks/mercury-production-api-token",
+        "\\b(?P<value>mercury_production_[a-z]{3,6}_[A-Za-z0-9]{40,50}_yrucrem)(?:\\\\?['\"\\x60]|[\\s;]|\\\\[nr]|$)",
+        ("mercury_production_",),
+        3.4999999999999996,
+        (),
+    ),
+    (
+        "betterleaks/mergify-application-key",
+        "\\b(?P<value>mergify_application_key_[A-Za-z0-9_-]{40,200})(?:\\\\?['\"\\x60]|[\\s;]|\\\\[nr]|$)",
+        ("mergify_application_key_",),
+        3.1999999999999997,
+        (),
+    ),
+    (
+        "betterleaks/messagebird-api-token",
+        "(?i)(?:message[_-]?bird)(?:[ \\t\\w.-]{0,20})[\\s'\"]{0,3}(?:=|>|:{1,3}=|\\|\\||:|=>|\\?=|,)[\\x60'\"\\s=]{0,5}(?P<value>[a-z0-9]{25})(?:\\\\?['\"\\x60]|[\\s;]|\\\\[nr]|$)",
+        (
+            "message-bird",
+            "message_bird",
+            "messagebird",
+        ),
+        2.9999999999999996,
+        (),
+    ),
+    (
+        "betterleaks/midtrans-production-server-client-key",
+        "(?i)(?:midtrans|mid[_-]?)(?:[ \\t\\w.-]{0,20})[\\s'\"]{0,3}(?:=|>|:{1,3}=|\\|\\||:|=>|\\?=|,)[\\x60'\"\\s=]{0,5}(?P<value>Mid-(?:server|client)-[A-Za-z0-9_]{10,20})(?:\\\\?['\"\\x60]|[\\s;]|\\\\[nr]|$)",
+        (
+            "mid-client-",
+            "mid-server-",
+        ),
+        2.7999999999999994,
+        (),
+    ),
+    (
+        "betterleaks/mistral-api-key",
+        "(?i)(?:mistral)(?:[ \\t\\w.-]{0,20})[\\s'\"]{0,3}(?:=|>|:{1,3}=|\\|\\||:|=>|\\?=|,)[\\x60'\"\\s=]{0,5}(?P<value>[A-Z0-9]{32})(?:\\\\?['\"\\x60]|[\\s;]|\\\\[nr]|$)",
+        ("mistral",),
+        3.4999999999999996,
+        (),
+    ),
+    (
+        "betterleaks/neon-api-key",
+        "\\b(?P<value>napi_[A-Za-z0-9]{64})(?:\\\\?['\"\\x60]|[\\s;]|\\\\[nr]|$)",
+        ("napi_",),
+        3.4999999999999996,
+        (),
+    ),
+    (
+        "betterleaks/new-relic-user-api-key",
+        "(?i)(?:new-relic|newrelic|new_relic)(?:[ \\t\\w.-]{0,20})[\\s'\"]{0,3}(?:=|>|:{1,3}=|\\|\\||:|=>|\\?=|,)[\\x60'\"\\s=]{0,5}(?P<value>NRAK-[a-z0-9]{27})(?:\\\\?['\"\\x60]|[\\s;]|\\\\[nr]|$)",
+        ("nrak",),
+        3.4999999999999996,
+        (),
+    ),
+    (
+        "betterleaks/notion-api-token",
+        "\\b(?P<value>ntn_[0-9]{11}[A-Za-z0-9]{32}[A-Za-z0-9]{3})(?:\\\\?['\"\\x60]|[\\s;]|\\\\[nr]|$)",
+        ("ntn_",),
+        4.0,
+        (),
+    ),
+    (
+        "betterleaks/onesignal-rich-authentication-token",
+        "\\b(?P<value>os_v2_(?:app|org)_[a-z2-7]{103})(?:\\\\?['\"\\x60]|[\\s;]|\\\\[nr]|$)",
+        (
+            "os_v2_app_",
+            "os_v2_org_",
+        ),
+        3.4999999999999996,
+        (),
+    ),
+    (
+        "betterleaks/openrouter-api-key",
+        "(?i)\\b(?P<value>sk-or-v1-[0-9a-f]{64})(?:\\\\?['\"\\x60]|[\\s;]|\\\\[nr]|$)",
+        ("sk-or-v1-",),
+        3.5,
+        (),
+    ),
+    (
+        "betterleaks/openweather-api-key",
+        "(?i:(?:openweather|pyowm)(?:[ \\t\\w.-]{0,20})[\\s'\"]{0,3})(?:=|>|:{1,3}=|\\|\\||:|=>|\\?=|,)[\\x60'\"\\s=]{0,5}(?P<value>[a-z0-9]{32})(?:\\\\?['\"\\x60]|[\\s;]|\\\\[nr]|$)",
+        (
+            "openweather",
+            "pyowm",
+        ),
+        3.4999999999999996,
+        (),
+    ),
+    (
+        "betterleaks/paddle-live-api-key",
+        "\\b(?P<value>pdl_live_apikey_[a-z0-9]{26}_[A-Za-z0-9]{22}_[A-Za-z0-9]{3})(?:\\\\?['\"\\x60]|[\\s;]|\\\\[nr]|$)",
+        ("pdl_live_apikey_",),
+        3.4999999999999996,
+        (),
+    ),
+    (
+        "betterleaks/pagerduty-authorization-token.1",
+        "(?i:(?:pagerduty)(?:[ \\t\\w.-]{0,20})[\\s'\"]{0,3})(?:=|>|:{1,3}=|\\|\\||:|=>|\\?=|,)[\\x60'\"\\s=]{0,5}(?P<value>u\\+[A-Za-z0-9_+-]{18})(?:\\\\?['\"\\x60]|[\\s;]|\\\\[nr]|$)",
+        ("pagerduty",),
+        3.4999999999999996,
+        (),
+    ),
+    (
+        "betterleaks/persona-production-api-key",
+        "\\b(?P<value>persona_production_[a-z0-9_-]{20,80})(?:\\\\?['\"\\x60]|[\\s;]|\\\\[nr]|$)",
+        ("persona_production_",),
+        3.4999999999999996,
+        (),
+    ),
+    (
+        "betterleaks/pinecone-api-key.2",
+        "\\b(?P<value>pcsk_[A-Za-z0-9]{5,6}_[A-Za-z0-9]{63})(?:\\\\?['\"\\x60]|[\\s;]|\\\\[nr]|$)",
+        ("pcsk_",),
+        3.4999999999999996,
+        (),
+    ),
+    (
+        "betterleaks/pinterest-access-token",
+        "\\b(?P<value>pina_[A-Za-z0-9_-]{20,200})(?:\\\\?['\"\\x60]|[\\s;]|\\\\[nr]|$)",
+        ("pina_",),
+        3.4999999999999996,
+        (),
+    ),
+    (
+        "betterleaks/plivo-auth-id",
+        "(?i)(?:plivo(?:[_. -]*(?:auth|account))?[_. -]*(?:id|sid))(?:[ \\t\\w.-]{0,20})[\\s'\"]{0,3}(?:=|>|:{1,3}=|\\|\\||:|=>|\\?=|,)[\\x60'\"\\s=]{0,5}(?P<value>MA[A-Z0-9]{18})(?:\\\\?['\"\\x60]|[\\s;]|\\\\[nr]|$)",
+        ("plivo",),
+        2.7999999999999994,
+        (),
+    ),
+    (
+        "betterleaks/posthog-personal-api-key",
+        "(?i)\\b(?P<value>phx_[a-zA-Z0-9_\\-]{41,49})(?:\\\\?['\"\\x60]|[\\s;]|\\\\[nr]|$)",
+        ("phx_",),
+        3.0,
+        (),
+    ),
+    (
+        "betterleaks/prefect-api-token",
+        "\\b(?P<value>pnu_[a-zA-Z0-9]{36})(?:\\\\?['\"\\x60]|[\\s;]|\\\\[nr]|$)",
+        ("pnu_",),
+        2.0,
+        (),
+    ),
+    (
+        "betterleaks/proof-full-access-api-key",
+        "\\b(?P<value>prf_(?:cli_)?[A-Za-z0-9_-]{20,80})(?:\\\\?['\"\\x60]|[\\s;]|\\\\[nr]|$)",
+        ("prf_",),
+        3.4999999999999996,
+        ("^prf_(?:cli_)?test_",),
+    ),
+    (
+        "betterleaks/rainforest-pay-production-api-key",
+        "(?i:(?:rainforest(?:[_. -]*pay)?(?:[_. -]*(?:api))?[_. -]*(?:secret|key|token))(?:[ \\t\\w.-]{0,20})[\\s'\"]{0,3})(?:=|>|:{1,3}=|\\|\\||:|=>|\\?=|,)[\\x60'\"\\s=]{0,5}(?P<value>apikey_[a-f0-9]{64})(?:\\\\?['\"\\x60]|[\\s;]|\\\\[nr]|$)",
+        ("rainforest",),
+        3.4999999999999996,
+        (),
+    ),
+    (
+        "betterleaks/ramp-client-id",
+        "\\b(?P<value>ramp_id_[A-Za-z0-9]{40})(?:\\\\?['\"\\x60]|[\\s;]|\\\\[nr]|$)",
+        ("ramp_id_",),
+        2.9999999999999996,
+        (),
+    ),
+    (
+        "betterleaks/redirect-pizza-api-token.1",
+        "\\b(?P<value>rpa_[A-Za-z0-9]{30})(?:\\\\?['\"\\x60]|[\\s;]|\\\\[nr]|$)",
+        ("rpa_",),
+        3.4999999999999996,
+        (),
+    ),
+    (
+        "betterleaks/replicate-api-token",
+        "(?i)\\b(?P<value>r8_[A-Za-z0-9]{37})(?:\\\\?['\"\\x60]|[\\s;]|\\\\[nr]|$)",
+        ("r8_",),
+        3.0,
+        (),
+    ),
+    (
+        "betterleaks/resend-api-key.1",
+        "\\b(?P<value>re_[1-9A-HJ-NP-Za-km-z]{8}_[1-9A-HJ-NP-Za-km-z]{24})(?:\\\\?['\"\\x60]|[\\s;]|\\\\[nr]|$)",
+        ("resend",),
+        3.4999999999999996,
+        (),
+    ),
+    (
+        "betterleaks/rootly-api-key.1",
+        "\\b(?P<value>rootly_[a-f0-9]{64})(?:\\\\?['\"\\x60]|[\\s;]|\\\\[nr]|$)",
+        ("rootly_",),
+        3.4999999999999996,
+        (),
+    ),
+    (
+        "betterleaks/runpod-api-key.1",
+        "\\b(?P<value>rpa_[A-Z0-9]{40}[A-Za-z0-9]{6})(?:\\\\?['\"\\x60]|[\\s;]|\\\\[nr]|$)",
+        ("rpa_",),
+        3.4999999999999996,
+        (),
+    ),
+    (
+        "betterleaks/samsara-api-token.1",
+        "\\b(?P<value>samsara_api_[A-Za-z0-9]{26,32})(?:\\\\?['\"\\x60]|[\\s;]|\\\\[nr]|$)",
+        ("samsara_api_",),
+        2.9999999999999996,
+        (),
+    ),
+    (
+        "betterleaks/scalr-api-access-token.1",
+        "(?i:(?:scalr(?:[_. -]*(?:api|access))?[_. -]*(?:secret|key|token))(?:[ \\t\\w.-]{0,20})[\\s'\"]{0,3})(?:=|>|:{1,3}=|\\|\\||:|=>|\\?=|,)[\\x60'\"\\s=]{0,5}(?P<value>eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9\\.eyJpc3MiOiJ1c2VyIiwianRpIjoiYXQt[A-Za-z0-9_-]{20,40}\\.[A-Za-z0-9_-]{43})(?:\\\\?['\"\\x60]|[\\s;]|\\\\[nr]|$)",
+        ("scalr",),
+        3.4999999999999996,
+        (),
+    ),
+    (
+        "betterleaks/segment-public-api-token.1",
+        "\\b(?P<value>sgp_[A-Za-z0-9]{64})(?:\\\\?['\"\\x60]|[\\s;]|\\\\[nr]|$)",
+        ("sgp_",),
+        3.2999999999999994,
+        (),
+    ),
+    (
+        "betterleaks/sourcegraph-access-token",
+        "(?i)\\b(?P<value>sgp_(?:[a-fA-F0-9]{16}|local)_[a-fA-F0-9]{40}|sgp_[a-fA-F0-9]{40})(?:\\\\?['\"\\x60]|[\\s;]|\\\\[nr]|$)",
+        ("sgp_",),
+        3.0,
+        (),
+    ),
+    (
+        "betterleaks/stripe-access-token",
+        "\\b(?P<value>(?:sk|rk)_(?:test|live|prod)_[a-zA-Z0-9]{10,99})(?:\\\\?['\"\\x60]|[\\s;]|\\\\[nr]|$)",
+        (
+            "rk_live",
+            "rk_prod",
+            "rk_test",
+            "sk_live",
+            "sk_prod",
+            "sk_test",
+        ),
+        2.0,
+        ("^sk_live_a2V5Xz",),
+    ),
+    (
+        "betterleaks/supabase-management-token",
+        "\\b(?P<value>sbp_[a-z0-9_-]{40})(?:\\\\?['\"\\x60]|[\\s;]|\\\\[nr]|$)",
+        ("sbp_",),
+        3.5,
+        (r"\A(?!(?:sbp_[a-z0-9_-]*[0-9][a-z0-9_-]*[0-9][a-z0-9_-]*$))",),
+    ),
+    (
+        "betterleaks/tailscale-api-key.1",
+        "\\b(?P<value>tskey-api-[A-Za-z0-9_-]{20,36})(?:\\\\?['\"\\x60]|[\\s;]|\\\\[nr]|$)",
+        ("tskey-api-",),
+        2.9999999999999996,
+        (),
+    ),
+    (
+        "betterleaks/telegram-bot-api-token",
+        "(?i)(?:telegr)(?:[ \\t\\w.-]{0,20})[\\s'\"]{0,3}(?:=|>|:{1,3}=|\\|\\||:|=>|\\?=|,)[\\x60'\"\\s=]{0,5}(?P<value>[0-9]{5,16}:(?-i:A)[a-z0-9_\\-]{34})(?:\\\\?['\"\\x60]|[\\s;]|\\\\[nr]|$)",
+        ("telegr",),
+        None,
+        (),
+    ),
+    (
+        "betterleaks/telnyx-api-v2-key.1",
+        "(?i:(?:telnyx(?:[_. -]*(?:api))?[_. -]*(?:secret|key|token))(?:[ \\t\\w.-]{0,20})[\\s'\"]{0,3})(?:=|>|:{1,3}=|\\|\\||:|=>|\\?=|,)[\\x60'\"\\s=]{0,5}(?P<value>KEY[0-9A-Za-z_-]{55})(?:\\\\?['\"\\x60]|[\\s;]|\\\\[nr]|$)",
+        ("telnyx",),
+        3.4999999999999996,
+        (),
+    ),
+    (
+        "betterleaks/temporal-cloud-api-key.1",
+        "\\b(?P<value>eyJ[A-Za-z0-9_-]{10,}\\.[A-Za-z0-9_-]*Y2NvdW50X2lk[A-Za-z0-9_-]*InRlbXBvcmFsLmlv[A-Za-z0-9_-]*(?:ICJrZXlfaWQiOi|a2V5X2lk|rZXlfaWQi)[A-Za-z0-9_-]{20,}\\.[A-Za-z0-9_-]{20,})(?:\\\\?['\"\\x60]|[\\s;]|\\\\[nr]|$)",
+        ("inrlbxbvcmfslmlv",),
+        3.1999999999999997,
+        (r"\A(?!(?:(?:[^0-9]*[0-9]){3}))",),
+    ),
+    (
+        "betterleaks/thunderstore-api-token.1",
+        "\\b(?P<value>tss_[A-Za-z0-9_-]{20,80})(?:\\\\?['\"\\x60]|[\\s;]|\\\\[nr]|$)",
+        ("tss_",),
+        3.4999999999999996,
+        (r"\A(?!(?:(?:[^0-9]*[0-9]){2}))",),
+    ),
+    (
+        "betterleaks/typeform-api-token",
+        "(?i)(?:typeform)(?:[ \\t\\w.-]{0,20})[\\s'\"]{0,3}(?:=|>|:{1,3}=|\\|\\||:|=>|\\?=|,)[\\x60'\"\\s=]{0,5}(?P<value>tfp_[a-z0-9\\-_\\.=]{59})(?:\\\\?['\"\\x60]|[\\s;]|\\\\[nr]|$)",
+        ("tfp_",),
+        None,
+        (),
+    ),
+    (
+        "betterleaks/unkey-root-key.1",
+        "\\b(?P<value>unkey_[A-Za-z0-9]{20,32})(?:\\\\?['\"\\x60]|[\\s;]|\\\\[nr]|$)",
+        ("unkey_",),
+        3.4999999999999996,
+        (
+            r"\A(?![\s\S]*?(?:[0-9]))",
+            r"\A(?![\s\S]*?(?:[A-Z]))",
+            r"\A(?![\s\S]*?(?:[a-z]))",
+        ),
+    ),
+    (
+        "betterleaks/val-town-api-token.1",
+        "\\b(?P<value>vtwn_[A-Za-z0-9_-]{20,80})(?:\\\\?['\"\\x60]|[\\s;]|\\\\[nr]|$)",
+        ("vtwn_",),
+        3.4999999999999996,
+        (r"\A(?!(?:(?:[^0-9]*[0-9]){2}))",),
+    ),
+    (
+        "betterleaks/vercel-api-token",
+        "(?i)(?:vercel)(?:[ \\t\\w.-]{0,20})[\\s'\"]{0,3}(?:=|>|:{1,3}=|\\|\\||:|=>|\\?=|,)[\\x60'\"\\s=]{0,5}(?P<value>[A-Z0-9]{24})(?:\\\\?['\"\\x60]|[\\s;]|\\\\[nr]|$)",
+        ("vercel",),
+        3.4999999999999996,
+        (),
+    ),
+    (
+        "betterleaks/vercel-app-access-token",
+        "(?i)\\b(?P<value>vca_[A-Za-z0-9_-]{56})(?:\\\\?['\"\\x60]|[\\s;]|\\\\[nr]|$)",
+        ("vca_",),
+        3.4999999999999996,
+        (),
+    ),
+    (
+        "betterleaks/vercel-app-refresh-token",
+        "(?i)\\b(?P<value>vcr_[A-Za-z0-9_-]{56})(?:\\\\?['\"\\x60]|[\\s;]|\\\\[nr]|$)",
+        ("vcr_",),
+        3.4999999999999996,
+        (),
+    ),
+    (
+        "betterleaks/vercel-integration-token",
+        "(?i)\\b(?P<value>vci_[A-Za-z0-9_-]{56})(?:\\\\?['\"\\x60]|[\\s;]|\\\\[nr]|$)",
+        ("vci_",),
+        3.4999999999999996,
+        (),
+    ),
+    (
+        "betterleaks/vercel-personal-access-token",
+        "(?i)\\b(?P<value>vcp_[A-Za-z0-9_-]{56})(?:\\\\?['\"\\x60]|[\\s;]|\\\\[nr]|$)",
+        ("vcp_",),
+        3.4999999999999996,
+        (),
+    ),
+    (
+        "betterleaks/wakatime-api-key.1",
+        "(?i:(?:waka[_. -]?time(?:[_. -]*(?:api))?[_. -]*(?:secret|key|token))(?:[ \\t\\w.-]{0,20})[\\s'\"]{0,3})(?:=|>|:{1,3}=|\\|\\||:|=>|\\?=|,)[\\x60'\"\\s=]{0,5}(?P<value>[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})(?:\\\\?['\"\\x60]|[\\s;]|\\\\[nr]|$)",
+        (
+            "waka time",
+            "waka-time",
+            "waka.time",
+            "waka_time",
+            "wakatime",
+        ),
+        2.9999999999999996,
+        (),
+    ),
+    (
+        "betterleaks/wakatime-api-key.2",
+        "(?i)\\b(?P<value>waka_[a-z0-9]{36,64})(?:\\\\?['\"\\x60]|[\\s;]|\\\\[nr]|$)",
+        ("waka_",),
+        2.9999999999999996,
+        (),
+    ),
+    (
+        "betterleaks/weatherstack-api-key.1",
+        "(?i:(?:weatherstack(?:[_. -]*(?:api))?[_. -]*(?:secret|key|token))(?:[ \\t\\w.-]{0,20})[\\s'\"]{0,3})(?:=|>|:{1,3}=|\\|\\||:|=>|\\?=|,)[\\x60'\"\\s=]{0,5}(?P<value>[0-9a-z]{32})(?:\\\\?['\"\\x60]|[\\s;]|\\\\[nr]|$)",
+        ("weatherstack",),
+        3.2999999999999994,
+        (),
+    ),
+    (
+        "betterleaks/weights-and-biases-api-key",
+        "(?i)(?:wandb|weightsandbiases)(?:[ \\t\\w.-]{0,20})[\\s'\"]{0,3}(?:=|>|:{1,3}=|\\|\\||:|=>|\\?=|,)[\\x60'\"\\s=]{0,5}(?P<value>[a-f0-9]{40})(?:\\\\?['\"\\x60]|[\\s;]|\\\\[nr]|$)",
+        (
+            "wandb",
+            "weightsandbiases",
+        ),
+        3.4999999999999996,
+        (),
+    ),
+    (
+        "betterleaks/xai-api-key",
+        "(?i)\\b(?P<value>xai-[A-Za-z0-9_-]{70,120})(?:\\\\?['\"\\x60]|[\\s;]|\\\\[nr]|$)",
+        ("xai-",),
+        3.5,
+        (),
+    ),
+    (
+        "betterleaks/yandex-access-token",
+        "(?i)(?:yandex)(?:[ \\t\\w.-]{0,20})[\\s'\"]{0,3}(?:=|>|:{1,3}=|\\|\\||:|=>|\\?=|,)[\\x60'\"\\s=]{0,5}(?P<value>t1\\.[A-Z0-9a-z_-]+[=]{0,2}\\.[A-Z0-9a-z_-]{86}[=]{0,2})(?:\\\\?['\"\\x60]|[\\s;]|\\\\[nr]|$)",
+        ("yandex",),
+        None,
+        (),
+    ),
+    (
+        "betterleaks/yandex-api-key",
+        "(?i)(?:yandex)(?:[ \\t\\w.-]{0,20})[\\s'\"]{0,3}(?:=|>|:{1,3}=|\\|\\||:|=>|\\?=|,)[\\x60'\"\\s=]{0,5}(?P<value>AQVN[A-Za-z0-9_\\-]{35,38})(?:\\\\?['\"\\x60]|[\\s;]|\\\\[nr]|$)",
+        ("yandex",),
+        None,
+        (),
+    ),
+    (
+        "betterleaks/zuplo-consumer-api-key.1",
+        "\\b(?P<value>zpka_[a-z0-9]{32}_[0-9a-f]{8})(?:\\\\?['\"\\x60]|[\\s;]|\\\\[nr]|$)",
+        ("zpka_",),
+        3.2999999999999994,
+        (),
+    ),
+    (
+        "betterleaks/aikido-client-secret",
+        "\\b(?P<value>AIK_SECRET_[A-Za-z0-9]{64})(?:\\\\?['\"\\x60]|[\\s;]|\\\\[nr]|$)",
+        ("aik_secret_",),
+        3.4999999999999996,
+        (),
+    ),
+    (
+        "betterleaks/mongodb-atlas-service-account-secret",
+        "\\b(?P<value>mdb_sa_sk_[A-Za-z0-9_-]{40})(?:\\\\?['\"\\x60]|[\\s;]|\\\\[nr]|$)",
+        ("mdb_sa_sk_",),
+        3.0,
+        ("^mdb_sa_sk_[0-9]{40}$",),
+    ),
+    (
+        "betterleaks/sidekiq-secret",
+        "(?i)(?:BUNDLE_ENTERPRISE__CONTRIBSYS__COM|BUNDLE_GEMS__CONTRIBSYS__COM)(?:[ \\t\\w.-]{0,20})[\\s'\"]{0,3}(?:=|>|:{1,3}=|\\|\\||:|=>|\\?=|,)[\\x60'\"\\s=]{0,5}(?P<value>[a-f0-9]{8}:[a-f0-9]{8})(?:\\\\?['\"\\x60]|[\\s;]|\\\\[nr]|$)",
+        ("bundle_enterprise__contribsys__com", "bundle_gems__contribsys__com"),
+        None,
+        (),
+    ),
+)
+
+# Microsoft key formats.
+#
+# Source: https://github.com/microsoft/security-utilities, GeneratedRegexPatterns
+# at commit 638ad20eb4d4 (2025-11-12). Copyright (c) Microsoft Corporation. MIT
+# License.
+#
+# Each pattern names the key in a "refine" group, renamed "value" here. Its
+# signatures are fixed markers inside every key of that kind, so they are the
+# keywords. The port keeps the patterns that detect a GitHub secret type.
+
+MICROSOFT_RULES: tuple[
+    tuple[str, str, tuple[str, ...], float | None, tuple[str, ...]], ...
+] = (
+    (
+        "microsoft/LooseSasSecret",
+        r"(?i)(?:^|[?;&])(?:dsas_secret|sig)=(?P<value>[0-9a-z\/+%]{43,129}(?:=|%3d))",
+        (
+            "ret=",
+            "sig=",
+        ),
+        None,
+        (),
+    ),
+    (
+        "microsoft/AzureSearchIdentifiableQueryKey",
+        r"(^|[^abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890+/_\-])(?P<value>[abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890]{42}AzSe[A-D][abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890]{5})([^abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890+/_=\-]|$)",
+        ("azse",),
+        None,
+        (),
+    ),
+    (
+        "microsoft/AzureSearchIdentifiableAdminKey",
+        r"(^|[^abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890+/_\-])(?P<value>[abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890]{42}AzSe[A-D][abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890]{5})([^abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890+/_=\-]|$)",
+        ("azse",),
+        None,
+        (),
+    ),
+    (
+        "microsoft/AzureMLWebServiceClassicIdentifiableKey",
+        r"(^|[^abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890+/_\-])(?P<value>[abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890+/]{76}\+AMC[abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890+/]{5}[AQgw]==)([^abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890+/_=\-]|$)",
+        ("+amc",),
+        None,
+        (),
+    ),
+    (
+        "microsoft/AzureServiceBusIdentifiableKey",
+        r"(^|[^abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890+/_\-])(?P<value>[abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890+/]{33}\+ASb[A-P][abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890+/]{5}=)([^abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890+/_=\-]|$)",
+        ("+asb",),
+        None,
+        (),
+    ),
+    (
+        "microsoft/AzureEventHubIdentifiableKey",
+        r"(^|[^abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890+/_\-])(?P<value>[abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890+/]{33}\+AEh[A-P][abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890+/]{5}=)([^abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890+/_=\-]|$)",
+        ("+aeh",),
+        None,
+        (),
+    ),
+    (
+        "microsoft/AzureRelayIdentifiableKey",
+        r"(^|[^abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890+/_\-])(?P<value>[abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890+/]{33}\+ARm[A-P][abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890+/]{5}=)([^abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890+/_=\-]|$)",
+        ("+arm",),
+        None,
+        (),
+    ),
+    (
+        "microsoft/AzureContainerRegistryIdentifiableKey",
+        r"(^|[^abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890+/_\-])(?P<value>[abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890+/]{42}\+ACR[A-D][abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890+/]{5})([^abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890+/_=\-]|$)",
+        ("+acr",),
+        None,
+        (),
+    ),
+    (
+        "microsoft/SqlPrivateDefaultCloudSALegacyCommonAnnotatedSecurityKey",
+        r"(^|[^abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890])(?P<value>[abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890]{52}JQQJ99[abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890][A-L][abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890]{12}AAAAmsql[abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890]{4})(?:[abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890]{2}==)?",
+        ("jqqj",),
+        None,
+        (),
+    ),
+    (
+        "microsoft/AzureIotHubIdentifiableKey",
+        r"(^|[^abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890+/_\-])(?P<value>[abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890+/]{33}AIoT[A-P][abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890+/]{5}=)([^abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890+/_=\-]|$)",
+        ("aiot",),
+        None,
+        (),
+    ),
+    (
+        "microsoft/AzureIotDeviceProvisioningIdentifiableKey",
+        r"(^|[^abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890+/_\-])(?P<value>[abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890+/]{33}AIoT[A-P][abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890+/]{5}=)([^abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890+/_=\-]|$)",
+        ("aiot",),
+        None,
+        (),
+    ),
+    (
+        "microsoft/AzureIotDeviceIdentifiableKey",
+        r"(^|[^abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890+/_\-])(?P<value>[abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890+/]{33}AIoT[A-P][abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890+/]{5}=)([^abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890+/_=\-]|$)",
+        ("aiot",),
+        None,
+        (),
+    ),
+    (
+        "microsoft/AzureApimIdentifiableDirectManagementKey",
+        r"(^|[^abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890+/_\-])(?P<value>[abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890+/]{76}APIM[abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890+/]{5}[AQgw]==)([^abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890+/_=\-]|$)",
+        ("apim",),
+        None,
+        (),
+    ),
+    (
+        "microsoft/AzureApimIdentifiableSubscriptionKey",
+        r"(^|[^abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890+/_\-])(?P<value>[abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890+/]{76}APIM[abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890+/]{5}[AQgw]==)([^abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890+/_=\-]|$)",
+        ("apim",),
+        None,
+        (),
+    ),
+    (
+        "microsoft/AzureApimIdentifiableGatewayKey",
+        r"(^|[^abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890+/_\-])(?P<value>[abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890+/]{76}APIM[abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890+/]{5}[AQgw]==)([^abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890+/_=\-]|$)",
+        ("apim",),
+        None,
+        (),
+    ),
+    (
+        "microsoft/AzureApimIdentifiableRepositoryKey",
+        r"(^|[^abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890+/_\-])(?P<value>[abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890+/]{76}APIM[abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890+/]{5}[AQgw]==)([^abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890+/_=\-]|$)",
+        ("apim",),
+        None,
+        (),
+    ),
+    (
+        "microsoft/AzureAppConfigurationLegacyCommonAnnotatedSecurityKey",
+        r"(^|[^abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890])(?P<value>[abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890]{52}JQQJ99[abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890][A-L][abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890]{12}AAAAAZAC[abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890]{4})(?:[abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890]{2}==)?",
+        ("jqqj",),
+        None,
+        (),
+    ),
+    (
+        "microsoft/AzureFluidRelayLegacyCommonAnnotatedSecurityKey",
+        r"(^|[^abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890])(?P<value>[abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890]{52}JQQJ99[abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890][A-L][abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890]{12}AAAAAZFR[abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890]{4})(?:[abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890]{2}==)?",
+        ("jqqj",),
+        None,
+        (),
+    ),
+    (
+        "microsoft/AzureMixedRealityLegacyCommonAnnotatedSecurityKeyPat",
+        r"(^|[^abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890])(?P<value>[abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890]{52}JQQJ99[abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890][A-L][abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890]{12}AAAAAZMR[abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890]{4})(?:[abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890]{2}==)?",
+        ("jqqj",),
+        None,
+        (),
+    ),
+    (
+        "microsoft/AzureMapsLegacyCommonAnnotatedSecurityKey",
+        r"(^|[^abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890])(?P<value>[abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890]{52}JQQJ99[abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890][A-L][abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890]{12}AAAAAZMP[abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890]{4})(?:[abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890]{2}==)?",
+        ("jqqj",),
+        None,
+        (),
+    ),
+    (
+        "microsoft/AzureCommunicationServicesLegacyCommonAnnotatedSecurityKey",
+        r"(^|[^abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890])(?P<value>[abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890]{52}JQQJ99[abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890][A-L][abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890]{12}AAAAAZCS[abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890]{4})(?:[abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890]{2}==)?",
+        ("jqqj",),
+        None,
+        (),
+    ),
+    (
+        "microsoft/AzureAIServicesLegacyCommonAnnotatedSecurityKey",
+        r"(^|[^abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890])(?P<value>[abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890]{52}JQQJ99[abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890][A-L][abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890]{12}AAAAACOG[abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890]{4})(?:[abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890]{2}==)?",
+        ("jqqj",),
+        None,
+        (),
+    ),
+    (
+        "microsoft/AzureAnomalyDetectorEELegacyCommonAnnotatedSecurityKey",
+        r"(^|[^abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890])(?P<value>[abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890]{52}JQQJ99[abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890][A-L][abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890]{12}AAACACOG[abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890]{4})(?:[abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890]{2}==)?",
+        ("jqqj",),
+        None,
+        (),
+    ),
+    (
+        "microsoft/AzureAnomalyDetectorLegacyCommonAnnotatedSecurityKey",
+        r"(^|[^abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890])(?P<value>[abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890]{52}JQQJ99[abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890][A-L][abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890]{12}AAADACOG[abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890]{4})(?:[abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890]{2}==)?",
+        ("jqqj",),
+        None,
+        (),
+    ),
+    (
+        "microsoft/AzureCognitiveServicesLegacyCommonAnnotatedSecurityKey",
+        r"(^|[^abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890])(?P<value>[abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890]{52}JQQJ99[abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890][A-L][abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890]{12}AAAEACOG[abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890]{4})(?:[abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890]{2}==)?",
+        ("jqqj",),
+        None,
+        (),
+    ),
+    (
+        "microsoft/AzureComputerVisionLegacyCommonAnnotatedSecurityKey",
+        r"(^|[^abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890])(?P<value>[abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890]{52}JQQJ99[abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890][A-L][abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890]{12}AAAFACOG[abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890]{4})(?:[abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890]{2}==)?",
+        ("jqqj",),
+        None,
+        (),
+    ),
+    (
+        "microsoft/AzureContentModeratorLegacyCommonAnnotatedSecurityKey",
+        r"(^|[^abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890])(?P<value>[abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890]{52}JQQJ99[abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890][A-L][abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890]{12}AAAGACOG[abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890]{4})(?:[abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890]{2}==)?",
+        ("jqqj",),
+        None,
+        (),
+    ),
+    (
+        "microsoft/AzureContentSafetyLegacyCommonAnnotatedSecurityKey",
+        r"(^|[^abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890])(?P<value>[abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890]{52}JQQJ99[abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890][A-L][abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890]{12}AAAHACOG[abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890]{4})(?:[abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890]{2}==)?",
+        ("jqqj",),
+        None,
+        (),
+    ),
+    (
+        "microsoft/AzureCustomVisionPredictionLegacyCommonAnnotatedSecurityKey",
+        r"(^|[^abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890])(?P<value>[abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890]{52}JQQJ99[abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890][A-L][abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890]{12}AAAIACOG[abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890]{4})(?:[abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890]{2}==)?",
+        ("jqqj",),
+        None,
+        (),
+    ),
+    (
+        "microsoft/AzureCustomVisionTrainingLegacyCommonAnnotatedSecurityKey",
+        r"(^|[^abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890])(?P<value>[abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890]{52}JQQJ99[abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890][A-L][abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890]{12}AAAJACOG[abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890]{4})(?:[abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890]{2}==)?",
+        ("jqqj",),
+        None,
+        (),
+    ),
+    (
+        "microsoft/AzureFaceLegacyCommonAnnotatedSecurityKey",
+        r"(^|[^abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890])(?P<value>[abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890]{52}JQQJ99[abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890][A-L][abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890]{12}AAAKACOG[abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890]{4})(?:[abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890]{2}==)?",
+        ("jqqj",),
+        None,
+        (),
+    ),
+    (
+        "microsoft/AzureFormRecognizerLegacyCommonAnnotatedSecurityKey",
+        r"(^|[^abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890])(?P<value>[abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890]{52}JQQJ99[abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890][A-L][abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890]{12}AAALACOG[abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890]{4})(?:[abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890]{2}==)?",
+        ("jqqj",),
+        None,
+        (),
+    ),
+    (
+        "microsoft/AzureHealthDecisionSupportLegacyCommonAnnotatedSecurityKey",
+        r"(^|[^abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890])(?P<value>[abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890]{52}JQQJ99[abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890][A-L][abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890]{12}AAAMACOG[abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890]{4})(?:[abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890]{2}==)?",
+        ("jqqj",),
+        None,
+        (),
+    ),
+    (
+        "microsoft/AzureHealthInsightsLegacyCommonAnnotatedSecurityKey",
+        r"(^|[^abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890])(?P<value>[abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890]{52}JQQJ99[abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890][A-L][abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890]{12}AAANACOG[abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890]{4})(?:[abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890]{2}==)?",
+        ("jqqj",),
+        None,
+        (),
+    ),
+    (
+        "microsoft/AzureImmersiveReaderLegacyCommonAnnotatedSecurityKey",
+        r"(^|[^abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890])(?P<value>[abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890]{52}JQQJ99[abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890][A-L][abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890]{12}AAAOACOG[abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890]{4})(?:[abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890]{2}==)?",
+        ("jqqj",),
+        None,
+        (),
+    ),
+    (
+        "microsoft/AzureInternalAllInOneLegacyCommonAnnotatedSecurityKey",
+        r"(^|[^abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890])(?P<value>[abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890]{52}JQQJ99[abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890][A-L][abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890]{12}AAAPACOG[abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890]{4})(?:[abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890]{2}==)?",
+        ("jqqj",),
+        None,
+        (),
+    ),
+    (
+        "microsoft/AzureKnowledgeLegacyCommonAnnotatedSecurityKey",
+        r"(^|[^abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890])(?P<value>[abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890]{52}JQQJ99[abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890][A-L][abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890]{12}AAAQACOG[abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890]{4})(?:[abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890]{2}==)?",
+        ("jqqj",),
+        None,
+        (),
+    ),
+    (
+        "microsoft/AzureLuisAuthoringLegacyCommonAnnotatedSecurityKey",
+        r"(^|[^abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890])(?P<value>[abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890]{52}JQQJ99[abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890][A-L][abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890]{12}AAARACOG[abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890]{4})(?:[abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890]{2}==)?",
+        ("jqqj",),
+        None,
+        (),
+    ),
+    (
+        "microsoft/AzureLuisLegacyCommonAnnotatedSecurityKey",
+        r"(^|[^abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890])(?P<value>[abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890]{52}JQQJ99[abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890][A-L][abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890]{12}AAASACOG[abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890]{4})(?:[abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890]{2}==)?",
+        ("jqqj",),
+        None,
+        (),
+    ),
+    (
+        "microsoft/AzureMetricsAdvisorLegacyCommonAnnotatedSecurityKey",
+        r"(^|[^abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890])(?P<value>[abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890]{52}JQQJ99[abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890][A-L][abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890]{12}AAATACOG[abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890]{4})(?:[abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890]{2}==)?",
+        ("jqqj",),
+        None,
+        (),
+    ),
+    (
+        "microsoft/AzurePersonalizerLegacyCommonAnnotatedSecurityKey",
+        r"(^|[^abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890])(?P<value>[abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890]{52}JQQJ99[abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890][A-L][abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890]{12}AAAUACOG[abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890]{4})(?:[abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890]{2}==)?",
+        ("jqqj",),
+        None,
+        (),
+    ),
+    (
+        "microsoft/AzureQnAMakerLegacyCommonAnnotatedSecurityKey",
+        r"(^|[^abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890])(?P<value>[abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890]{52}JQQJ99[abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890][A-L][abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890]{12}AAAVACOG[abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890]{4})(?:[abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890]{2}==)?",
+        ("jqqj",),
+        None,
+        (),
+    ),
+    (
+        "microsoft/AzureQnAMakerv2LegacyCommonAnnotatedSecurityKey",
+        r"(^|[^abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890])(?P<value>[abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890]{52}JQQJ99[abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890][A-L][abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890]{12}AAAWACOG[abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890]{4})(?:[abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890]{2}==)?",
+        ("jqqj",),
+        None,
+        (),
+    ),
+    (
+        "microsoft/AzureSpeechServicesLegacyCommonAnnotatedSecurityKey",
+        r"(^|[^abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890])(?P<value>[abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890]{52}JQQJ99[abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890][A-L][abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890]{12}AAAYACOG[abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890]{4})(?:[abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890]{2}==)?",
+        ("jqqj",),
+        None,
+        (),
+    ),
+    (
+        "microsoft/AzureSpeechTranslationLegacyCommonAnnotatedSecurityKey",
+        r"(^|[^abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890])(?P<value>[abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890]{52}JQQJ99[abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890][A-L][abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890]{12}AAAZACOG[abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890]{4})(?:[abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890]{2}==)?",
+        ("jqqj",),
+        None,
+        (),
+    ),
+    (
+        "microsoft/AzureTextAnalyticsLegacyCommonAnnotatedSecurityKey",
+        r"(^|[^abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890])(?P<value>[abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890]{52}JQQJ99[abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890][A-L][abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890]{12}AAAaACOG[abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890]{4})(?:[abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890]{2}==)?",
+        ("jqqj",),
+        None,
+        (),
+    ),
+    (
+        "microsoft/AzureTextTranslationLegacyCommonAnnotatedSecurityKey",
+        r"(^|[^abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890])(?P<value>[abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890]{52}JQQJ99[abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890][A-L][abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890]{12}AAAbACOG[abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890]{4})(?:[abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890]{2}==)?",
+        ("jqqj",),
+        None,
+        (),
+    ),
+    (
+        "microsoft/AzureVideoIntelligenceLegacyCommonAnnotatedSecurityKey",
+        r"(^|[^abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890])(?P<value>[abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890]{52}JQQJ99[abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890][A-L][abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890]{12}AAAeACOG[abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890]{4})(?:[abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890]{2}==)?",
+        ("jqqj",),
+        None,
+        (),
+    ),
+)
+
+# Provider token patterns written for this project, for GitHub types that no
+# rule above covers. Each has a documented format: a fixed prefix or structure
+# that a vendor page, a vendor SDK, or an open scanner states. The comment on
+# each rule names that source. A type whose format no source states has no
+# rule, because a keyword and a length alone flag too much ordinary text.
+# A key that is a short prefix and letters and digits must not touch a base64
+# character. A long base64 blob holds any four-letter prefix sooner or later.
+SEATBELT_RULES: tuple[
+    tuple[str, str, tuple[str, ...], float | None, tuple[str, ...]], ...
+] = (
+    # https://github.com/amzn/amazon-payments-magento-2-plugin/blob/master/view/adminhtml/web/js/validation-mixin.js
+    (
+        "seatbelt/amazon-oauth-client-id",
+        "\\bamzn1\\.application-oa2-client\\.[0-9a-z]{32}\\b",
+        ("amzn1.application-oa2-client.",),
+        None,
+        (),
+    ),
+    # https://github.com/Azure/azure-sdk-for-python/blob/main/sdk/communication/azure-communication-identity/azure/communication/identity/_shared/utils.py
+    (
+        "seatbelt/azure-communication-services-connection-string",
+        "(?i:endpoint)=https://[A-Za-z0-9.-]+\\.communication\\.azure\\.com/?;(?i:accesskey)=(?P<value>[A-Za-z0-9+/]{20,}={0,2})",
+        (
+            "communication.azure.com",
+            "accesskey=",
+        ),
+        None,
+        (),
+    ),
+    # https://devblogs.microsoft.com/iotdev/understand-different-connection-strings-in-azure-iot-hub/
+    (
+        "seatbelt/azure-iot-device-connection-string",
+        "\\b(?i:hostname)=[A-Za-z0-9.-]+\\.azure-devices\\.net;(?i:deviceid)=[^;\\s\\\"']+;(?i:sharedaccesskey)=(?P<value>[A-Za-z0-9+/]{20,}={0,2})",
+        (
+            "azure-devices.net",
+            "deviceid=",
+            "sharedaccesskey=",
+        ),
+        None,
+        (),
+    ),
+    # https://devblogs.microsoft.com/iotdev/understand-different-connection-strings-in-azure-iot-hub/
+    (
+        "seatbelt/azure-iot-hub-connection-string",
+        "\\b(?i:hostname)=[A-Za-z0-9.-]+\\.azure-devices\\.net;(?i:sharedaccesskeyname)=[^;\\s\\\"']+;(?i:sharedaccesskey)=(?P<value>[A-Za-z0-9+/]{20,}={0,2})",
+        (
+            "azure-devices.net",
+            "sharedaccesskeyname=",
+        ),
+        None,
+        (),
+    ),
+    # https://github.com/Azure/azure-iot-sdk-csharp/blob/main/provisioning/service/src/Auth/ServiceConnectionString.cs
+    (
+        "seatbelt/azure-iot-provisioning-connection-string",
+        "\\b(?i:hostname)=[A-Za-z0-9.-]+\\.azure-devices-provisioning\\.net;(?i:sharedaccesskeyname)=[^;\\s\\\"']+;(?i:sharedaccesskey)=(?P<value>[A-Za-z0-9+/]{20,}={0,2})",
+        (
+            "azure-devices-provisioning.net",
+            "sharedaccesskeyname=",
+        ),
+        None,
+        (),
+    ),
+    # https://learn.microsoft.com/en-us/azure/azure-signalr/concept-connection-string
+    (
+        "seatbelt/azure-signalr-connection-string",
+        "(?i:endpoint)=https://[A-Za-z0-9.-]+\\.service\\.signalr\\.net(?::\\d+)?/?;(?i:accesskey)=(?P<value>[A-Za-z0-9+/]{20,}={0,2})",
+        (
+            "service.signalr.net",
+            "accesskey=",
+        ),
+        None,
+        (),
+    ),
+    # https://learn.microsoft.com/en-us/dotnet/api/overview/azure/microsoft.azure.webjobs.extensions.webpubsub-readme?view=azure-dotnet
+    (
+        "seatbelt/azure-web-pub-sub-connection-string",
+        "(?i:endpoint)=https://[A-Za-z0-9.-]+\\.webpubsub\\.azure\\.com(?::\\d+)?/?;(?i:accesskey)=(?P<value>[A-Za-z0-9+/]{20,}={0,2})",
+        (
+            "webpubsub.azure.com",
+            "accesskey=",
+        ),
+        None,
+        (),
+    ),
+    # https://buildkite.com/docs/platform/security/tokens
+    (
+        "seatbelt/buildkite-packages-token",
+        "\\bbkpt_[A-Za-z0-9_-]{150,250}(?![A-Za-z0-9_-])",
+        ("bkpt_",),
+        None,
+        (),
+    ),
+    # https://forum.cfx.re/raw/3598425
+    (
+        "seatbelt/cfxre-server-key",
+        "\\bcfxk_[A-Za-z0-9]{16,32}_[A-Za-z0-9]{4,7}\\b",
+        ("cfxk_",),
+        None,
+        (),
+    ),
+    # https://github.com/trufflesecurity/trufflehog/blob/main/pkg/detectors/contentfulpersonalaccesstoken/contentfulpersonalaccesstoken.go
+    (
+        "seatbelt/contentful-personal-access-token",
+        "\\bCFPAT-[A-Za-z0-9_-]{40,50}(?![A-Za-z0-9_-])",
+        ("cfpat-",),
+        None,
+        (),
+    ),
+    # https://docs.datadoghq.com/account_management/personal-access-tokens/
+    (
+        "seatbelt/datadog-pat",
+        "\\bddpat_[A-Za-z0-9]+_[A-Za-z0-9]{30,90}\\b",
+        ("ddpat_",),
+        None,
+        (),
+    ),
+    # https://docs.doppler.com/reference/auth-token-formats
+    (
+        "seatbelt/doppler-audit-token",
+        "\\bdp\\.audit\\.[a-zA-Z0-9]{40,44}\\b",
+        ("dp.audit.",),
+        None,
+        (),
+    ),
+    # https://docs.doppler.com/reference/auth-token-formats
+    (
+        "seatbelt/doppler-scim-token",
+        "\\bdp\\.scim\\.[a-zA-Z0-9]{40,44}\\b",
+        ("dp.scim.",),
+        None,
+        (),
+    ),
+    # https://docs.doppler.com/reference/auth-token-formats
+    (
+        "seatbelt/doppler-service-account-token",
+        "\\bdp\\.sa\\.[a-zA-Z0-9]{40,44}\\b",
+        ("dp.sa.",),
+        None,
+        (),
+    ),
+    # https://github.com/betterleaks/betterleaks/blob/main/config/betterleaks.toml
+    (
+        "seatbelt/ebay-production-client-secret",
+        "\\bPRD-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4,12}\\b",
+        ("prd-",),
+        None,
+        (),
+    ),
+    # https://github.com/trufflesecurity/trufflehog/blob/main/pkg/detectors/flutterwave/flutterwave.go
+    (
+        "seatbelt/flutterwave-live-api-secret-key",
+        "\\bFLWSECK-[0-9a-zA-Z]{32}-X\\b",
+        ("flwseck-",),
+        None,
+        (),
+    ),
+    # https://docs.cloud.google.com/storage/docs/authentication/hmackeys
+    (
+        "seatbelt/google-cloud-storage-service-account-access-key-id",
+        "(?<![A-Za-z0-9+/])GOOG[A-Z0-9]{57}(?![A-Za-z0-9+/])",
+        ("goog",),
+        None,
+        (),
+    ),
+    # https://github.com/trufflesecurity/trufflehog/blob/main/pkg/detectors/googleoauth2/googleoauth2_access_token.go
+    (
+        "seatbelt/google-oauth-access-token",
+        "\\bya29\\.[0-9A-Za-z_-]{10,}",
+        ("ya29.",),
+        None,
+        (),
+    ),
+    # https://github.com/trufflesecurity/trufflehog/blob/main/pkg/detectors/hubspot_apikey/v2/apikey.go
+    (
+        "seatbelt/hubspot-personal-access-key",
+        "\\bpat-(?:na1|eu1)-[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\\b",
+        ("pat-",),
+        None,
+        (),
+    ),
+    # https://github.com/gitleaks/gitleaks/blob/master/cmd/generate/config/rules/artifactory.go
+    (
+        "seatbelt/jfrog-platform-api-key",
+        "(?<![A-Za-z0-9+/])AKCp[A-Za-z0-9]{69}(?![A-Za-z0-9+/])",
+        ("akcp",),
+        None,
+        (),
+    ),
+    # https://docs.mapbox.com/api/accounts/tokens/
+    (
+        "seatbelt/mapbox-secret-access-token",
+        "\\bsk\\.eyJ[A-Za-z0-9_-]{20,}\\.[A-Za-z0-9_-]{20,}(?![A-Za-z0-9_-])",
+        ("sk.ey",),
+        None,
+        (),
+    ),
+    # https://docs.midtrans.com/docs/api-authorization-headers
+    (
+        "seatbelt/midtrans-sandbox-server-key",
+        "\\bSB-Mid-server-[A-Za-z0-9_-]{10,}\\b",
+        ("sb-mid-server-",),
+        None,
+        (),
+    ),
+    # https://github.com/newrelic/rusty-hog/blob/master/README.md
+    (
+        "seatbelt/new-relic-insights-query-key",
+        "\\bNRIQ-[A-Za-z0-9_-]{32}(?![A-Za-z0-9_-])",
+        ("nriq-",),
+        None,
+        (),
+    ),
+    # https://github.com/newrelic/rusty-hog/blob/master/README.md
+    (
+        "seatbelt/new-relic-rest-api-key",
+        "\\bNRRA-[a-fA-F0-9]{42}\\b",
+        ("nrra-",),
+        None,
+        (),
+    ),
+    # https://gitlab.com/gitlab-org/security-products/secret-detection/secret-detection-rules/-/blob/main/rules/mit/onfido/onfido.toml
+    (
+        "seatbelt/onfido-live-api-token",
+        "\\bapi_live(?:_us|_ca)?\\.[A-Za-z0-9_-]{11}\\.[A-Za-z0-9_-]{32}(?![A-Za-z0-9_-])",
+        ("api_live",),
+        None,
+        (),
+    ),
+    # https://documentation.identity.entrust.com/api/latest/
+    (
+        "seatbelt/onfido-sandbox-api-token",
+        "\\bapi_sandbox(?:_us|_ca)?\\.[A-Za-z0-9_-]{11}\\.[A-Za-z0-9_-]{32}(?![A-Za-z0-9_-])",
+        ("api_sandbox",),
+        None,
+        (),
+    ),
+    # https://developer.paddle.com/changelog/2025/api-key-improvements
+    (
+        "seatbelt/paddle-sandbox-api-key",
+        "\\bpdl_sdbx_apikey_[a-z0-9]{26}_[A-Za-z0-9]{22}_[A-Za-z0-9]{3}\\b",
+        ("pdl_sdbx_apikey_",),
+        None,
+        (),
+    ),
+    # https://pangea.cloud/docs/admin-guide/projects/credentials
+    (
+        "seatbelt/pangea-token",
+        "\\bpts_[A-Za-z0-9]{20,60}\\b",
+        ("pts_",),
+        None,
+        (),
+    ),
+    # https://docs.withpersona.com/api-keys
+    (
+        "seatbelt/persona-sandbox-api-key",
+        "\\bpersona_sandbox_[A-Za-z0-9_-]{20,80}(?![A-Za-z0-9_-])",
+        ("persona_sandbox_",),
+        None,
+        (),
+    ),
+    # https://developers.pinterest.com/docs/getting-started/set-up-authentication-and-authorization/
+    (
+        "seatbelt/pinterest-refresh-token",
+        "\\bpinr_[A-Za-z0-9_-]{20,200}(?![A-Za-z0-9_-])",
+        ("pinr_",),
+        None,
+        (),
+    ),
+    # https://github.com/google/osv-scalibr/blob/main/veles/secrets/postmanapikey/detector.go
+    (
+        "seatbelt/postman-collection-key",
+        "\\bPMAT-[A-Za-z0-9]{26}\\b",
+        ("pmat-",),
+        None,
+        (),
+    ),
+    # https://docs.rainforestpay.com/reference/authentication
+    (
+        "seatbelt/rainforest-sandbox-api-key",
+        "\\bsbx_apikey_[a-f0-9]{64}\\b",
+        ("sbx_apikey_",),
+        None,
+        (),
+    ),
+    # https://github.com/google/osv-scalibr/blob/main/veles/secrets/salesforceoauth2access/detector.go
+    (
+        "seatbelt/salesforce-access-token",
+        "\\b00D[A-Za-z0-9]{12,15}![A-Za-z0-9._-]{30,260}",
+        ("00d",),
+        None,
+        (),
+    ),
+    # https://github.com/getsentry/sentry/blob/master/src/sentry/types/token.py
+    (
+        "seatbelt/sentry-integration-token",
+        "\\bsntryi_[a-f0-9]{64}\\b",
+        ("sntryi_",),
+        None,
+        (),
+    ),
+    # https://github.com/google/osv-scalibr/blob/main/veles/secrets/squareapikey/detector.go
+    (
+        "seatbelt/square-production-application-secret",
+        "\\bsq0csp-[A-Za-z0-9_-]{43}(?![A-Za-z0-9_-])",
+        ("sq0csp-",),
+        None,
+        (),
+    ),
+    # https://github.com/trufflesecurity/trufflehog/blob/main/pkg/detectors/squareapp/squareapp.go
+    (
+        "seatbelt/square-sandbox-application-secret",
+        "\\bsandbox-sq0csb-[A-Za-z0-9_-]{40,50}(?![A-Za-z0-9_-])",
+        ("sandbox-sq0csb-",),
+        None,
+        (),
+    ),
+    # https://github.com/google/osv-scalibr/blob/main/veles/secrets/supabase/detector.go
+    (
+        "seatbelt/supabase-secret-key",
+        "\\bsb_secret_[A-Za-z0-9_-]{31,36}(?![A-Za-z0-9_-])",
+        ("sb_secret_",),
+        None,
+        (),
+    ),
+    # https://gitlab.com/gitlab-org/security-products/secret-detection/secret-detection-rules/-/blob/main/rules/mit/tencent/tencent.toml
+    (
+        "seatbelt/tencent-cloud-secret-id",
+        "(?<![A-Za-z0-9+/])AKID[A-Za-z0-9]{32}(?![A-Za-z0-9+/])",
+        ("akid",),
+        None,
+        (),
+    ),
+    # https://gitlab.com/gitlab-org/security-products/secret-detection/secret-detection-rules/-/blob/main/rules/mit/volcengine/volcengine.toml
+    (
+        "seatbelt/volcengine-access-key-id",
+        "(?<![A-Za-z0-9+/])AKLT[A-Za-z0-9]{30,44}(?![A-Za-z0-9+/])",
+        ("aklt",),
+        None,
+        (),
+    ),
+    # https://gitlab.com/gitlab-org/security-products/secret-detection/secret-detection-rules/-/blob/main/rules/mit/yandexcloud/yandexcloud.toml
+    (
+        "seatbelt/yandex-cloud-iam-cookie",
+        "\\bc1\\.[A-Za-z0-9_-]+={0,2}\\.[A-Za-z0-9_-]{86}={0,2}(?![A-Za-z0-9_=-])",
+        ("c1.",),
+        None,
+        (),
+    ),
+    # https://yandex.cloud/en/docs/smartcaptcha/concepts/keys
+    (
+        "seatbelt/yandex-cloud-smartcaptcha-server-key",
+        "\\bysc2_[A-Za-z0-9_-]{20,}(?![A-Za-z0-9_-])",
+        ("ysc2_",),
+        None,
+        (),
+    ),
+    # https://github.com/trufflesecurity/trufflehog/blob/main/pkg/detectors/yandex/yandex.go
+    (
+        "seatbelt/yandex-dictionary-api-key",
+        "\\bdict\\.1\\.1\\.\\d{8}T\\d{6}Z\\.[0-9a-f]{16}\\.[0-9a-f]{40}\\b",
+        ("dict.1.1.",),
+        None,
+        (),
+    ),
+    # https://yandex.cloud/en/docs/iam/concepts/authorization/oauth-token
+    (
+        "seatbelt/yandex-passport-oauth-token",
+        "\\by[0-3]_[A-Za-z0-9_-]{30,120}(?![A-Za-z0-9_-])",
+        (
+            "y0_",
+            "y1_",
+            "y2_",
+            "y3_",
+        ),
+        3.5,
+        (),
+    ),
+    # https://docs.newrelic.com/docs/apis/intro-apis/new-relic-api-keys/#license-key
+    # The regex is Nosey Parker np.newrelic.1, commit 2e6e7f36ce36 (2026-02-21),
+    # Copyright Praetorian Security, Inc. Apache License 2.0.
+    (
+        "seatbelt/new-relic-license-key",
+        "(?i)\\b(?P<value>[a-z0-9]{6}[a-f0-9]{30}nral)\\b",
+        ("nral",),
+        None,
+        (),
+    ),
+    # https://wakatime.com/developers#authentication
+    (
+        "seatbelt/wakatime-oauth-access-token",
+        "\\bwaka_tok_[A-Za-z0-9]{20,}(?![A-Za-z0-9])",
+        ("waka_tok_",),
+        None,
+        (),
+    ),
+)
+
+# The allowlist gitleaks applies to the secret of every rule, from the same
+# config. Betterleaks keeps the same list as its global filter. It holds
+# template variables, runs of one letter, local paths, and two stopwords.
+SHARED_ALLOWLIST: tuple[str, ...] = (
+    r"(?i)^true|false|null$",
+    r"^(?i:a+|b+|c+|d+|e+|f+|g+|h+|i+|j+|k+|l+|m+|n+|o+|p+|q+|r+|s+|t+|u+|v+|w+|x+|y+|z+|\*+|\.+)$",
+    r"^\$(?:\d+|{\d+})$",
+    r"^\$(?:[A-Z_]+|[a-z_]+)$",
+    r"^\${(?:[A-Z_]+|[a-z_]+)}$",
+    r"^\{\{[ \t]*[\w ().|]+[ \t]*}}$",
+    "^\\$\\{\\{[ \\t]*(?:(?:env|github|secrets|vars)(?:\\.[A-Za-z]\\w+)+[\\w \"'&./=|]*)[ \\t]*}}$",
+    r"^%(?:[A-Z_]+|[a-z_]+)%$",
+    r"^%[+\-# 0]?[bcdeEfFgGoOpqstTUvxX]$",
+    r"^\{\d{0,2}}$",
+    r"^@(?:[A-Z_]+|[a-z_]+)@$",
+    r"^/Users/(?i:[a-z0-9]+/[\w .-/]+$)",
+    r"^/(?:bin|etc|home|opt|tmp|usr|var)/[\w ./-]+$",
+    r"014df517\-39d1\-4453\-b7b3\-9930c563627c",
+    r"abcdefghijklmnopqrstuvwxyz",
+)
+
+# A rule drops a secret whose length over its cl100k_base token count is at or
+# above its ceiling, as betterleaks does. Words and identifiers take few tokens
+# for their length, and a random key takes many. The Yandex token prefix is also
+# the start of identifiers like "y0_offset_...", so it takes the same check.
+TOKEN_RATIO_CEILINGS: dict[str, float] = {
+    "betterleaks/adafruit-api-key": 2.5,
+    "betterleaks/airtable-api-key": 2.5,
+    "betterleaks/aiven-auth-token": 2.5,
+    "betterleaks/bitbucket-data-center-token": 2.5,
+    "betterleaks/bitrise-access-token": 2.5,
+    "betterleaks/circleci-personal-token": 2.5,
+    "betterleaks/circleci-project-token": 2.5,
+    "betterleaks/cisco-meraki-api-key": 2.5,
+    "betterleaks/dropbox-long-lived-api-token": 2.5,
+    "betterleaks/dropbox-short-lived-api-token": 2.5,
+    "betterleaks/flickr-access-token": 2.5,
+    "betterleaks/intercom-api-key": 2.5,
+    "betterleaks/launchdarkly-access-token": 2.5,
+    "betterleaks/messagebird-api-token": 2.5,
+    "betterleaks/mistral-api-key": 2.5,
+    "betterleaks/new-relic-user-api-key": 2.5,
+    "betterleaks/openweather-api-key": 2.5,
+    "betterleaks/plivo-auth-id": 2.5,
+    "betterleaks/vercel-api-token": 2.5,
+    "betterleaks/vercel-app-access-token": 2.5,
+    "betterleaks/vercel-app-refresh-token": 2.5,
+    "betterleaks/vercel-integration-token": 2.5,
+    "betterleaks/vercel-personal-access-token": 2.5,
+    "betterleaks/weatherstack-api-key.1": 2.5,
+    "betterleaks/weights-and-biases-api-key": 2.5,
+    "seatbelt/yandex-passport-oauth-token": 2.5,
+}
+
+PORTED_RULES = GITLEAKS_RULES + BETTERLEAKS_RULES + MICROSOFT_RULES + SEATBELT_RULES

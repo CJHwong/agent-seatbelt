@@ -786,25 +786,27 @@ def corpus_texts() -> list[tuple[str, str]]:
         texts.append((case["id"], case["text"]))
     # The rule source itself: long, dense with keywords, and holding CJK text.
     texts.append(("pii_rules.py", Path(pii_rules.__file__).read_text()))
-    for sample in GITLEAKS_SAMPLES:
-        texts.append((f"gitleaks:{sample['rule']}", sample["text"]))
+    for sample in PORTED_SAMPLES:
+        texts.append((f"sample:{sample['rule']}", sample["text"]))
     return texts
 
 
-# One generated value per ported gitleaks rule, placed in a line of code.
+# One generated value per ported rule, placed in a line of code, one file per
+# source.
 # The values are random strings shaped by each rule, not real credentials.
-GITLEAKS_SAMPLES = [
+PORTED_SAMPLES = [
     json.loads(line)
-    for line in (TESTS_DIR / "gitleaks-samples.jsonl").read_text().splitlines()
+    for source in ("gitleaks", "betterleaks", "microsoft", "seatbelt")
+    for line in (TESTS_DIR / f"{source}-samples.jsonl").read_text().splitlines()
 ]
 
 
-def only_gitleaks_rule(rule_id: str):
+def only_ported_rule(rule_id: str):
     """Scan with one ported rule as the only secret rule."""
-    pattern = pii_rules.GITLEAKS_PATTERNS[rule_id]
-    checks = tuple(c for c in pii_rules.GITLEAKS_CHECKS if c[0] is pattern)
+    pattern = pii_rules.PORTED_PATTERNS[rule_id]
+    checks = tuple(c for c in pii_rules.PORTED_CHECKS if c[0] is pattern)
     return mock.patch.multiple(
-        pii_rules, SECRET_RULES=(), GITLEAKS_CHECKS=checks, _NATIVE_ENGINE=None
+        pii_rules, SECRET_RULES=(), PORTED_CHECKS=checks, _NATIVE_ENGINE=None
     )
 
 
@@ -855,52 +857,99 @@ class RuleFalsePositiveTests(unittest.TestCase):
                 self.assertEqual(span_texts(text), {"correct-horse-battery-staple"})
 
 
-class GitleaksRuleTests(unittest.TestCase):
+class PortedRuleTests(unittest.TestCase):
     def test_every_rule_finds_its_sample(self) -> None:
         self.assertEqual(
-            {sample["rule"] for sample in GITLEAKS_SAMPLES},
-            set(pii_rules.GITLEAKS_PATTERNS),
+            {sample["rule"] for sample in PORTED_SAMPLES},
+            set(pii_rules.PORTED_PATTERNS),
         )
-        for sample in GITLEAKS_SAMPLES:
-            with self.subTest(rule=sample["rule"]), only_gitleaks_rule(sample["rule"]):
+        for sample in PORTED_SAMPLES:
+            with self.subTest(rule=sample["rule"]), only_ported_rule(sample["rule"]):
                 self.assertIn(sample["value"], span_texts(sample["text"]))
 
     def test_a_secret_at_or_under_the_entropy_floor_is_not_reported(self) -> None:
         # The rule's floor is 2 bits. "ab" repeated holds about 1.9.
         text = "rubygems_" + "ab" * 24 + "\n"
-        with only_gitleaks_rule("rubygems-api-token"):
+        with only_ported_rule("rubygems-api-token"):
             self.assertEqual(span_texts(text), set())
             self.assertEqual(
                 span_texts("rubygems_" + "0123456789abcdef" * 3 + "\n"),
                 {"rubygems_" + "0123456789abcdef" * 3},
             )
 
+    def test_a_secret_that_tokenizes_like_words_is_not_reported(self) -> None:
+        # 60 characters in 14 tokens is a ratio of 4.3, over the ceiling of 2.5.
+        words = "vcp_the_production_deployment_token_for_our_marketing_webapp"
+        with only_ported_rule("betterleaks/vercel-personal-access-token"):
+            self.assertEqual(span_texts(f'token = "{words}"'), set())
+            random = "vcp_" + "Kx8mQ2vLp9ZrT4wNc7YhB3" * 2 + "q0Wn7Rt4Bz9L"
+            self.assertEqual(span_texts(f'token = "{random}"'), {random})
+
+    def test_a_prefix_inside_a_base64_run_is_not_a_key(self) -> None:
+        # A long base64 blob, an embedded image, holds any short prefix sooner
+        # or later. "/" is a word boundary, but it is a base64 character.
+        key = "AKLT" + "Kx8mQ2vLp9ZrT4wNc7YhB3q0Wn7Rt4Bz9L"
+        with only_ported_rule("seatbelt/volcengine-access-key-id"):
+            self.assertEqual(span_texts(f"iVBORw0KGgo+Qm9/{key}/x9Tq+Lm2"), set())
+            self.assertEqual(span_texts(f"VOLC_ACCESSKEY={key}\n"), {key})
+
     def test_an_allowlisted_secret_is_not_reported(self) -> None:
         # gitleaks lists this key as a known sample value.
         text = 'key: "AIzaSyabcdefghijklmnopqrstuvwxyz1234567"'
-        with only_gitleaks_rule("gcp-api-key"):
+        with only_ported_rule("gcp-api-key"):
             self.assertEqual(span_texts(text), set())
 
     def test_the_ported_rules_add_nothing_to_the_other_cases(self) -> None:
         for name, text in corpus_texts():
-            if name.startswith("gitleaks:"):
+            if name.startswith("sample:"):
                 continue
             with self.subTest(case=name), python_engine():
-                with mock.patch.object(pii_rules, "GITLEAKS_CHECKS", ()):
+                with mock.patch.object(pii_rules, "PORTED_CHECKS", ()):
                     without = pii_rules.deterministic_spans(text)
                 self.assertEqual(pii_rules.deterministic_spans(text), without)
 
-    def test_the_github_checklist_names_only_ported_rules(self) -> None:
+    def test_the_github_checklist_names_only_real_rules(self) -> None:
         rows = [
             line.split("\t")
             for line in (TESTS_DIR / "github-secret-types.tsv").read_text().splitlines()
             if not line.startswith("#")
         ]
         self.assertEqual(
-            rows[0], ["secret_type", "provider", "push_protection", "gitleaks_id"]
+            rows[0], ["secret_type", "provider", "push_protection", "rule_id"]
         )
         named = {row[3] for row in rows[1:]} - {"-"}
-        self.assertEqual(named, set(pii_rules.GITLEAKS_PATTERNS))
+        rule_patterns = {name for name in vars(pii_rules) if name.endswith("_PATTERN")}
+        # Every ported rule covers a type, and every name is a rule.
+        self.assertLessEqual(set(pii_rules.PORTED_PATTERNS), named)
+        self.assertLessEqual(named, set(pii_rules.PORTED_PATTERNS) | rule_patterns)
+
+
+class TokenCountTests(unittest.TestCase):
+    def test_the_vocabulary_keeps_every_rank(self) -> None:
+        ranks = pii_rules._cl100k_ranks()
+        self.assertEqual(sorted(ranks.values()), list(range(100256)))
+        # Ranks from OpenAI's tiktoken.
+        self.assertEqual(ranks[b"hello"], 15339)
+        self.assertEqual(ranks[b" world"], 1917)
+
+    def test_the_count_matches_the_tokenizer_betterleaks_uses(self) -> None:
+        # Counted with tiktoken-go v0.1.8, cl100k_base, as betterleaks counts.
+        # OpenAI's tiktoken gives the same counts.
+        expected = {
+            "hello world": 2,
+            "vcp_the_production_deployment_token_for_our_marketing_webapp": 14,
+            "Kx8mQ2vLp9ZrT4wNc7YhB3": 22,
+            "0123456789abcdef": 5,
+            "it's we'll THEY'RE": 6,
+            "a  b\n\n  c   ": 7,
+            "naïve café 東京タワー": 11,
+            "__init__.py -- ++==": 7,
+            "½ ² Ⅻ 3.14159": 11,
+            "": 0,
+        }
+        for text, count in expected.items():
+            with self.subTest(text=text):
+                self.assertEqual(pii_rules._token_count(text), count)
 
 
 def python_engine():
@@ -911,10 +960,10 @@ class KeywordGateTests(unittest.TestCase):
     """A gate may only skip a pattern that could not have matched."""
 
     def test_the_gates_never_change_a_result(self) -> None:
-        # gitleaks keywords are rule semantics, not literals the pattern needs.
-        gitleaks = set(pii_rules.GITLEAKS_PATTERNS.values())
+        # Ported keywords are rule semantics, not literals the pattern needs.
+        ported = set(pii_rules.PORTED_PATTERNS.values())
         ungated = {
-            pattern: keywords if pattern in gitleaks else ()
+            pattern: keywords if pattern in ported else ()
             for pattern, keywords in pii_rules.RULE_KEYWORDS.items()
         }
         for name, text in corpus_texts():
@@ -955,7 +1004,7 @@ class KeywordGateTests(unittest.TestCase):
             for name, value in vars(pii_rules).items()
             if name.endswith("_PATTERN") and name not in not_rules
         }
-        declared.update(pii_rules.GITLEAKS_PATTERNS.values())
+        declared.update(pii_rules.PORTED_PATTERNS.values())
         self.assertEqual(declared, set(pii_rules.RULE_KEYWORDS))
 
 
