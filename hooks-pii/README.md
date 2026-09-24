@@ -436,16 +436,16 @@ The file is built against the Python stable ABI, so one build loads on CPython 3
 
 ### Provider token patterns
 
-`pii_secret_patterns.py` holds 266 provider token rules for the secret types on GitHub's [secret scanning list](https://docs.github.com/en/code-security/secret-scanning/introduction/supported-secret-scanning-patterns). GitHub does not publish its own patterns. Most rules come from three MIT-licensed projects:
+`pii_secret_patterns.py` holds 271 provider token rules for the secret types on GitHub's [secret scanning list](https://docs.github.com/en/code-security/secret-scanning/introduction/supported-secret-scanning-patterns). GitHub does not publish its own patterns. Most rules come from three MIT-licensed projects:
 
 - 71 rules from [gitleaks](https://github.com/gitleaks/gitleaks)
-- 104 rules from [betterleaks](https://github.com/betterleaks/betterleaks), with ids prefixed `betterleaks/`
+- 107 rules from [betterleaks](https://github.com/betterleaks/betterleaks), with ids prefixed `betterleaks/`
 - 48 rules from [microsoft/security-utilities](https://github.com/microsoft/security-utilities), with ids prefixed `microsoft/`
-- 43 rules written here, with ids prefixed `seatbelt/`, for types whose format a vendor page, a vendor SDK or an open scanner states. The comment above each rule names that source.
+- 45 rules written here, with ids prefixed `seatbelt/`, for types whose format a vendor page, a vendor SDK or an open scanner states. The comment above each rule names that source.
 
-`tests/github-secret-types.tsv` lists each GitHub type and the rule that covers it. 305 of the 470 types have a rule. A type whose format no source states has no rule, because a keyword and a length alone flag too much ordinary text. A rule reports a match only when the secret passes the source's entropy floor and filters, and only when one of the source's keywords is in the text. Every rule also applies the global allowlist that gitleaks and betterleaks share.
+`tests/github-secret-types.tsv` lists each GitHub type and the rule that covers it. 315 of the 470 types have a rule. A type credited to a context rule, such as `GENERIC_SECRET_CONTEXT_PATTERN`, is found when it sits under the key name its vendor documents, like `refresh_token`, and not on its own. A type whose format no source states has no rule, because a keyword and a length alone flag too much ordinary text. A rule reports a match only when the secret passes the source's entropy floor and filters, and only when one of the source's keywords is in the text. Every rule also applies the global allowlist that gitleaks and betterleaks share.
 
-25 betterleaks rules and one `seatbelt/` rule skip a secret whose length over its token count is 2.5 or more, as betterleaks does. Words and identifiers take few tokens for their length, and a random key takes many. The count uses the `cl100k_base` vocabulary betterleaks embeds. `cl100k_base.tokens.gz` holds it in a compact form that fits the repo's 500 KB file limit. `pii_rules.py` loads it on the first secret that needs it, which takes 23 ms on an M1 and 168 ms on the Celeron. Betterleaks composite rules, which report only next to another rule's match, are left out.
+25 betterleaks rules and one `seatbelt/` rule skip a secret whose length over its token count is 2.5 or more, as betterleaks does. Words and identifiers take few tokens for their length, and a random key takes many. The count uses the `cl100k_base` vocabulary betterleaks embeds. `cl100k_base.tokens.gz` holds it in a compact form that fits the repo's 500 KB file limit. `pii_rules.py` loads it on the first secret that needs it, which takes 23 ms on an M1 and 168 ms on the Celeron. Betterleaks composite rules report only next to another rule's match, such as a client id. They are left out, except where the secret carries its own prefix, like `AIK_SECRET_`. Those report on their own.
 
 The port leaves out the gitleaks rules that pair a keyword with any string of the right length and have no entropy floor. gitleaks `adafruit-api-key`, for one, flags `adafruit_feed = "temperature-sensor-living-room-1"`.
 

@@ -580,7 +580,8 @@ GITLEAKS_RULES: tuple[
 # port reads four of them: an entropy threshold, and a secret that matches,
 # contains, or fails to match a listed value. A fifth, tokenRatio, is in
 # TOKEN_RATIO_CEILINGS below. A rule that reports only next to another rule's
-# match is left out. Ids carry the source, as in
+# match is left out, unless the secret carries its own prefix. Then it reports
+# without the other match. Ids carry the source, as in
 # "betterleaks/lob-api-key", because some ids also name a gitleaks rule.
 
 BETTERLEAKS_RULES: tuple[
@@ -1361,6 +1362,27 @@ BETTERLEAKS_RULES: tuple[
         3.2999999999999994,
         (),
     ),
+    (
+        "betterleaks/aikido-client-secret",
+        "\\b(?P<value>AIK_SECRET_[A-Za-z0-9]{64})(?:\\\\?['\"\\x60]|[\\s;]|\\\\[nr]|$)",
+        ("aik_secret_",),
+        3.4999999999999996,
+        (),
+    ),
+    (
+        "betterleaks/mongodb-atlas-service-account-secret",
+        "\\b(?P<value>mdb_sa_sk_[A-Za-z0-9_-]{40})(?:\\\\?['\"\\x60]|[\\s;]|\\\\[nr]|$)",
+        ("mdb_sa_sk_",),
+        3.0,
+        ("^mdb_sa_sk_[0-9]{40}$",),
+    ),
+    (
+        "betterleaks/sidekiq-secret",
+        "(?i)(?:BUNDLE_ENTERPRISE__CONTRIBSYS__COM|BUNDLE_GEMS__CONTRIBSYS__COM)(?:[ \\t\\w.-]{0,20})[\\s'\"]{0,3}(?:=|>|:{1,3}=|\\|\\||:|=>|\\?=|,)[\\x60'\"\\s=]{0,5}(?P<value>[a-f0-9]{8}:[a-f0-9]{8})(?:\\\\?['\"\\x60]|[\\s;]|\\\\[nr]|$)",
+        ("bundle_enterprise__contribsys__com", "bundle_gems__contribsys__com"),
+        None,
+        (),
+    ),
 )
 
 # Microsoft key formats.
@@ -2093,6 +2115,24 @@ SEATBELT_RULES: tuple[
             "y3_",
         ),
         3.5,
+        (),
+    ),
+    # https://docs.newrelic.com/docs/apis/intro-apis/new-relic-api-keys/#license-key
+    # The regex is Nosey Parker np.newrelic.1, commit 2e6e7f36ce36 (2026-02-21),
+    # Copyright Praetorian Security, Inc. Apache License 2.0.
+    (
+        "seatbelt/new-relic-license-key",
+        "(?i)\\b(?P<value>[a-z0-9]{6}[a-f0-9]{30}nral)\\b",
+        ("nral",),
+        None,
+        (),
+    ),
+    # https://wakatime.com/developers#authentication
+    (
+        "seatbelt/wakatime-oauth-access-token",
+        "\\bwaka_tok_[A-Za-z0-9]{20,}(?![A-Za-z0-9])",
+        ("waka_tok_",),
+        None,
         (),
     ),
 )
