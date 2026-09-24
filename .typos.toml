@@ -11,5 +11,5 @@ personnal = "personnal"
 extend-exclude = [
     "hooks-pii/tests/challenge_cases.py",
     "hooks-pii/tests/false-positive-cases.jsonl",
-    "hooks-pii/tests/gitleaks-samples.jsonl",
+    "hooks-pii/tests/*-samples.jsonl",
 ]

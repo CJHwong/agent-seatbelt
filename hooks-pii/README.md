@@ -404,10 +404,10 @@ Measured through the server on 1,000 real transcript inputs per machine. The tim
 
 | Machine | p99 input | Python `re` at p99 | Native at p99 | Inputs under 10 ms, native |
 |---|---|---|---|---|
-| Apple M1 Pro | 35 KB | 16 ms | 3 ms | 99.8% |
-| Celeron N3050 | 14 KB | 31 ms | 9 ms | 99.2% |
+| Apple M1 Pro | 24 KB | 13 ms | 2 ms | 100.0% |
+| Celeron N3050 | 16 KB | 40 ms | 11 ms | 98.9% |
 
-Both engines returned the same spans for all 2,000 inputs.
+Both engines returned the same spans for all 2,000 inputs. On the Celeron, the 223 provider rules cost under 1 ms at p99 over the 71 rules of v1.0.0, measured side by side on the same inputs.
 
 The native engine returns the same spans as `re`. PCRE2 and `re` differ in three places, and each is handled:
 
@@ -436,7 +436,15 @@ The file is built against the Python stable ABI, so one build loads on CPython 3
 
 ### Provider token patterns
 
-`pii_secret_patterns.py` holds 71 provider token rules from [gitleaks](https://github.com/gitleaks/gitleaks) (MIT). They are the gitleaks rules that detect a secret type on GitHub's [secret scanning list](https://docs.github.com/en/code-security/secret-scanning/introduction/supported-secret-scanning-patterns). `tests/github-secret-types.tsv` lists each GitHub type and the rule that covers it. 82 of the 470 types have a rule. A rule reports a match only when the secret passes the gitleaks entropy floor and allowlist, and only when a gitleaks keyword is in the text.
+`pii_secret_patterns.py` holds 223 provider token rules for the secret types on GitHub's [secret scanning list](https://docs.github.com/en/code-security/secret-scanning/introduction/supported-secret-scanning-patterns). GitHub does not publish its own patterns, so the rules come from three MIT-licensed projects:
+
+- 71 rules from [gitleaks](https://github.com/gitleaks/gitleaks)
+- 104 rules from [betterleaks](https://github.com/betterleaks/betterleaks), with ids prefixed `betterleaks/`
+- 48 rules from [microsoft/security-utilities](https://github.com/microsoft/security-utilities), with ids prefixed `microsoft/`
+
+`tests/github-secret-types.tsv` lists each GitHub type and the rule that covers it. 248 of the 470 types have a rule. A rule reports a match only when the secret passes the source's entropy floor and filters, and only when one of the source's keywords is in the text. Every rule also applies the global allowlist that gitleaks and betterleaks share.
+
+Two betterleaks features are not ported. 25 rules skip a secret on a `tokenRatio` check, which needs a tokenizer; the port keeps their other filters. Composite rules, which report only next to another rule's match, are left out.
 
 The port leaves out the gitleaks rules that pair a keyword with any string of the right length and have no entropy floor. gitleaks `adafruit-api-key`, for one, flags `adafruit_feed = "temperature-sensor-living-room-1"`.
 

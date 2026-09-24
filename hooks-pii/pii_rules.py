@@ -14,7 +14,7 @@ from bisect import bisect_left
 from collections import Counter
 from typing import Protocol, cast
 
-from pii_secret_patterns import GITLEAKS_RULES
+from pii_secret_patterns import PORTED_RULES, SHARED_ALLOWLIST
 
 
 SPAN_PRIORITY = {
@@ -231,18 +231,22 @@ MONTH_DATE_PATTERN = re.compile(
     r"september|october|november|december)\s+\d{1,2}(?:st|and|rd|th)?"
     r"(?:,\s*|\s+)(?:19|20)\d{2}\b"
 )
-GITLEAKS_PATTERNS = {
-    rule_id: re.compile(source) for rule_id, source, _, _, _ in GITLEAKS_RULES
+PORTED_PATTERNS = {
+    rule_id: re.compile(source) for rule_id, source, _, _, _ in PORTED_RULES
 }
-# Each gitleaks pattern with the checks its secret must pass: the entropy it
-# must exceed, and the regexes that mark it as a known false positive.
-GITLEAKS_CHECKS = tuple(
+# Each ported pattern with the checks its secret must pass: the entropy it
+# must exceed, and the regexes that mark it as a known false positive, its own
+# and the ones its source applies to every rule. These replace the placeholder
+# check, which reads "$", "{" and "test_" as placeholders: a real Asaas key
+# starts with "$aact_", and a real Lob test key with "test_".
+_SHARED_ALLOWLIST = tuple(re.compile(allowed) for allowed in SHARED_ALLOWLIST)
+PORTED_CHECKS = tuple(
     (
-        GITLEAKS_PATTERNS[rule_id],
+        PORTED_PATTERNS[rule_id],
         entropy_floor,
-        tuple(re.compile(allowed) for allowed in allowlist),
+        tuple(re.compile(allowed) for allowed in allowlist) + _SHARED_ALLOWLIST,
     )
-    for rule_id, _, _, entropy_floor, allowlist in GITLEAKS_RULES
+    for rule_id, _, _, entropy_floor, allowlist in PORTED_RULES
 )
 
 # Every rule pattern, with the literals it cannot match without. A pattern
@@ -355,11 +359,11 @@ RULE_KEYWORDS: dict[re.Pattern[str], tuple[str, ...]] = {
         "nov",
         "dec",
     ),
-    # gitleaks keywords are not all required by their pattern. They are the
-    # gate gitleaks itself applies, so gating on them keeps gitleaks' results.
+    # Ported keywords are not all required by their pattern. They are the gate
+    # the source applies, so gating on them keeps the source's results.
     **{
-        GITLEAKS_PATTERNS[rule_id]: keywords
-        for rule_id, _, keywords, _, _ in GITLEAKS_RULES
+        PORTED_PATTERNS[rule_id]: keywords
+        for rule_id, _, keywords, _, _ in PORTED_RULES
     },
 }
 
@@ -660,7 +664,7 @@ def _scan_spans(text: str) -> list[dict[str, object]]:
             group_name=group_name,
             allowlist=SECRET_ALLOWLISTS.get(pattern, ()),
         )
-    for pattern, entropy_floor, allowlist in GITLEAKS_CHECKS:
+    for pattern, entropy_floor, allowlist in PORTED_CHECKS:
         _append_secret_matches(
             text,
             found,
@@ -669,6 +673,7 @@ def _scan_spans(text: str) -> list[dict[str, object]]:
             group_name="value" if "value" in pattern.groupindex else None,
             entropy_floor=entropy_floor,
             allowlist=allowlist,
+            skip_placeholders=False,
         )
     _append_csv_secret_matches(text, spans)
 
@@ -768,17 +773,20 @@ def _append_secret_matches(
     group_name: str | None = None,
     entropy_floor: float | None = None,
     allowlist: tuple[re.Pattern[str], ...] = (),
+    skip_placeholders: bool = True,
 ) -> None:
     for match in found.get(pattern, ()):
         start, end = match.span(group_name) if group_name else match.span()
-        # gitleaks judges the secret as matched, before any trim.
+        # A ported rule judges the secret as matched, before any trim.
         secret = text[start:end]
         if entropy_floor and _shannon_entropy(secret) <= entropy_floor:
             continue
         if any(allowed.search(secret) for allowed in allowlist):
             continue
         end = _trim_secret_end(text, start, end)
-        if start >= end or _is_secret_placeholder(text[start:end]):
+        if start >= end:
+            continue
+        if skip_placeholders and _is_secret_placeholder(text[start:end]):
             continue
         spans.append({"start": start, "end": end, "label": "secret"})
 
