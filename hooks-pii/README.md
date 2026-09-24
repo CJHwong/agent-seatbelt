@@ -56,7 +56,7 @@ Flags:
 ... | bash -s -- --no-pilot      # skip the pilot warm-up run
 ```
 
-Before wiring, the installer does a pilot run: it starts the selected server once, smoke-tests it, and leaves it warm. The OpenAI model downloads to `~/.cache/opf/`. The Redact cache must already exist. Pass `--no-pilot` to skip the pilot.
+The installer stops a server already running on the port, because a running server keeps the code it started with. Then, before wiring, it does a pilot run: it starts the selected server once, smoke-tests it, and leaves it warm. The OpenAI model downloads to `~/.cache/opf/`. The Redact cache must already exist. Pass `--no-pilot` to skip the pilot. The next hook call then starts the server.
 
 The installer is idempotent. Running it again does not duplicate hook entries. It updates matching entries in place.
 
