@@ -28,3 +28,7 @@ dist/
 
 # Operating system files
 .DS_Store
+
+# The native rules engine: cargo output and the module built from it
+hooks-pii/native/target*/
+hooks-pii/pii_rules_native*.so

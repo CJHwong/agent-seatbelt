@@ -390,6 +390,49 @@ Rules mode needs no dependencies. `pii-server.py` imports the standard library a
 
 In `redact-torch` the neural model runs on the selected accelerator. Tokenization, deterministic checks, and span cleanup run on the CPU, and so does everything in `redact`, whose graph is CPU only. Configure the mode with `REDACT_CACHE_DIR`, `REDACT_MIN_SCORE`, `REDACT_BATCH_SIZE` (`redact-torch` only, because the LiteRT graph cannot batch), `REDACT_MAX_TOKENS`, `REDACT_CHUNK_OVERLAP_TOKENS`, and `REDACT_MAX_INPUT_TOKENS`.
 
+### Native rules engine
+
+The rules are Python regular expressions. On a slow CPU, Python `re` takes too long on a large tool output: 105 ms on a 12 KB input on a 2015 Celeron N3050. The native engine matches the same patterns in compiled code. `pii_rules.py` passes its own pattern strings to it, so the rules still live in one file.
+
+It makes two changes:
+
+- PCRE2 compiles each pattern to machine code. PCRE2 supports the lookarounds and the conditional group that the rules use.
+- Each pattern names the literals it cannot match without, in `RULE_KEYWORDS`. One Aho-Corasick pass over the text finds the literals that are present. A pattern whose literals are all absent does not run. The Python engine uses the same gates.
+
+Measured through the server on 1,000 real transcript inputs per machine. The time is the server's `processing_ms`, rules mode:
+
+| Machine | p99 input | Python `re` at p99 | Native at p99 | Inputs under 10 ms, native |
+|---|---|---|---|---|
+| Apple M1 Pro | 32 KB | 11 ms | 3 ms | 99.8% |
+| Celeron N3050 | 14 KB | 27 ms | 8 ms | 99.3% |
+
+Both engines returned the same spans for all 2,000 inputs.
+
+The native engine returns the same spans as `re`. PCRE2 and `re` differ in three places, and each is handled:
+
+- **Word characters.** PCRE2 counts combining marks and connector punctuation as word characters for `\w` and `\b`, and `re` does not. Each pattern is compiled twice: once as written, and once with `\w` and `\b` spelled the way `re` reads them. A text holding one of those characters uses the spelled form, which is half as fast.
+- **Unicode versions.** Python 3.11 knows Unicode 14, and PCRE2 knows Unicode 16. When the versions differ, `pii_rules` runs each character class over every code point in both engines at start. A text holding a character they place differently goes to `re`. This takes 0.2 s on an M1, and it is skipped when the versions match.
+- **Case folding.** Four characters match an ASCII letter when case is ignored (`İ`, `ı`, `ſ`, and the Kelvin sign), and an ASCII keyword search cannot see them. A text holding one goes to `re`. So does a text with a lone surrogate, which cannot be passed to Rust.
+
+The test suite compares the two engines on every case text in the repository, and on every code point for each character class.
+
+The installer downloads the build for the platform from the latest GitHub release. On any other platform, or when the download fails, the rules run on the Python engine. The spans are the same, but the scan is slower. The server log names the engine at start:
+
+```
+[rules] rules engine: native
+[rules] rules engine: python (No module named 'pii_rules_native')
+```
+
+To build it yourself, install Rust and run:
+
+```bash
+cd hooks-pii/native && cargo build --release
+cp target/release/libpii_rules_native.dylib ../pii_rules_native.abi3.so   # macOS
+cp target/release/libpii_rules_native.so ../pii_rules_native.abi3.so      # Linux
+```
+
+The file is built against the Python stable ABI, so one build loads on CPython 3.9 and later. Restart the server after you replace the file.
+
 ### Token limits and long outputs
 
 The Redact checkpoint declares 512 position embeddings. The implementation uses 256-token model windows holding 254 content tokens, advanced with a step of 190, so adjacent windows share 64 tokens. The code names those `CONTENT_WINDOW_LENGTH`, `WINDOW_OVERLAP` and `WINDOW_STEP`, and `WINDOW_STEP` is derived from the other two rather than written out. It groups those windows into chunks of up to `REDACT_MAX_TOKENS` tokens. Longer input is chunked with `REDACT_CHUNK_OVERLAP_TOKENS` overlap, which is separate from the window overlap. Deterministic rules scan the full input before model inference. A request above `REDACT_MAX_INPUT_TOKENS` returns HTTP 413 before inference, but only after the whole text has been tokenized, so the rejection costs memory in proportion to the body rather than to the cap: a 4 MB body was measured taking 2.5 s and about 640 MB of growth to reach its 413, and a 1 MB body reached it in 0.3 s without the peak moving. Note that the cap bounds tokens, not the number of forward passes. A request at the cap is subdivided into roughly 180 model windows, so it is far more work than the token count suggests.

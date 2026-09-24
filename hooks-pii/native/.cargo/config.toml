@@ -1,0 +1,9 @@
+# A Python extension on macOS leaves the interpreter's symbols unresolved until
+# load time. maturin passes this flag itself; a plain cargo build needs it here.
+[target.aarch64-apple-darwin]
+rustflags = ["-C", "link-arg=-undefined", "-C", "link-arg=dynamic_lookup"]
+
+# PCRE2 is compiled from its vendored source and linked in, so the module needs
+# no libpcre2 on the host.
+[env]
+PCRE2_SYS_STATIC = "1"
