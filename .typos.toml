@@ -4,9 +4,12 @@ opf = "opf"
 ist = "ist"
 reste = "reste"
 Adresse = "Adresse"
+# The gitleaks rule id "airtable-personnal-access-token" is spelled so upstream.
+personnal = "personnal"
 
 [files]
 extend-exclude = [
     "hooks-pii/tests/challenge_cases.py",
     "hooks-pii/tests/false-positive-cases.jsonl",
+    "hooks-pii/tests/gitleaks-samples.jsonl",
 ]

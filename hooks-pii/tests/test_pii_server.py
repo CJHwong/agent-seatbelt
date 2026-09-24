@@ -768,6 +768,7 @@ class ScriptEntryPointTests(TestCase):
 
         self.assertIn("[rules] loading model...", stderr)
         self.assertIn(f"[rules] ready on http://127.0.0.1:{port}", stderr)
+        self.assertRegex(stderr, r"\[rules\] rules engine: (native|python \(.+\))\n")
 
     def test_sigterm_stops_the_server_process(self) -> None:
         """The regression test for the signal deadlock.

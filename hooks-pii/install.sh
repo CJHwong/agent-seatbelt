@@ -19,12 +19,17 @@
 set -euo pipefail
 
 REPO_BASE="${HOOKS_PII_BASE_URL:-https://raw.githubusercontent.com/CJHwong/agent-seatbelt/main/hooks-pii}"
+# The native rules engine is a compiled file, so it ships as a release asset and
+# not as a file in the tree.
+NATIVE_BASE="${HOOKS_PII_NATIVE_BASE_URL:-https://github.com/CJHwong/agent-seatbelt/releases/latest/download}"
 HOOKS_DIR="$HOME/.claude/hooks"
 SERVER_DEST="$HOOKS_DIR/pii-server.py"
 TORCH_DEST="$HOOKS_DIR/pii_redact_torch.py"
 LITE_DEST="$HOOKS_DIR/pii_redact_lite.py"
 RULES_DEST="$HOOKS_DIR/pii_rules.py"
+PATTERNS_DEST="$HOOKS_DIR/pii_secret_patterns.py"
 OPF_DEST="$HOOKS_DIR/pii_opf.py"
+NATIVE_DEST="$HOOKS_DIR/pii_rules_native.abi3.so"
 CHECK_DEST="$HOOKS_DIR/pii-check.sh"
 CLAUDE_SETTINGS="$HOME/.claude/settings.json"
 CODEX_HOOKS="$HOME/.codex/hooks.json"
@@ -75,7 +80,7 @@ Usage: install.sh [--prompt-only] [--no-codex] [--no-pilot]
   --no-pilot      skip the model warm-up run
 
 Environment: PII_SERVER_MODE, PII_ACTION_MODE, PII_LEVEL, PII_PORT,
-PII_SERVER_LOG, PII_SKIP_EVENT_PATH, HOOKS_PII_BASE_URL.
+PII_SERVER_LOG, PII_SKIP_EVENT_PATH, HOOKS_PII_BASE_URL, HOOKS_PII_NATIVE_BASE_URL.
 
 Full notes: https://github.com/CJHwong/agent-seatbelt/blob/main/hooks-pii/README.md
 USAGE
@@ -132,6 +137,7 @@ curl -fsSL "$REPO_BASE/pii-server.py" -o "$SERVER_DEST"
 curl -fsSL "$REPO_BASE/pii_redact_torch.py" -o "$TORCH_DEST"
 curl -fsSL "$REPO_BASE/pii_redact_lite.py" -o "$LITE_DEST"
 curl -fsSL "$REPO_BASE/pii_rules.py" -o "$RULES_DEST"
+curl -fsSL "$REPO_BASE/pii_secret_patterns.py" -o "$PATTERNS_DEST"
 curl -fsSL "$REPO_BASE/pii_opf.py" -o "$OPF_DEST"
 curl -fsSL "$REPO_BASE/pii-check.sh"  -o "$CHECK_DEST"
 chmod +x "$CHECK_DEST"
@@ -139,8 +145,40 @@ echo "Installed: $SERVER_DEST"
 echo "Installed: $TORCH_DEST"
 echo "Installed: $LITE_DEST"
 echo "Installed: $RULES_DEST"
+echo "Installed: $PATTERNS_DEST"
 echo "Installed: $OPF_DEST"
 echo "Installed: $CHECK_DEST"
+
+# The release carries one native build per OS and CPU. Any other platform keeps
+# the Python engine, which returns the same spans, only slower.
+native_platform() {
+    case "$(uname -s)-$(uname -m)" in
+        Darwin-arm64) echo "darwin-arm64" ;;
+        Linux-x86_64) echo "linux-x86_64" ;;
+        *) return 1 ;;
+    esac
+}
+
+# A failure here leaves no native file behind, so a stale build from an earlier
+# install cannot stay in use. The download goes to a side file and then moves
+# into place: a running server has the old file mapped, and writing over it in
+# place would change the code under that server.
+install_native() {
+    local platform
+    if ! platform=$(native_platform); then
+        rm -f "$NATIVE_DEST"
+        echo "No native rules engine is built for $(uname -s) $(uname -m). The rules run on the Python engine."
+        return
+    fi
+    if curl -fsSL "$NATIVE_BASE/pii_rules_native-$platform.abi3.so" -o "$NATIVE_DEST.part"; then
+        mv "$NATIVE_DEST.part" "$NATIVE_DEST"
+        echo "Installed: $NATIVE_DEST"
+    else
+        rm -f "$NATIVE_DEST.part" "$NATIVE_DEST"
+        echo "Could not download the native rules engine for $platform. The rules run on the Python engine." >&2
+    fi
+}
+install_native
 
 # Add or update an entry in a hooks-shaped JSON file.
 # Idempotent on command string: if an entry already references $cmd, replace it

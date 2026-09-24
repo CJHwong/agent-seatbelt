@@ -1,15 +1,22 @@
 """Behavior tests for the deterministic PII rule engine.
 
 Every test asserts the span offsets, labels or merged text that the module
-returns. Nothing here mocks the module under test.
+returns. Nothing here mocks the rules. The engine tests swap in a stand-in for
+the native module, because that is the only way to reach its fallback paths.
 """
 
 from __future__ import annotations
 
+import itertools
+import json
+import re
 import sys
+import types
+import unicodedata
 import unittest
 from pathlib import Path
 from typing import cast
+from unittest import mock
 
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -34,6 +41,14 @@ HOOK_TIER_LABELS = {
 def span_texts(text: str) -> set[str]:
     """Return the exact source text each deterministic span covers."""
     return {str(span["text"]) for span in pii_rules.deterministic_spans(text)}
+
+
+def labeled_texts(text: str) -> set[tuple[str, str]]:
+    """Return (text, label) for each deterministic span."""
+    return {
+        (str(span["text"]), str(span["label"]))
+        for span in pii_rules.deterministic_spans(text)
+    }
 
 
 def span_tuples(text: str) -> list[tuple[int, int, str]]:
@@ -747,6 +762,430 @@ class LabelContractTests(unittest.TestCase):
         }
         self.assertTrue(emitted)
         self.assertLessEqual(emitted, set(pii_rules.SPAN_PRIORITY))
+
+
+TESTS_DIR = Path(__file__).resolve().parent
+sys.path.insert(0, str(TESTS_DIR))
+
+from challenge_cases import CASES as CHALLENGE_CASES  # noqa: E402
+from final_holdout_cases import FINAL_HOLDOUT_CASES  # noqa: E402
+from holdout_cases import HOLDOUT_CASES  # noqa: E402
+
+
+def corpus_texts() -> list[tuple[str, str]]:
+    """Every case text in the repository, named so a failure says which one."""
+    texts = []
+    for case in [*CHALLENGE_CASES, *HOLDOUT_CASES, *FINAL_HOLDOUT_CASES]:
+        texts.append((str(case["id"]), str(case["text"])))
+    for number, line in enumerate(
+        (TESTS_DIR / "test-cases.jsonl").read_text().splitlines()
+    ):
+        texts.append((f"test-cases:{number}", json.loads(line)["prompt"]))
+    for line in (TESTS_DIR / "false-positive-cases.jsonl").read_text().splitlines():
+        case = json.loads(line)
+        texts.append((case["id"], case["text"]))
+    # The rule source itself: long, dense with keywords, and holding CJK text.
+    texts.append(("pii_rules.py", Path(pii_rules.__file__).read_text()))
+    for sample in GITLEAKS_SAMPLES:
+        texts.append((f"gitleaks:{sample['rule']}", sample["text"]))
+    return texts
+
+
+# One generated value per ported gitleaks rule, placed in a line of code.
+# The values are random strings shaped by each rule, not real credentials.
+GITLEAKS_SAMPLES = [
+    json.loads(line)
+    for line in (TESTS_DIR / "gitleaks-samples.jsonl").read_text().splitlines()
+]
+
+
+def only_gitleaks_rule(rule_id: str):
+    """Scan with one ported rule as the only secret rule."""
+    pattern = pii_rules.GITLEAKS_PATTERNS[rule_id]
+    checks = tuple(c for c in pii_rules.GITLEAKS_CHECKS if c[0] is pattern)
+    return mock.patch.multiple(
+        pii_rules, SECRET_RULES=(), GITLEAKS_CHECKS=checks, _NATIVE_ENGINE=None
+    )
+
+
+class RuleFalsePositiveTests(unittest.TestCase):
+    """Clean text the rules once flagged, next to the secret each rule is for."""
+
+    def test_the_rules_flag_none_of_these_clean_cases(self) -> None:
+        cases = {
+            case["id"]: case["text"]
+            for case in map(
+                json.loads,
+                (TESTS_DIR / "false-positive-cases.jsonl").read_text().splitlines(),
+            )
+        }
+        # The URL rule reports every URL, a public one included, by design.
+        for case_id in [f"clean-{number:03}" for number in range(51, 58)]:
+            with self.subTest(case=case_id):
+                labels = {
+                    span["label"]
+                    for span in pii_rules.deterministic_spans(cases[case_id])
+                }
+                self.assertLessEqual(labels, {"private_url"})
+
+    def test_a_secret_keyword_joined_to_a_word_is_not_a_secret_context(self) -> None:
+        self.assertEqual(span_texts("docs/code-security/secret-scanning/alerts"), set())
+        link = "https://onetimesecret.com/secret/4f9k2m8q1x7w3z6b5n0p"
+        self.assertIn(("/4f9k2m8q1x7w3z6b5n0p", "secret"), labeled_texts(link))
+        self.assertEqual(span_texts("secret: q8Rv2LmX7pWz4NbK"), {"q8Rv2LmX7pWz4NbK"})
+        self.assertEqual(span_texts("secret q8Rv2LmX7pWz4NbK"), {"q8Rv2LmX7pWz4NbK"})
+
+    def test_one_quoted_name_per_line_is_not_a_csv_header(self) -> None:
+        self.assertEqual(span_texts('    "password",\n    "hunter2value",\n'), set())
+        self.assertEqual(
+            span_texts("password,\nhunter2value,\n"),
+            set(),
+        )
+
+    def test_a_generic_context_value_of_lowercase_words_is_not_a_secret(self) -> None:
+        self.assertEqual(span_texts("airtable-api-key: keyword-context rule"), set())
+        self.assertEqual(span_texts("api-key: kx82mzq0dl"), {"kx82mzq0dl"})
+        # A password key still reads a passphrase of words, quoted or not.
+        for text in (
+            "password: correct-horse-battery-staple",
+            '"password": "correct-horse-battery-staple"',
+            '{"db_password": "correct-horse-battery-staple"}',
+        ):
+            with self.subTest(text=text):
+                self.assertEqual(span_texts(text), {"correct-horse-battery-staple"})
+
+
+class GitleaksRuleTests(unittest.TestCase):
+    def test_every_rule_finds_its_sample(self) -> None:
+        self.assertEqual(
+            {sample["rule"] for sample in GITLEAKS_SAMPLES},
+            set(pii_rules.GITLEAKS_PATTERNS),
+        )
+        for sample in GITLEAKS_SAMPLES:
+            with self.subTest(rule=sample["rule"]), only_gitleaks_rule(sample["rule"]):
+                self.assertIn(sample["value"], span_texts(sample["text"]))
+
+    def test_a_secret_at_or_under_the_entropy_floor_is_not_reported(self) -> None:
+        # The rule's floor is 2 bits. "ab" repeated holds about 1.9.
+        text = "rubygems_" + "ab" * 24 + "\n"
+        with only_gitleaks_rule("rubygems-api-token"):
+            self.assertEqual(span_texts(text), set())
+            self.assertEqual(
+                span_texts("rubygems_" + "0123456789abcdef" * 3 + "\n"),
+                {"rubygems_" + "0123456789abcdef" * 3},
+            )
+
+    def test_an_allowlisted_secret_is_not_reported(self) -> None:
+        # gitleaks lists this key as a known sample value.
+        text = 'key: "AIzaSyabcdefghijklmnopqrstuvwxyz1234567"'
+        with only_gitleaks_rule("gcp-api-key"):
+            self.assertEqual(span_texts(text), set())
+
+    def test_the_ported_rules_add_nothing_to_the_other_cases(self) -> None:
+        for name, text in corpus_texts():
+            if name.startswith("gitleaks:"):
+                continue
+            with self.subTest(case=name), python_engine():
+                with mock.patch.object(pii_rules, "GITLEAKS_CHECKS", ()):
+                    without = pii_rules.deterministic_spans(text)
+                self.assertEqual(pii_rules.deterministic_spans(text), without)
+
+    def test_the_github_checklist_names_only_ported_rules(self) -> None:
+        rows = [
+            line.split("\t")
+            for line in (TESTS_DIR / "github-secret-types.tsv").read_text().splitlines()
+            if not line.startswith("#")
+        ]
+        self.assertEqual(
+            rows[0], ["secret_type", "provider", "push_protection", "gitleaks_id"]
+        )
+        named = {row[3] for row in rows[1:]} - {"-"}
+        self.assertEqual(named, set(pii_rules.GITLEAKS_PATTERNS))
+
+
+def python_engine():
+    return mock.patch.object(pii_rules, "_NATIVE_ENGINE", None)
+
+
+class KeywordGateTests(unittest.TestCase):
+    """A gate may only skip a pattern that could not have matched."""
+
+    def test_the_gates_never_change_a_result(self) -> None:
+        # gitleaks keywords are rule semantics, not literals the pattern needs.
+        gitleaks = set(pii_rules.GITLEAKS_PATTERNS.values())
+        ungated = {
+            pattern: keywords if pattern in gitleaks else ()
+            for pattern, keywords in pii_rules.RULE_KEYWORDS.items()
+        }
+        for name, text in corpus_texts():
+            with self.subTest(case=name), python_engine():
+                gated_spans = pii_rules.deterministic_spans(text)
+                with mock.patch.object(pii_rules, "RULE_KEYWORDS", ungated):
+                    self.assertEqual(gated_spans, pii_rules.deterministic_spans(text))
+
+    def test_a_folding_character_opens_every_gate(self) -> None:
+        # IGNORECASE matches the long s to "s", so "ſecret" is the secret
+        # keyword to re, while a search for "secret" does not find it.
+        text = "\u017fecret: q8Rv2LmX7pWz4NbK"
+        with python_engine():
+            self.assertIn(
+                ("q8Rv2LmX7pWz4NbK", "secret"),
+                [
+                    (str(span["text"]), str(span["label"]))
+                    for span in pii_rules.deterministic_spans(text)
+                ],
+            )
+
+    def test_every_secret_column_name_holds_a_keyword(self) -> None:
+        for name in pii_rules.SECRET_COLUMN_NAMES:
+            with self.subTest(name=name):
+                self.assertTrue(
+                    any(k in name for k in pii_rules.SECRET_COLUMN_KEYWORDS)
+                )
+
+    def test_a_header_that_folds_to_a_secret_column_is_still_read(self) -> None:
+        # casefold turns "PAßWORD" into "password", and lower() does not.
+        text = "user,PA\u00dfWORD\nada,q8Rv2LmX7pWz\n"
+        self.assertIn("q8Rv2LmX7pWz", span_texts(text))
+
+    def test_every_pattern_has_an_entry(self) -> None:
+        not_rules = ("INVISIBLE_PATTERN",)
+        declared = {
+            value
+            for name, value in vars(pii_rules).items()
+            if name.endswith("_PATTERN") and name not in not_rules
+        }
+        declared.update(pii_rules.GITLEAKS_PATTERNS.values())
+        self.assertEqual(declared, set(pii_rules.RULE_KEYWORDS))
+
+
+@unittest.skipUnless(
+    pii_rules.RULES_ENGINE == "native", "the native engine is not built here"
+)
+class NativeEngineTests(unittest.TestCase):
+    """The native engine must return exactly what re returns."""
+
+    def native_scan(self, text: str):
+        engine = pii_rules._NATIVE_ENGINE
+        assert engine is not None
+        return engine.scan(text)
+
+    def assert_same_as_python(self, text: str) -> None:
+        native_spans = pii_rules.deterministic_spans(text)
+        with python_engine():
+            self.assertEqual(native_spans, pii_rules.deterministic_spans(text))
+
+    def test_native_matches_python_on_every_corpus_text(self) -> None:
+        for name, text in corpus_texts():
+            with self.subTest(case=name):
+                self.assert_same_as_python(text)
+
+    def test_offsets_count_code_points_not_bytes(self) -> None:
+        text = "\u6d4b\u8bd5 \U0001f600 mail ada@example.com"
+        self.assertEqual(span_tuples(text), [(10, 25, "private_email")])
+        self.assert_same_as_python(text)
+
+    def test_a_combining_mark_is_matched_the_way_re_matches_it(self) -> None:
+        # PCRE2's own \w counts U+0301 and U+FE0F as word characters and re
+        # does not, so these guards only agree because \w is translated.
+        for text in (
+            "cafe\u0301ada@example.com",
+            "\u2764\ufe0fada@example.com",
+            "ok\u0301 AKIAABCDEFGHIJKLMNOP\u0301",
+        ):
+            with self.subTest(text=text):
+                self.assertIsNotNone(self.native_scan(text))
+                self.assert_same_as_python(text)
+
+    def test_a_character_the_unicode_tables_disagree_on_is_declined(self) -> None:
+        import pii_rules_native  # ty: ignore[unresolved-import]
+
+        decline = pii_rules._native_decline_characters(pii_rules_native)
+        newer = [c for c in decline if c not in pii_rules.FOLDING_CHARACTERS]
+        if not newer:
+            self.skipTest("Python and PCRE2 share one Unicode version here")
+        text = f"{newer[0]}1234567890 ada@example.com"
+        self.assertIsNone(self.native_scan(text))
+        self.assert_same_as_python(text)
+
+    def test_pcre2_word_characters_differ_only_where_the_engine_checks(self) -> None:
+        """PCRE2's own \\w must equal re's everywhere but PCRE2_WORD_DIFFERENCE.
+
+        A text without those characters is matched with PCRE2's \\w and \\b,
+        so any other difference would reach a result.
+        """
+        import pii_rules_native  # ty: ignore[unresolved-import]
+
+        every = "".join(
+            map(chr, itertools.chain(range(0xD800), range(0xE000, 0x110000)))
+        )
+        members = pii_rules_native.class_members
+        own = set(members(r"\w", False, every))
+        spelled = set(members(f"[{pii_rules.PYTHON_WORD_CHARACTERS}]", False, every))
+        checked = set(members(pii_rules.PCRE2_WORD_DIFFERENCE, False, every))
+        self.assertEqual(own ^ spelled, checked)
+
+    def test_the_tables_only_disagree_on_characters_python_does_not_know(self) -> None:
+        """The derivation must find version drift and nothing else.
+
+        Apart from the folding characters and the controls the strip removes,
+        a character the two engines place differently must be one this
+        Python's Unicode tables leave unassigned.
+        """
+        import pii_rules_native  # ty: ignore[unresolved-import]
+
+        derived = pii_rules._derive_decline_characters(pii_rules_native.class_members)
+        unexplained = [
+            f"U+{ord(c):04X}"
+            for c in derived
+            if c not in pii_rules.FOLDING_CHARACTERS and unicodedata.category(c) != "Cn"
+        ]
+        self.assertEqual(unexplained, [])
+        self.assertTrue(all(not c.isascii() for c in derived))
+
+    def test_a_folding_character_is_declined_and_still_scanned(self) -> None:
+        text = "\u017fecret: q8Rv2LmX7pWz4NbK"
+        self.assertIsNone(self.native_scan(text))
+        self.assertIn("q8Rv2LmX7pWz4NbK", span_texts(text))
+
+    def test_a_lone_surrogate_is_scanned_by_re(self) -> None:
+        text = "\ud800 ada@example.com"
+        self.assertIn("ada@example.com", span_texts(text))
+        self.assert_same_as_python(text)
+
+    def test_an_invisible_character_is_stripped_like_python_strips_it(self) -> None:
+        text = "ada@exa\u200bmple.com and 4111\u00ad1111\u00ad1111\u00ad1111"
+        self.assertIn("ada@exa\u200bmple.com", span_texts(text))
+        self.assert_same_as_python(text)
+
+
+class PatternTranslationTests(unittest.TestCase):
+    """The native engine reads \\w and \\b the way re does."""
+
+    word = f"[{pii_rules.PYTHON_WORD_CHARACTERS}]"
+
+    def test_a_word_class_outside_a_set_becomes_a_set(self) -> None:
+        self.assertEqual(pii_rules._pcre2_source(r"a\wb"), f"a{self.word}b")
+
+    def test_a_word_class_inside_a_set_joins_it(self) -> None:
+        self.assertEqual(
+            pii_rules._pcre2_source(r"(?<![\w+-])"),
+            f"(?<![{pii_rules.PYTHON_WORD_CHARACTERS}+-])",
+        )
+
+    def test_a_word_boundary_becomes_lookarounds(self) -> None:
+        self.assertEqual(
+            pii_rules._pcre2_source(r"\bAKIA"), pii_rules.PYTHON_WORD_BOUNDARY + "AKIA"
+        )
+
+    def test_an_escaped_backslash_is_left_alone(self) -> None:
+        self.assertEqual(pii_rules._pcre2_source(r"\\w\\b"), r"\\w\\b")
+
+    def test_a_class_with_no_translation_is_refused(self) -> None:
+        for source in (r"\W", r"\B"):
+            with self.subTest(source=source):
+                with self.assertRaises(ValueError):
+                    pii_rules._pcre2_source(source)
+
+
+class UnicodeVersionTests(unittest.TestCase):
+    """The derivation is skipped only when both tables are the same version."""
+
+    def test_the_same_version_declines_only_the_folding_characters(self) -> None:
+        def never(*_arguments):
+            raise AssertionError("derived although the versions match")
+
+        module = types.SimpleNamespace(
+            UNICODE_VERSION=unicodedata.unidata_version, class_members=never
+        )
+        self.assertEqual(
+            set(pii_rules._native_decline_characters(module)),
+            set(pii_rules.FOLDING_CHARACTERS),
+        )
+
+    def test_another_version_derives_the_characters(self) -> None:
+        calls = []
+
+        def members(pattern, ignore_case, text):
+            calls.append(pattern)
+            flags = re.IGNORECASE if ignore_case else 0
+            python = {r"[\p{L}\p{N}_]": r"\w"}.get(pattern, pattern)
+            return "".join(re.findall(python, text, flags))
+
+        module = types.SimpleNamespace(UNICODE_VERSION="0.0.0", class_members=members)
+        self.assertEqual(
+            set(pii_rules._native_decline_characters(module)),
+            set(pii_rules.FOLDING_CHARACTERS),
+        )
+        self.assertEqual(len(calls), len(pii_rules.UNICODE_CLASS_CHECKS))
+
+
+class StandInEngine:
+    """A native engine that fails in one chosen way."""
+
+    def __init__(self, scan_result=None, scan_error=None) -> None:
+        self.scan_result = scan_result
+        self.scan_error = scan_error
+
+    def scan(self, text: str):
+        if self.scan_error is not None:
+            raise self.scan_error
+        return self.scan_result
+
+    def strip_invisibles(self, text: str):
+        return None
+
+
+class EngineFallbackTests(unittest.TestCase):
+    """Whatever goes wrong with the native module, re still scans the text."""
+
+    text = "mail ada@example.com"
+    expected = [(5, 20, "private_email")]
+
+    def load_with(self, module) -> tuple[object | None, str]:
+        with mock.patch.dict(sys.modules, {"pii_rules_native": module}):
+            return pii_rules._load_native_engine()
+
+    def test_a_missing_module_names_the_reason(self) -> None:
+        engine, reason = self.load_with(None)
+        self.assertIsNone(engine)
+        self.assertTrue(reason.startswith("python ("), reason)
+
+    def test_a_module_of_another_version_is_ignored(self) -> None:
+        module = types.SimpleNamespace(
+            ENGINE_VERSION=pii_rules.NATIVE_ENGINE_VERSION + 1
+        )
+        engine, reason = self.load_with(module)
+        self.assertIsNone(engine)
+        self.assertIn("these rules need version", reason)
+
+    def test_a_module_that_refuses_a_pattern_is_ignored(self) -> None:
+        def refuse(*_arguments):
+            raise ValueError("unsupported construct")
+
+        module = types.SimpleNamespace(
+            ENGINE_VERSION=pii_rules.NATIVE_ENGINE_VERSION,
+            UNICODE_VERSION=unicodedata.unidata_version,
+            Engine=refuse,
+        )
+        engine, reason = self.load_with(module)
+        self.assertIsNone(engine)
+        self.assertIn("unsupported construct", reason)
+
+    def test_a_declined_text_is_scanned_by_re(self) -> None:
+        with mock.patch.object(pii_rules, "_NATIVE_ENGINE", StandInEngine()):
+            self.assertEqual(span_tuples(self.text), self.expected)
+
+    def test_a_scan_error_is_scanned_by_re(self) -> None:
+        errors = (
+            ValueError("match limit exceeded"),
+            UnicodeEncodeError("utf-8", "", 0, 1, "surrogate"),
+        )
+        for error in errors:
+            stand_in = StandInEngine(scan_error=error)
+            with self.subTest(error=type(error).__name__):
+                with mock.patch.object(pii_rules, "_NATIVE_ENGINE", stand_in):
+                    self.assertEqual(span_tuples(self.text), self.expected)
 
 
 if __name__ == "__main__":

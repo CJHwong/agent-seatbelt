@@ -6,9 +6,15 @@ hook all consume these spans. Nothing here loads a checkpoint.
 
 from __future__ import annotations
 
+import itertools
+import math
 import re
+import unicodedata
 from bisect import bisect_left
-from typing import cast
+from collections import Counter
+from typing import Protocol, cast
+
+from pii_secret_patterns import GITLEAKS_RULES
 
 
 SPAN_PRIORITY = {
@@ -59,8 +65,10 @@ CARD_PATTERN = re.compile(r"(?<!\d)(?:\d{13,19}|\d{1,6}(?:[ -]\d{2,6}){1,5})(?!\
 #
 # The guard on the right differs per shape. A sentence may end on the number,
 # so a trailing full stop must not reject it. The dotted shape instead refuses
-# a fourth group, which is what makes it leave a dotted quad alone. The guard
-# on the left refuses a word character and a longer dotted run, nothing else.
+# a fourth group, which is what makes it leave a dotted quad alone. The bare
+# ten-digit run refuses a letter after it: that is the start of a hex id, like
+# a docker layer. The guard on the left refuses a word character and a longer
+# dotted run, nothing else.
 #
 # Two shapes are deliberately narrow. The 00 prefix needs a separator after the
 # country code, because a bare run behind it is a reference number and not a
@@ -73,7 +81,7 @@ PHONE_PATTERN = re.compile(
     r"|00\d{1,3}[ .-](?:\(\d{1,4}\)[ .-]?)?\d(?:[ .-]?\d){5,12}(?!\w)"
     r"|\(\d{1,4}\)[ .-]?\d(?:[ .-]?\d){6,12}(?!\w)"
     r"|\d{3}\.\d{3}\.\d{4}(?!\.?\d)"
-    r"|(?<!\d)\d{10}(?!\d)"
+    r"|(?<!\d)\d{10}(?!\w)"
     r"|(?<!\d[ -])\d{2,4}(?:[ -]\d{3,4}){0,2}[ -]\d{3,4}(?!\d)"
     r")"
 )
@@ -128,10 +136,13 @@ PROVIDER_SECRET_PATTERN = re.compile(
 )
 JWT_PATTERN = re.compile(r"\beyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\b")
 PRIVATE_KEY_PATTERN = re.compile(r"-----BEGIN (?:[A-Z0-9]+ )*PRIVATE KEY-----")
+# A value never starts with a hyphen. Joined to the keyword by one, it is the
+# rest of a name, like the secret-scanning path. A slash still joins them: a
+# one-time secret link carries its key right after /secret/.
 SECRET_CONTEXT_PATTERN = re.compile(
     r"(?i)\b(?:aws_secret_access_key|secret(?:\s+key|_access_key)?)"
     r"(?![a-z0-9_])"
-    r"\s*(?:(?:is|=|:)\s*)?(?P<value>[A-Za-z0-9/+=!@#$%^&*_-]{16,})"
+    r"\s*(?:(?:is|=|:)\s*)?(?P<value>(?!-)[A-Za-z0-9/+=!@#$%^&*_-]{16,})"
 )
 PASSWORD_CONTEXT_PATTERN = re.compile(
     r"(?i)\b(?:password|passphrase)\s*(?:is|=|:)\s*"
@@ -141,19 +152,28 @@ SECRET_CONTEXT_KEYS = (
     r"(?:api(?:[_-]?key|\s+key)|api[_-]?token|client[_-]?secret|"
     r"access[_-]?token|refresh[_-]?token|session[_-]?token|"
     r"private[_-]?(?:key|token)|auth[_-]?token|"
-    r"database[_-]?password|db[_-]?password|docker[_-]?password|"
-    r"aws[_-]?session[_-]?token|credential[_-]?value|password|passphrase|"
+    r"aws[_-]?session[_-]?token|credential[_-]?value|"
     r"secret(?:[_-]?(?:key|token|value|access[_-]?key))?|token|"
     r"x-api-key|_authToken|deploy[_-]?(?:secret|token)|"
     r"service[_-]?(?:secret|token))"
 )
-GENERIC_SECRET_CONTEXT_PATTERN = re.compile(
-    r"(?ix)(?<![a-z0-9])"
-    + SECRET_CONTEXT_KEYS
-    + r"(?![a-z0-9_])\s*[\"']?\s*(?:is|=|:)\s*"
+# The password keys run as their own pattern, because only the other keys
+# skip a value of plain words. See SECRET_ALLOWLISTS.
+PASSWORD_CONTEXT_KEYS = (
+    r"(?:database[_-]?password|db[_-]?password|docker[_-]?password|"
+    r"password|passphrase)"
+)
+CONTEXT_VALUE = (
+    r"(?![a-z0-9_])\s*[\"']?\s*(?:is|=|:)\s*"
     r"(?P<quote>[\"'`]?)(?P<value>"
     r"[a-z0-9][a-z0-9._~+/=:@$!%*&?{}-]{7,}"
     r")(?(quote)(?P=quote))"
+)
+GENERIC_SECRET_CONTEXT_PATTERN = re.compile(
+    r"(?ix)(?<![a-z0-9])" + SECRET_CONTEXT_KEYS + CONTEXT_VALUE
+)
+GENERIC_PASSWORD_CONTEXT_PATTERN = re.compile(
+    r"(?ix)(?<![a-z0-9])" + PASSWORD_CONTEXT_KEYS + CONTEXT_VALUE
 )
 BEARER_SECRET_PATTERN = re.compile(r"(?i)\bBearer\s+(?P<value>[A-Za-z0-9._~+/=-]{20,})")
 BASIC_SECRET_PATTERN = re.compile(r"(?i)\bBasic\s+(?P<value>[A-Za-z0-9+/]{16,}={0,2})")
@@ -211,6 +231,313 @@ MONTH_DATE_PATTERN = re.compile(
     r"september|october|november|december)\s+\d{1,2}(?:st|and|rd|th)?"
     r"(?:,\s*|\s+)(?:19|20)\d{2}\b"
 )
+GITLEAKS_PATTERNS = {
+    rule_id: re.compile(source) for rule_id, source, _, _, _ in GITLEAKS_RULES
+}
+# Each gitleaks pattern with the checks its secret must pass: the entropy it
+# must exceed, and the regexes that mark it as a known false positive.
+GITLEAKS_CHECKS = tuple(
+    (
+        GITLEAKS_PATTERNS[rule_id],
+        entropy_floor,
+        tuple(re.compile(allowed) for allowed in allowlist),
+    )
+    for rule_id, _, _, entropy_floor, allowlist in GITLEAKS_RULES
+)
+
+# Every rule pattern, with the literals it cannot match without. A pattern
+# whose keywords are all absent from the text is skipped, matched ignoring ASCII
+# case. That skip is where the scan time went: the JWK pattern alone tried a
+# lookahead of 200 characters at every position of every text, and almost no
+# text holds "kty". A keyword must be required by the pattern's own shape. One
+# that is only common would skip a real match. An empty tuple means the pattern
+# always runs. The order is the order the native engine reports matches in.
+RULE_KEYWORDS: dict[re.Pattern[str], tuple[str, ...]] = {
+    EMAIL_PATTERN: ("@",),
+    URL_PATTERN: ("://",),
+    PHONE_PATTERN: (),
+    CARD_PATTERN: (),
+    BANK_ACCOUNT_PATTERN: ("acc",),
+    IBAN_PATTERN: (),
+    IP_PATTERN: (),
+    AWS_ACCESS_KEY_PATTERN: ("akia",),
+    SECRET_PREFIX_PATTERN: (
+        "sk_",
+        "ghp_",
+        "gho_",
+        "ghu_",
+        "ghs_",
+        "ghr_",
+        "xox",
+        "aiza",
+    ),
+    PROVIDER_SECRET_PATTERN: (
+        "ocid1.securitytoken",
+        "asia",
+        "gocspx-",
+        "cfp_",
+        "dop_v1_",
+        "hrk_",
+        "vercel_",
+        "nfp_",
+        "sbp_",
+        "sk-",
+        "rk_",
+        "sg.",
+        "whsec_",
+        "glc_",
+        "snyk_",
+        "pul-",
+        "sk.",
+        "dd_api_",
+        "nrak-",
+        "github_pat_",
+        "glpat-",
+        "bb_app_",
+        "npm_",
+        "pypi-",
+        "dckr_pat_",
+        "cci_",
+        "bk_",
+        "travis_",
+        "codecov_",
+        "dp.st.",
+        "hvs.",
+        "lin_api_",
+        "sntrys_",
+        "webex_",
+        "intercom_",
+        ":aa",
+    ),
+    JWT_PATTERN: ("eyj",),
+    PRIVATE_KEY_PATTERN: ("-----begin ",),
+    PASSWORD_CONTEXT_PATTERN: ("pass",),
+    SECRET_CONTEXT_PATTERN: ("secret",),
+    GENERIC_SECRET_CONTEXT_PATTERN: (
+        "api",
+        "secret",
+        "token",
+        "private",
+        "credential",
+    ),
+    GENERIC_PASSWORD_CONTEXT_PATTERN: ("pass",),
+    BEARER_SECRET_PATTERN: ("bearer",),
+    BASIC_SECRET_PATTERN: ("basic",),
+    DATABASE_URL_SECRET_PATTERN: ("://",),
+    MAILGUN_SECRET_PATTERN: ("mailgun",),
+    NOTION_SECRET_PATTERN: ("notion",),
+    WEBHOOK_SECRET_PATTERN: ("hooks.slack.com/services/", "discord"),
+    SIGNED_URL_SECRET_PATTERN: ("sig=",),
+    XML_SECRET_CONTEXT_PATTERN: (
+        "<password",
+        "<passphrase",
+        "<secret",
+        "<token",
+        "<api",
+    ),
+    JWK_PRIVATE_VALUE_PATTERN: ("kty",),
+    TERRAFORM_SECRET_VALUE_PATTERN: ("resource",),
+    COOKIE_SECRET_PATTERN: ("set-cookie:",),
+    STRUCTURED_SECRET_VALUE_PATTERN: ("secret",),
+    CJK_SECRET_CONTEXT_PATTERN: ("密碼", "密鑰", "金鑰", "令牌"),
+    ISO_DATE_PATTERN: (),
+    MONTH_DATE_PATTERN: (
+        "jan",
+        "feb",
+        "mar",
+        "apr",
+        "may",
+        "jun",
+        "jul",
+        "aug",
+        "sep",
+        "oct",
+        "nov",
+        "dec",
+    ),
+    # gitleaks keywords are not all required by their pattern. They are the
+    # gate gitleaks itself applies, so gating on them keeps gitleaks' results.
+    **{
+        GITLEAKS_PATTERNS[rule_id]: keywords
+        for rule_id, _, keywords, _, _ in GITLEAKS_RULES
+    },
+}
+
+# The non-ASCII characters that IGNORECASE matches to an ASCII letter: the
+# dotted and the dotless i, the long s, and the Kelvin sign. An ASCII keyword
+# search cannot see them, so a text holding one runs every pattern.
+FOLDING_CHARACTERS = frozenset("\u0130\u0131\u017f\u212a")
+
+# How re reads \w in a str pattern: a letter, a number, or the underscore.
+# PCRE2 also counts combining marks and connector punctuation, so the native
+# engine is handed this class in place of \w, and a word boundary built from it
+# in place of \b.
+PYTHON_WORD_CHARACTERS = r"\p{L}\p{N}_"
+PYTHON_WORD_BOUNDARY = (
+    rf"(?:(?<=[{PYTHON_WORD_CHARACTERS}])(?![{PYTHON_WORD_CHARACTERS}])"
+    rf"|(?<![{PYTHON_WORD_CHARACTERS}])(?=[{PYTHON_WORD_CHARACTERS}]))"
+)
+
+# Where PCRE2's own \w differs from re's when both know the same Unicode
+# version: a combining mark, or connector punctuation other than "_". A text
+# without one gets the patterns as written, which PCRE2 matches twice as fast
+# as the spelled-out \b.
+PCRE2_WORD_DIFFERENCE = r"(?!_)[\p{Mn}\p{Pc}]"
+
+# The classes the rules are built from, as re spells them and as the native
+# engine is handed them, and whether the pattern ignores case. Every other
+# construct in the rules names characters one by one. Where the two answers for
+# a class differ on a character, the Unicode tables of Python and of PCRE2
+# disagree about it: Python 3.11 knows Unicode 14 and PCRE2 knows a later one.
+UNICODE_CLASS_CHECKS = (
+    (r"\w", f"[{PYTHON_WORD_CHARACTERS}]", False),
+    (r"\d", r"\d", False),
+    (r"\s", r"\s", False),
+    (r"[a-z]", r"[a-z]", True),
+)
+
+# The version of pii_rules_native this file was written against. A module of
+# any other version is ignored, so a stale build cannot answer for these rules.
+NATIVE_ENGINE_VERSION = 2
+
+
+class NativeEngine(Protocol):
+    """What pii_rules calls on pii_rules_native.Engine."""
+
+    def scan(
+        self, text: str
+    ) -> list[list[tuple[int, int, list[tuple[int, int] | None]]]] | None: ...
+
+    def strip_invisibles(self, text: str) -> tuple[str, list[int]] | None: ...
+
+
+class _NativeMatch:
+    """The part of re.Match that the rule helpers read."""
+
+    __slots__ = ("_groups", "_span", "_text")
+
+    def __init__(
+        self,
+        text: str,
+        span: tuple[int, int],
+        groups: dict[str, tuple[int, int] | None],
+    ) -> None:
+        self._text = text
+        self._span = span
+        self._groups = groups
+
+    def span(self, group: str | None = None) -> tuple[int, int]:
+        if group is None:
+            return self._span
+        # re.Match answers (-1, -1) for a group that took no part in the match.
+        return self._groups[group] or (-1, -1)
+
+    def start(self) -> int:
+        return self._span[0]
+
+    def end(self) -> int:
+        return self._span[1]
+
+    def group(self) -> str:
+        return self._text[self._span[0] : self._span[1]]
+
+
+def _load_native_engine() -> tuple[NativeEngine | None, str]:
+    """Return the native engine, or None and the reason it is not in use."""
+    try:
+        import pii_rules_native  # ty: ignore[unresolved-import]
+    except ImportError as error:
+        return None, f"python ({error})"
+    version = getattr(pii_rules_native, "ENGINE_VERSION", None)
+    if version != NATIVE_ENGINE_VERSION:
+        return None, (
+            f"python (pii_rules_native is version {version}, "
+            f"these rules need version {NATIVE_ENGINE_VERSION})"
+        )
+    invisible = "".join(sorted(INVISIBLE_CHARACTERS))
+    try:
+        sources = [
+            (
+                pattern.pattern,
+                _pcre2_source(pattern.pattern),
+                bool(pattern.flags & re.IGNORECASE),
+                list(pattern.groupindex),
+                list(keywords),
+            )
+            for pattern, keywords in RULE_KEYWORDS.items()
+        ]
+        decline = _native_decline_characters(pii_rules_native)
+        engine = pii_rules_native.Engine(
+            sources, decline, PCRE2_WORD_DIFFERENCE, invisible
+        )
+    except ValueError as error:
+        return None, f"python (pii_rules_native refused a pattern: {error})"
+    return engine, "native"
+
+
+def _pcre2_source(source: str) -> str:
+    """Spell \\w and \\b in a pattern the way re reads them."""
+    parts: list[str] = []
+    index = 0
+    in_class = False
+    while index < len(source):
+        character = source[index]
+        if character == "\\":
+            escape = source[index : index + 2]
+            if escape in (r"\W", r"\B"):
+                raise ValueError(f"{escape} has no translation for PCRE2")
+            if escape == r"\w":
+                word = PYTHON_WORD_CHARACTERS
+                parts.append(word if in_class else f"[{word}]")
+            elif escape == r"\b" and not in_class:
+                parts.append(PYTHON_WORD_BOUNDARY)
+            else:
+                parts.append(escape)
+            index += 2
+            continue
+        if character == "[" and not in_class:
+            in_class = True
+        elif character == "]" and in_class:
+            in_class = False
+        parts.append(character)
+        index += 1
+    return "".join(parts)
+
+
+def _native_decline_characters(native_module) -> str:
+    """Return the characters on which the native engine could differ from re.
+
+    The folding characters are always declined, because an ASCII keyword
+    search cannot see them. The classes can also differ where the two Unicode
+    tables disagree, which only happens when their versions differ. Deriving
+    those characters costs 1.3 s on a slow CPU, so it runs only then.
+    """
+    if native_module.UNICODE_VERSION == unicodedata.unidata_version:
+        return "".join(sorted(FOLDING_CHARACTERS))
+    return _derive_decline_characters(native_module.class_members)
+
+
+def _derive_decline_characters(class_members) -> str:
+    """Run each class over every code point in both engines, and return the
+    characters the two place differently, plus the folding characters."""
+    every_character = "".join(
+        map(chr, itertools.chain(range(0xD800), range(0xE000, 0x110000)))
+    )
+    differing = set(FOLDING_CHARACTERS)
+    for python_class, native_class, ignore_case in UNICODE_CLASS_CHECKS:
+        flags = re.IGNORECASE if ignore_case else 0
+        python_members = set(re.findall(python_class, every_character, flags))
+        native_members = set(class_members(native_class, ignore_case, every_character))
+        differing |= python_members ^ native_members
+    # The strip removes the invisible characters before any scan, so none can
+    # reach the engine. Leaving them out keeps every declined character outside
+    # ASCII, which is what lets the engine skip the check on an ASCII text.
+    return "".join(sorted(differing - INVISIBLE_CHARACTERS))
+
+
+# RULES_ENGINE names the engine in use, and why when it is not the native one.
+# The server logs it at start.
+_NATIVE_ENGINE, RULES_ENGINE = _load_native_engine()
 
 
 def deterministic_spans(text: str) -> list[dict[str, object]]:
@@ -235,6 +562,14 @@ def _strip_invisibles(text: str) -> tuple[str, list[int] | None]:
     entry holding len(text). None means the text was already clean, which is
     the common case and costs one scan.
     """
+    if _NATIVE_ENGINE is not None:
+        try:
+            stripped = _NATIVE_ENGINE.strip_invisibles(text)
+        except UnicodeEncodeError:
+            # A lone surrogate cannot cross into Rust. The loop below handles it.
+            pass
+        else:
+            return (text, None) if stripped is None else stripped
     if not INVISIBLE_PATTERN.search(text):
         return text, None
     characters: list[str] = []
@@ -264,122 +599,129 @@ def _restore_offsets(
     }
 
 
-def _scan_spans(text: str) -> list[dict[str, object]]:
-    spans: list[dict[str, object]] = []
-    _append_matches(text, EMAIL_PATTERN, "private_email", spans)
-    _append_matches(text, URL_PATTERN, "private_url", spans, trim_url=True)
-    _append_phone_matches(text, spans)
-    _append_card_matches(text, spans)
-    _append_matches(
-        text, BANK_ACCOUNT_PATTERN, "account_number", spans, group_name="value"
-    )
-    _append_matches(text, IBAN_PATTERN, "account_number", spans)
-    _append_ip_matches(text, spans)
+# The secret patterns, and the group that holds the value when the match
+# carries a label or a key in front of it.
+SECRET_RULES: tuple[tuple[re.Pattern[str], str | None], ...] = (
+    (AWS_ACCESS_KEY_PATTERN, None),
+    (SECRET_PREFIX_PATTERN, None),
+    (PROVIDER_SECRET_PATTERN, None),
+    (JWT_PATTERN, None),
+    (PRIVATE_KEY_PATTERN, None),
+    (PASSWORD_CONTEXT_PATTERN, "value"),
+    (SECRET_CONTEXT_PATTERN, "value"),
+    (GENERIC_SECRET_CONTEXT_PATTERN, "value"),
+    (GENERIC_PASSWORD_CONTEXT_PATTERN, "value"),
+    (BEARER_SECRET_PATTERN, "value"),
+    (BASIC_SECRET_PATTERN, "value"),
+    (DATABASE_URL_SECRET_PATTERN, "value"),
+    (MAILGUN_SECRET_PATTERN, "value"),
+    (NOTION_SECRET_PATTERN, "value"),
+    (WEBHOOK_SECRET_PATTERN, None),
+    (SIGNED_URL_SECRET_PATTERN, "value"),
+    (XML_SECRET_CONTEXT_PATTERN, "value"),
+    (JWK_PRIVATE_VALUE_PATTERN, "value"),
+    (TERRAFORM_SECRET_VALUE_PATTERN, "value"),
+    (COOKIE_SECRET_PATTERN, "value"),
+    (STRUCTURED_SECRET_VALUE_PATTERN, "value"),
+    (CJK_SECRET_CONTEXT_PATTERN, "value"),
+)
 
-    _append_secret_matches(text, AWS_ACCESS_KEY_PATTERN, spans)
-    _append_secret_matches(text, SECRET_PREFIX_PATTERN, spans)
-    _append_secret_matches(text, PROVIDER_SECRET_PATTERN, spans)
-    _append_secret_matches(text, JWT_PATTERN, spans)
-    _append_secret_matches(text, PRIVATE_KEY_PATTERN, spans)
-    _append_secret_matches(
-        text,
-        PASSWORD_CONTEXT_PATTERN,
-        spans,
-        group_name="value",
+# Values a rule matches that are not secrets. After an api-key or a token
+# keyword, lowercase words joined by hyphens are prose or a name, as in
+# "airtable-api-key: keyword-context rule". A token carries a digit or a capital.
+# The password rules keep no such list, because a passphrase is words.
+SECRET_ALLOWLISTS = {
+    GENERIC_SECRET_CONTEXT_PATTERN: (re.compile(r"\A[a-z]+(?:[-_][a-z]+)*\Z"),),
+}
+
+# What each engine answers: the matches of every pattern that matched.
+Matches = dict[re.Pattern[str], list]
+
+
+def _scan_spans(text: str) -> list[dict[str, object]]:
+    found = _find_matches(text)
+    spans: list[dict[str, object]] = []
+    _append_matches(text, found, EMAIL_PATTERN, "private_email", spans)
+    _append_matches(text, found, URL_PATTERN, "private_url", spans, trim_url=True)
+    _append_phone_matches(found, spans)
+    _append_card_matches(found, spans)
+    _append_matches(
+        text, found, BANK_ACCOUNT_PATTERN, "account_number", spans, group_name="value"
     )
-    _append_secret_matches(
-        text,
-        SECRET_CONTEXT_PATTERN,
-        spans,
-        group_name="value",
-    )
-    _append_secret_matches(
-        text,
-        GENERIC_SECRET_CONTEXT_PATTERN,
-        spans,
-        group_name="value",
-    )
-    _append_secret_matches(
-        text,
-        BEARER_SECRET_PATTERN,
-        spans,
-        group_name="value",
-    )
-    _append_secret_matches(
-        text,
-        BASIC_SECRET_PATTERN,
-        spans,
-        group_name="value",
-    )
-    _append_secret_matches(
-        text,
-        DATABASE_URL_SECRET_PATTERN,
-        spans,
-        group_name="value",
-    )
-    _append_secret_matches(
-        text,
-        MAILGUN_SECRET_PATTERN,
-        spans,
-        group_name="value",
-    )
-    _append_secret_matches(
-        text,
-        NOTION_SECRET_PATTERN,
-        spans,
-        group_name="value",
-    )
-    _append_secret_matches(text, WEBHOOK_SECRET_PATTERN, spans)
-    _append_secret_matches(
-        text,
-        SIGNED_URL_SECRET_PATTERN,
-        spans,
-        group_name="value",
-    )
-    _append_secret_matches(
-        text,
-        XML_SECRET_CONTEXT_PATTERN,
-        spans,
-        group_name="value",
-    )
-    _append_secret_matches(
-        text,
-        JWK_PRIVATE_VALUE_PATTERN,
-        spans,
-        group_name="value",
-    )
-    _append_secret_matches(
-        text,
-        TERRAFORM_SECRET_VALUE_PATTERN,
-        spans,
-        group_name="value",
-    )
-    _append_secret_matches(
-        text,
-        COOKIE_SECRET_PATTERN,
-        spans,
-        group_name="value",
-    )
-    _append_secret_matches(
-        text,
-        STRUCTURED_SECRET_VALUE_PATTERN,
-        spans,
-        group_name="value",
-    )
-    _append_secret_matches(
-        text,
-        CJK_SECRET_CONTEXT_PATTERN,
-        spans,
-        group_name="value",
-    )
+    _append_matches(text, found, IBAN_PATTERN, "account_number", spans)
+    _append_ip_matches(found, spans)
+
+    for pattern, group_name in SECRET_RULES:
+        _append_secret_matches(
+            text,
+            found,
+            pattern,
+            spans,
+            group_name=group_name,
+            allowlist=SECRET_ALLOWLISTS.get(pattern, ()),
+        )
+    for pattern, entropy_floor, allowlist in GITLEAKS_CHECKS:
+        _append_secret_matches(
+            text,
+            found,
+            pattern,
+            spans,
+            group_name="value" if "value" in pattern.groupindex else None,
+            entropy_floor=entropy_floor,
+            allowlist=allowlist,
+        )
     _append_csv_secret_matches(text, spans)
 
-    _append_matches(text, ISO_DATE_PATTERN, "private_date", spans)
-    _append_matches(text, MONTH_DATE_PATTERN, "private_date", spans)
+    _append_matches(text, found, ISO_DATE_PATTERN, "private_date", spans)
+    _append_matches(text, found, MONTH_DATE_PATTERN, "private_date", spans)
     return spans
 
 
-def _append_phone_matches(text: str, spans: list[dict[str, object]]) -> None:
+def _find_matches(text: str) -> Matches:
+    if _NATIVE_ENGINE is not None:
+        found = _native_matches(text)
+        if found is not None:
+            return found
+    return _python_matches(text)
+
+
+def _native_matches(text: str) -> Matches | None:
+    """Return the native engine's matches, or None when re must scan the text."""
+    try:
+        per_pattern = _NATIVE_ENGINE.scan(text)
+    except (UnicodeEncodeError, ValueError):
+        # A lone surrogate cannot cross into Rust, and PCRE2 reports a pattern
+        # that hit its resource limit as an error. re handles both.
+        return None
+    if per_pattern is None:
+        return None
+    found: Matches = {}
+    for pattern, matches in zip(RULE_KEYWORDS, per_pattern):
+        if not matches:
+            continue
+        names = tuple(pattern.groupindex)
+        found[pattern] = [
+            _NativeMatch(text, (start, end), dict(zip(names, groups)))
+            for start, end, groups in matches
+        ]
+    return found
+
+
+def _python_matches(text: str) -> Matches:
+    every_gate_open = not FOLDING_CHARACTERS.isdisjoint(text)
+    lowered = text.lower()
+    found: Matches = {}
+    for pattern, keywords in RULE_KEYWORDS.items():
+        if keywords and not every_gate_open:
+            if not any(keyword in lowered for keyword in keywords):
+                continue
+        matches = list(pattern.finditer(text))
+        if matches:
+            found[pattern] = matches
+    return found
+
+
+def _append_phone_matches(found: Matches, spans: list[dict[str, object]]) -> None:
     """Keep the phone-shaped runs that carry a plausible digit count.
 
     The shape of a grouped number fixes no length, so the count decides: below
@@ -387,7 +729,7 @@ def _append_phone_matches(text: str, spans: list[dict[str, object]]) -> None:
     not a dialable number. A miss is cheaper than a false positive here, which
     blocks ordinary work at the default level.
     """
-    for match in PHONE_PATTERN.finditer(text):
+    for match in found.get(PHONE_PATTERN, ()):
         digit_count = sum(character.isdigit() for character in match.group())
         if not PHONE_DIGIT_FLOOR <= digit_count <= PHONE_DIGIT_CEILING:
             continue
@@ -398,6 +740,7 @@ def _append_phone_matches(text: str, spans: list[dict[str, object]]) -> None:
 
 def _append_matches(
     text: str,
+    found: Matches,
     pattern: re.Pattern[str],
     label: str,
     spans: list[dict[str, object]],
@@ -405,7 +748,7 @@ def _append_matches(
     group_name: str | None = None,
     trim_url: bool = False,
 ) -> None:
-    for match in pattern.finditer(text):
+    for match in found.get(pattern, ()):
         start, end = match.span(group_name) if group_name else match.span()
         if trim_url:
             # The trim cannot empty a match: every URL keeps "https://", whose
@@ -418,17 +761,36 @@ def _append_matches(
 
 def _append_secret_matches(
     text: str,
+    found: Matches,
     pattern: re.Pattern[str],
     spans: list[dict[str, object]],
     *,
     group_name: str | None = None,
+    entropy_floor: float | None = None,
+    allowlist: tuple[re.Pattern[str], ...] = (),
 ) -> None:
-    for match in pattern.finditer(text):
+    for match in found.get(pattern, ()):
         start, end = match.span(group_name) if group_name else match.span()
+        # gitleaks judges the secret as matched, before any trim.
+        secret = text[start:end]
+        if entropy_floor and _shannon_entropy(secret) <= entropy_floor:
+            continue
+        if any(allowed.search(secret) for allowed in allowlist):
+            continue
         end = _trim_secret_end(text, start, end)
         if start >= end or _is_secret_placeholder(text[start:end]):
             continue
         spans.append({"start": start, "end": end, "label": "secret"})
+
+
+def _shannon_entropy(value: str) -> float:
+    """Bits per character, as gitleaks computes it for its entropy floor."""
+    if not value:
+        return 0.0
+    length = len(value)
+    return -sum(
+        count / length * math.log2(count / length) for count in Counter(value).values()
+    )
 
 
 def _trim_secret_end(text: str, start: int, end: int) -> int:
@@ -478,8 +840,20 @@ def _append_csv_secret_matches(
     lines = text.splitlines(keepends=True)
     line_offset = 0
     for line_index, header_line in enumerate(lines[:-1]):
+        # Every secret column name holds one of these keywords, so a line
+        # holding none cannot be the header. casefold, as the column compare
+        # uses: it folds "ß" to "ss", which lower() leaves alone.
+        folded_line = header_line.casefold()
+        if not any(keyword in folded_line for keyword in SECRET_COLUMN_KEYWORDS):
+            line_offset += len(header_line)
+            continue
         delimiter = "\t" if "\t" in header_line else ","
         header_values = header_line.rstrip("\r\n").split(delimiter)
+        # A header names two columns or more. One name and a trailing comma is
+        # a line of code that lists quoted names, one per line.
+        if sum(bool(value.strip()) for value in header_values) < 2:
+            line_offset += len(header_line)
+            continue
         sensitive_columns = {
             column_index
             for column_index, header_value in enumerate(header_values)
@@ -534,9 +908,8 @@ def _append_csv_field_match(
     )
 
 
-def _is_secret_column(header_value: str) -> bool:
-    normalized = header_value.strip().strip("\"'").casefold()
-    return normalized in {
+SECRET_COLUMN_NAMES = frozenset(
+    {
         "api_key",
         "apikey",
         "auth_token",
@@ -548,10 +921,17 @@ def _is_secret_column(header_value: str) -> bool:
         "secret_key",
         "token",
     }
+)
+SECRET_COLUMN_KEYWORDS = ("api", "credential", "pass", "secret", "token")
 
 
-def _append_card_matches(text: str, spans: list[dict[str, object]]) -> None:
-    for match in CARD_PATTERN.finditer(text):
+def _is_secret_column(header_value: str) -> bool:
+    normalized = header_value.strip().strip("\"'").casefold()
+    return normalized in SECRET_COLUMN_NAMES
+
+
+def _append_card_matches(found: Matches, spans: list[dict[str, object]]) -> None:
+    for match in found.get(CARD_PATTERN, ()):
         digits = re.sub(r"[ -]", "", match.group())
         if 13 <= len(digits) <= 19 and luhn_valid(digits):
             spans.append(
@@ -559,8 +939,8 @@ def _append_card_matches(text: str, spans: list[dict[str, object]]) -> None:
             )
 
 
-def _append_ip_matches(text: str, spans: list[dict[str, object]]) -> None:
-    for match in IP_PATTERN.finditer(text):
+def _append_ip_matches(found: Matches, spans: list[dict[str, object]]) -> None:
+    for match in found.get(IP_PATTERN, ()):
         octets = match.group().split(".")
         if all(0 <= int(octet) <= 255 for octet in octets):
             spans.append(

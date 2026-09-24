@@ -82,13 +82,17 @@ class RulesModel:
 
     device = "cpu"
 
+    def __init__(self) -> None:
+        # Imported here, not on the first request: the native engine compiles
+        # every pattern on import, and that cost belongs to start-up.
+        from pii_rules import deterministic_spans
+
+        self.deterministic_spans = deterministic_spans
+
     def predict(self, text: str) -> list[dict]:
         if not text:
             return []
-        # pii_rules is standard library only, so this import costs no model load.
-        from pii_rules import deterministic_spans
-
-        return deterministic_spans(text)
+        return self.deterministic_spans(text)
 
 
 def load_selected_model(mode: str) -> object:
@@ -215,6 +219,13 @@ def main() -> None:
     print(f"[{mode}] loading model...", file=sys.stderr, flush=True)
     Handler.model = load_selected_model(mode)
     Handler.mode = mode
+    # Only the modes that run the rules have loaded them. The line says which
+    # engine matches the rules, so a missing native module shows in the log.
+    rules = sys.modules.get("pii_rules")
+    if rules is not None:
+        print(
+            f"[{mode}] rules engine: {rules.RULES_ENGINE}", file=sys.stderr, flush=True
+        )
     print(
         f"[{mode}] ready on http://{args.host}:{args.port}",
         file=sys.stderr,
