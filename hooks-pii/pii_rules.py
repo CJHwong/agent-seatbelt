@@ -27,6 +27,7 @@ SPAN_PRIORITY = {
     "private_phone": 4,
     "private_address": 3,
     "private_person": 2,
+    "private_username": 2,
     "private_url": 2,
     "private_date": 1,
 }

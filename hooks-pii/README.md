@@ -13,6 +13,7 @@ This is the content-level companion to `agent-seatbelt`'s file-level sandbox. Th
 - `~/.claude/hooks/pii-check.sh` — the hook binary, called on prompt submit and tool response
 - `~/.claude/hooks/pii-server.py` — local HTTP server that loads the selected model and returns labeled spans
 - `~/.claude/hooks/pii_redact_torch.py` — local Redact model adapter used by `pii-server.py`
+- `~/.claude/hooks/pii_tagger.py` and `pii_tagger_rules.py` — the bilingual tagger backend and the rules that follow it. See [Tagger mode](#tagger-mode)
 - `~/.claude/hooks/pii_rules_native.abi3.so` — the native rules engine, on macOS arm64 and Linux x86_64 only. See [Native rules engine](#native-rules-engine)
 - For each detected agent, two entries in its hooks config:
   - `UserPromptSubmit` → blocks or warns on prompts containing PII before they reach the model provider
@@ -76,8 +77,8 @@ Tune via `PII_LEVEL`. The level selects which labels the hook acts on. Block mod
 |---|---|
 | `off` | nothing |
 | `relaxed` | `secret`, `account_number` |
-| `standard` (default) | `secret`, `account_number`, `private_email`, `private_phone`, `private_address` |
-| `strict` | `secret`, `account_number`, `private_email`, `private_phone`, `private_address`, `private_person`, `private_url`, `private_date` |
+| `standard` (default) | `secret`, `account_number`, `private_email`, `private_phone`, `private_address`, `private_username` |
+| `strict` | `secret`, `account_number`, `private_email`, `private_phone`, `private_address`, `private_username`, `private_person`, `private_url`, `private_date` |
 
 `PII_ALLOW_LABELS` accepts these label names:
 
@@ -88,6 +89,7 @@ Tune via `PII_LEVEL`. The level selects which labels the hook acts on. Block mod
 | `private_email` | moderate | personal or private email addresses |
 | `private_phone` | moderate | phone numbers |
 | `private_address` | moderate | street addresses |
+| `private_username` | moderate | a person's handle or login; only tagger mode reports it |
 | `private_person` | low | people's names |
 | `private_url` | low | private or internal URLs |
 | `private_date` | low | personal or sensitive dates |
@@ -314,7 +316,7 @@ All env vars override defaults; set them in your shell or the hook's env:
 | `PII_ALLOW_LABELS` | empty | comma-separated labels to allow within the selected tier |
 | `PII_ALLOW_BYPASS` | `1` | `1` enables the `pii:off` prompt prefix; `0` disables it, for deployments where more than one person can reach the agent |
 | `PII_ACTION_MODE` | `warn` | `warn` to allow input with agent context or `block` to reject input |
-| `PII_SERVER_MODE` | `redact` | `redact` (LiteRT graph), `redact-torch` (checkpoint), `openai`, or `rules` |
+| `PII_SERVER_MODE` | `redact` | `redact` (LiteRT graph), `redact-torch` (checkpoint), `openai`, `rules`, or `tagger` |
 | `PII_PORT` | `9123` | local server port |
 | `PII_SERVER_SCRIPT` | `~/.claude/hooks/pii-server.py` | server script path |
 | `PII_SERVER_LOG` | `~/.cache/pii/server.log` | server log path |
@@ -326,6 +328,8 @@ All env vars override defaults; set them in your shell or the hook's env:
 | `REDACT_MAX_TOKENS` | `4096` | maximum tokens in one Redact chunk |
 | `REDACT_CHUNK_OVERLAP_TOKENS` | `128` | token overlap between adjacent Redact chunks |
 | `REDACT_MAX_INPUT_TOKENS` | `32768` | whole-request token cap; larger requests fail with HTTP 413 before inference |
+| `PII_TAGGER_DIR` | empty | `tagger` only: the folder that holds the exported tagger |
+| `PII_TAGGER_FP32` | empty | `tagger` only: `1` loads the fp32 graph instead of the int8 one |
 
 ## Redact modes
 
@@ -390,6 +394,36 @@ Rules mode runs the deterministic checks only. It loads no checkpoint and uses n
 Rules mode needs no dependencies. `pii-server.py` imports the standard library alone, so the hook starts it with the system `python3` instead of `uv run`. That avoids resolving the script's declared model dependencies, which include torch. The other two modes still start under `uv run`.
 
 In `redact-torch` the neural model runs on the selected accelerator. Tokenization, deterministic checks, and span cleanup run on the CPU, and so does everything in `redact`, whose graph is CPU only. Configure the mode with `REDACT_CACHE_DIR`, `REDACT_MIN_SCORE`, `REDACT_BATCH_SIZE` (`redact-torch` only, because the LiteRT graph cannot batch), `REDACT_MAX_TOKENS`, `REDACT_CHUNK_OVERLAP_TOKENS`, and `REDACT_MAX_INPUT_TOKENS`.
+
+### Tagger mode
+
+`tagger` runs a 35M-parameter token tagger trained for English, Simplified Chinese and
+Traditional Chinese, including developer text: tool output, logs, configuration and chat.
+It finds 18 kinds of personal data, which map onto the labels above. Every identity
+number becomes `account_number`, and a person's handle becomes `private_username`.
+
+After the tagger, rules drop what it flags by form but the policy excludes:
+
+- documentation, licence and repository URLs
+- shared mailboxes and default accounts
+- code identifiers read as usernames
+- public figures and places, from Wikidata lists
+- names next to a public-office title
+
+Rules also add a handle found in an `author=`, `reviewer:` or `github:` field. Only the
+`secret` and `account_number` findings of the deterministic rules join the result. The
+other rules flag every URL and email by shape, so they would put back what the tagger's
+rules dropped.
+
+The model is not published yet. Point `PII_TAGGER_DIR` at an exported folder. The folder
+holds `model.int8.onnx` (36 MB), or `model.onnx` with `PII_TAGGER_FP32=1`, plus
+`tokenizer.json`, `labels.json`, `persons.txt.gz`, `places.txt.gz` and `tagger.json`:
+
+```bash
+PII_TAGGER_DIR=~/models/pii-tagger uv run hooks-pii/pii-server.py --mode tagger --port 9123
+```
+
+It runs on the CPU with onnxruntime and reports `{"status":"ok","mode":"tagger","device":"cpu"}`.
 
 ### Native rules engine
 

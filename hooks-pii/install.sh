@@ -31,6 +31,8 @@ RULES_DEST="$HOOKS_DIR/pii_rules.py"
 PATTERNS_DEST="$HOOKS_DIR/pii_secret_patterns.py"
 VOCABULARY_DEST="$HOOKS_DIR/cl100k_base.tokens.gz"
 OPF_DEST="$HOOKS_DIR/pii_opf.py"
+TAGGER_DEST="$HOOKS_DIR/pii_tagger.py"
+TAGGER_RULES_DEST="$HOOKS_DIR/pii_tagger_rules.py"
 NATIVE_DEST="$HOOKS_DIR/pii_rules_native.abi3.so"
 CHECK_DEST="$HOOKS_DIR/pii-check.sh"
 CLAUDE_SETTINGS="$HOME/.claude/settings.json"
@@ -109,8 +111,8 @@ else
 fi
 
 case "$SERVER_MODE" in
-    redact|redact-torch|openai|rules) ;;
-    *) echo "Error: PII_SERVER_MODE must be redact, redact-torch, openai, or rules." >&2; exit 1 ;;
+    redact|redact-torch|openai|rules|tagger) ;;
+    *) echo "Error: PII_SERVER_MODE must be redact, redact-torch, openai, rules, or tagger." >&2; exit 1 ;;
 esac
 
 case "$ACTION_MODE" in
@@ -143,6 +145,8 @@ curl -fsSL "$REPO_BASE/pii_rules.py" -o "$RULES_DEST"
 curl -fsSL "$REPO_BASE/pii_secret_patterns.py" -o "$PATTERNS_DEST"
 curl -fsSL "$REPO_BASE/cl100k_base.tokens.gz" -o "$VOCABULARY_DEST"
 curl -fsSL "$REPO_BASE/pii_opf.py" -o "$OPF_DEST"
+curl -fsSL "$REPO_BASE/pii_tagger.py" -o "$TAGGER_DEST"
+curl -fsSL "$REPO_BASE/pii_tagger_rules.py" -o "$TAGGER_RULES_DEST"
 curl -fsSL "$REPO_BASE/pii-check.sh"  -o "$CHECK_DEST"
 chmod +x "$CHECK_DEST"
 echo "Installed: $SERVER_DEST"
@@ -152,6 +156,8 @@ echo "Installed: $RULES_DEST"
 echo "Installed: $PATTERNS_DEST"
 echo "Installed: $VOCABULARY_DEST"
 echo "Installed: $OPF_DEST"
+echo "Installed: $TAGGER_DEST"
+echo "Installed: $TAGGER_RULES_DEST"
 echo "Installed: $CHECK_DEST"
 
 # The release carries one native build per OS and CPU. Any other platform keeps

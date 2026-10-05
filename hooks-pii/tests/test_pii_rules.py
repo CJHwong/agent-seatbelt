@@ -32,6 +32,7 @@ HOOK_TIER_LABELS = {
     "private_email",
     "private_phone",
     "private_address",
+    "private_username",
     "private_person",
     "private_url",
     "private_date",

@@ -50,6 +50,7 @@ TEST_PATTERNS=(
     "test_install.py"
     "test_pii_rules.py"
     "test_pii_server.py"
+    "test_pii_tagger_rules.py"
 )
 
 TRACE=$(mktemp "${TMPDIR:-/tmp}/pii_cov.XXXXXX")

@@ -32,7 +32,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
 
-SUPPORTED_MODES = ("redact", "redact-torch", "openai", "rules")
+SUPPORTED_MODES = ("redact", "redact-torch", "openai", "rules", "tagger")
 DEFAULT_MODE = "redact"
 DEFAULT_MAX_BODY_BYTES = 2 * 1024 * 1024
 HANDLER_TIMEOUT_SECONDS = 30
@@ -106,6 +106,11 @@ def load_selected_model(mode: str) -> object:
         from pii_opf import Model, ensure_assets
 
         return Model(ensure_assets())
+    if mode == "tagger":
+        # The bilingual tagger and its rules, from the folder PII_TAGGER_DIR names.
+        from pii_tagger import TaggerModel, asset_dir
+
+        return TaggerModel(asset_dir())
     if mode == "redact-torch":
         # The checkpoint backend, kept for a host that already has redact.pt.
         from pii_redact_torch import RedactModel, ensure_assets as ensure_torch_assets

@@ -100,8 +100,8 @@ command -v jq >/dev/null 2>&1 || scanner_skipped "jq is not installed, so the sc
 command -v curl >/dev/null 2>&1 || scanner_skipped "curl is not installed, so the scanner cannot reach the detector" "Install curl"
 
 case "$SERVER_MODE" in
-    redact|redact-torch|openai|rules) ;;
-    *) scanner_skipped "PII_SERVER_MODE is '${SERVER_MODE}', which is not redact, redact-torch, openai, or rules" "Set it to one of those four" ;;
+    redact|redact-torch|openai|rules|tagger) ;;
+    *) scanner_skipped "PII_SERVER_MODE is '${SERVER_MODE}', which is not redact, redact-torch, openai, rules, or tagger" "Set it to one of those five" ;;
 esac
 
 case "$ACTION_MODE" in
@@ -116,7 +116,7 @@ esac
 
 # --- Category tiers ---
 CRITICAL=('secret' 'account_number')
-MODERATE=('private_email' 'private_phone' 'private_address')
+MODERATE=('private_email' 'private_phone' 'private_address' 'private_username')
 LOW=('private_person' 'private_url' 'private_date')
 
 LEVEL="${PII_LEVEL:-${PII_BLOCK_LEVEL:-standard}}"
