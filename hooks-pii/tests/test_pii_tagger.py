@@ -76,15 +76,15 @@ class DecoderTests(unittest.TestCase):
 
     def test_a_span_scores_its_least_sure_token(self) -> None:
         spans = decode_spans(
-            ["B-person", "E-person", "S-secret"],
-            [(0, 3), (4, 7), (8, 12)],
-            [0.9, 0.6, 0.8],
+            ["B-person", "E-person", "O", "S-secret"],
+            [(0, 3), (4, 7), (8, 9), (10, 14)],
+            [0.9, 0.6, 0.99, 0.8],
         )
         self.assertEqual(
             spans,
             [
                 {"start": 0, "end": 7, "label": "person", "score": 0.6},
-                {"start": 8, "end": 12, "label": "secret", "score": 0.8},
+                {"start": 10, "end": 14, "label": "secret", "score": 0.8},
             ],
         )
 
@@ -162,6 +162,24 @@ class ExportedTaggerTests(unittest.TestCase):
         text = "今天天氣很好。" * 200 + "聯絡王小明 0912-345-678。"
         spans = self.model.predict(text)
         self.assertTrue(any(span["label"] == "private_phone" for span in spans))
+
+    def test_a_window_tags_the_same_beside_any_neighbour(self) -> None:
+        window = (
+            "author=mchen pushed with AKIA" + "Q3EGRZ7MXN2PLW4T, ask Wang Xiaoming.\n"
+        )
+        filler = "今天天氣很好。" * 57
+        alone = self.model.tag(window)
+        beside = [
+            {
+                **span,
+                "start": span["start"] - len(filler),
+                "end": span["end"] - len(filler),
+            }
+            for span in self.model.tag(filler + window)
+            if span["start"] >= len(filler)
+        ]
+        self.assertTrue(alone)
+        self.assertEqual(alone, beside)
 
 
 if __name__ == "__main__":

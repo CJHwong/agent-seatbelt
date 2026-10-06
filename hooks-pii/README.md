@@ -425,6 +425,21 @@ PII_TAGGER_DIR=~/models/pii-tagger uv run hooks-pii/pii-server.py --mode tagger 
 
 It runs on the CPU with onnxruntime and reports `{"status":"ok","mode":"tagger","device":"cpu"}`.
 
+Each window runs in its own session call, without padding. Several calls run at once,
+with 3 threads each, and the pool has one call per 3 cores. A window's spans therefore
+do not depend on the other windows in the text. A single batched call would make them
+depend on each other, because dynamic int8 quantizes the activations of a whole call
+together. The export fuses attention, layer norm and gelu into onnxruntime's own ops.
+An older export without them still loads, only slower. Measured on an 18-core M5 Pro
+over 3,816 benchmark texts (higher is better):
+
+| Graph | Before: one call of 64 windows, unfused | After: parallel single windows, fused |
+|---|---|---|
+| int8, one text per call | 18.6k chars/s | 47.5k chars/s |
+| int8, texts of about 100k chars | 20.8k chars/s | 65.5k chars/s |
+| fp32, one text per call | 18.3k chars/s | 44.3k chars/s |
+| fp32, texts of about 100k chars | 20.1k chars/s | 51.4k chars/s |
+
 ### Native rules engine
 
 The rules are Python regular expressions. On a slow CPU, Python `re` takes too long on a large tool output: 105 ms on a 12 KB input on a 2015 Celeron N3050. The native engine matches the same patterns in compiled code. `pii_rules.py` passes its own pattern strings to it, so the rules still live in one file.

@@ -8,7 +8,11 @@ public persons and places lists, and `tagger.json` with the window sizes and the
 username cuts.
 
 Text is cut into windows of whole sentences, at most `chunk_chars` characters each, the
-way the tagger was trained and scored. The decoder is the training repository's: hard
+way the tagger was trained and scored. Each window runs alone, without padding, and
+several windows run at once on a few threads each. Alone, a window's result does not
+depend on its neighbours: dynamic int8 quantizes the activations of a whole call together.
+On an 18-core M5 Pro, 6 calls of 3 threads tag 36k tokens a second, one batched call of
+every thread 23k. The decoder is the training repository's: hard
 BIOES transitions, and a span's score is the probability of its least sure token.
 
 Only tagger mode imports this module.
@@ -19,6 +23,7 @@ from __future__ import annotations
 import gzip
 import json
 import os
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import numpy as np  # ty: ignore[unresolved-import]
@@ -39,7 +44,7 @@ REQUIRED_FILES = (
 )
 SPACE_MARK = "▁"
 SENTENCE_ENDS = "。！？\n"
-BATCH = 64
+THREADS_PER_CALL = 3
 # The deterministic rules flag every URL, email, phone and date by shape, which would put
 # back the documentation links and shared mailboxes the tagger's rules drop. Only their
 # credential and card findings join the tagger's spans.
@@ -229,8 +234,13 @@ class TaggerModel:
 
     def __init__(self, folder: Path) -> None:
         graph = GRAPH_FP32 if os.environ.get("PII_TAGGER_FP32") == "1" else GRAPH_INT8
+        options = onnxruntime.SessionOptions()
+        options.intra_op_num_threads = THREADS_PER_CALL
         self.session = onnxruntime.InferenceSession(
-            str(folder / graph), providers=["CPUExecutionProvider"]
+            str(folder / graph), options, providers=["CPUExecutionProvider"]
+        )
+        self.calls = ThreadPoolExecutor(
+            max(1, (os.cpu_count() or 1) // THREADS_PER_CALL)
         )
         config = json.loads((folder / "tagger.json").read_text(encoding="utf-8"))
         self.chunk_chars = int(config["chunk_chars"])
@@ -240,9 +250,9 @@ class TaggerModel:
         self.tokenizer = Tokenizer.from_file(str(folder / "tokenizer.json"))
         self.tokenizer.no_padding()
         self.tokenizer.enable_truncation(max_length=int(config["max_tokens"]))
-        self.pad_id = self.tokenizer.token_to_id("<pad>")
         self.labels = json.loads((folder / "labels.json").read_text(encoding="utf-8"))
         self.tables = bioes_tables(self.labels)
+        self.outside = self.labels.index("O")
         self.persons = read_names(folder / "persons.txt.gz")
         self.places = read_names(folder / "places.txt.gz")
 
@@ -270,36 +280,27 @@ class TaggerModel:
         pieces = chunk_text(text, self.chunk_chars)
         encodings = self.tokenizer.encode_batch([chunk for _, chunk in pieces])
         spans: list[dict] = []
-        for start in range(0, len(pieces), BATCH):
-            batch = encodings[start : start + BATCH]
-            for (offset, _), found in zip(
-                pieces[start : start + BATCH], self.run(batch), strict=True
-            ):
-                spans += [
-                    {
-                        **span,
-                        "start": span["start"] + offset,
-                        "end": span["end"] + offset,
-                    }
-                    for span in found
-                ]
+        for (offset, _), found in zip(
+            pieces, self.calls.map(self.run, encodings), strict=True
+        ):
+            spans += [
+                {
+                    **span,
+                    "start": span["start"] + offset,
+                    "end": span["end"] + offset,
+                }
+                for span in found
+            ]
         return join_touching(spans)
 
-    def run(self, encodings: list) -> list[list[dict]]:
-        width = max(len(encoding.ids) for encoding in encodings)
-        ids = np.full((len(encodings), width), self.pad_id, dtype=np.int64)
-        mask = np.zeros((len(encodings), width), dtype=np.int64)
-        for row, encoding in enumerate(encodings):
-            ids[row, : len(encoding.ids)] = encoding.ids
-            mask[row, : len(encoding.ids)] = 1
+    def run(self, encoding) -> list[dict]:
+        """One window's spans, from a session call of that window alone."""
+        ids = np.array([encoding.ids], dtype=np.int64)
         logits = self.session.run(
-            ["logits"], {"input_ids": ids, "attention_mask": mask}
-        )[0].astype(np.float32)
+            ["logits"], {"input_ids": ids, "attention_mask": np.ones_like(ids)}
+        )[0][0].astype(np.float32)
         log_probs = logits - np.logaddexp.reduce(logits, axis=-1, keepdims=True)
-        return [
-            self.decode(encoding, rows)
-            for encoding, rows in zip(encodings, log_probs, strict=True)
-        ]
+        return self.decode(encoding, log_probs)
 
     def decode(self, encoding, log_probs: np.ndarray) -> list[dict]:
         real = [
@@ -312,10 +313,12 @@ class TaggerModel:
         if not real:
             return []
         rows = log_probs[real]
-        path = viterbi(rows, self.tables)
-        confidence = np.exp(rows[np.arange(len(path)), path]).tolist()
+        path = np.array(viterbi(rows, self.tables))
+        # An O token neither opens nor closes a span, so only the others need decoding.
+        tagged = np.flatnonzero(path != self.outside)
+        confidence = np.exp(rows[tagged, path[tagged]]).tolist()
         return decode_spans(
-            [self.labels[index] for index in path],
-            [encoding.offsets[index] for index in real],
+            [self.labels[index] for index in path[tagged]],
+            [encoding.offsets[real[index]] for index in tagged],
             confidence,
         )
