@@ -122,6 +122,25 @@ class HookModeTests(HookHarness):
 
         self.assertIn("HTTP status '500'", hook_output["systemMessage"])
 
+    def test_a_detector_timeout_is_reported_as_a_timeout(self) -> None:
+        """A request curl abandoned has no HTTP status to report.
+
+        curl prints 000 for it, which reads like a broken server. The server was
+        healthy and only slow, so the message has to say the request timed out.
+        """
+        FakePiiHandler.response_delay_seconds = 6
+        try:
+            hook_output = self.run_hook(
+                "prompt",
+                {"prompt": "send this secret"},
+                action_mode="warn",
+            )
+        finally:
+            FakePiiHandler.response_delay_seconds = 0.0
+
+        self.assertIn("timed out", hook_output["systemMessage"])
+        self.assertNotIn("HTTP status '000'", hook_output["systemMessage"])
+
     def test_a_detector_failure_is_recorded_on_the_host(self) -> None:
         """A skipped scan reaches the host log whether a tool or the detector caused it.
 
