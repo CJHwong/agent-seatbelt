@@ -357,11 +357,20 @@ request_body=$(printf '%s' "$text" | jq -Rs '{text:.}' 2>/dev/null) || true
 
 # Keep the status code. curl -f collapses every non-2xx into one failure, which is why
 # an input the detector rejected as oversized used to be reported as a dead detector.
+request_timeout_seconds=5
+curl_exit=0
 response=$(printf '%s' "$request_body" | \
-    curl -sS --max-time 5 -w $'\n%{http_code}' -X POST "$PREDICT" \
-    -H 'Content-Type: application/json' --data-binary @- 2>/dev/null) || true
+    curl -sS --max-time "$request_timeout_seconds" -w $'\n%{http_code}' -X POST "$PREDICT" \
+    -H 'Content-Type: application/json' --data-binary @- 2>/dev/null) || curl_exit=$?
 http_status="${response##*$'\n'}"
 response="${response%$'\n'*}"
+
+# curl exit 28 is its own timeout. No response arrived, so http_code is 000, and that
+# read as a dead server. The health check just passed, so the server is up but slow:
+# a large input, or other hooks queued on its single inference lock.
+if [ "$curl_exit" -eq 28 ]; then
+    detector_failure "the detector request timed out after ${request_timeout_seconds}s; the server is up but did not answer in time, usually because the input is large or other checks are queued ahead of it"
+fi
 
 case "$http_status" in
     200) ;;

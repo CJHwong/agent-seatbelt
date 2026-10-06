@@ -15,6 +15,7 @@ import socket
 import subprocess
 import tempfile
 import threading
+import time
 import unittest
 from collections.abc import Iterator
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -58,6 +59,7 @@ class FakePiiHandler(BaseHTTPRequestHandler):
     """Return one fixed detector span without loading a model."""
 
     response_status = 200
+    response_delay_seconds = 0.0
     health_status = 200
     health_mode = "redact"
     received_body_bytes = 0
@@ -112,6 +114,8 @@ class FakePiiHandler(BaseHTTPRequestHandler):
         request_length = int(self.headers.get("Content-Length", "0"))
         body = self.rfile.read(request_length)
         FakePiiHandler.received_body_bytes = len(body)
+        if self.response_delay_seconds:
+            time.sleep(self.response_delay_seconds)
         self._send_json(self.detector_response, self.response_status)
 
     def _send_json(
