@@ -328,7 +328,7 @@ All env vars override defaults; set them in your shell or the hook's env:
 | `REDACT_MAX_TOKENS` | `4096` | maximum tokens in one Redact chunk |
 | `REDACT_CHUNK_OVERLAP_TOKENS` | `128` | token overlap between adjacent Redact chunks |
 | `REDACT_MAX_INPUT_TOKENS` | `32768` | whole-request token cap; larger requests fail with HTTP 413 before inference |
-| `PII_TAGGER_DIR` | empty | `tagger` only: the folder that holds the exported tagger |
+| `PII_TAGGER_DIR` | empty | `tagger` only: a local tagger folder to use instead of the release download |
 | `PII_TAGGER_FP32` | empty | `tagger` only: `1` loads the fp32 graph instead of the int8 one |
 
 ## Redact modes
@@ -415,13 +415,17 @@ Rules also add a handle found in an `author=`, `reviewer:` or `github:` field. O
 other rules flag every URL and email by shape, so they would put back what the tagger's
 rules dropped.
 
-The model is not published yet. Point `PII_TAGGER_DIR` at an exported folder. The folder
-holds `model.int8.onnx` (36 MB), or `model.onnx` with `PII_TAGGER_FP32=1`, plus
-`tokenizer.json`, `labels.json`, `persons.txt.gz`, `places.txt.gz` and `tagger.json`:
+The model is [seatbelt-pii-tagger](https://huggingface.co/cjhwong/seatbelt-pii-tagger), release 2026.10.
+On first use it downloads `model.int8.onnx` (36 MB), or `model.onnx` with
+`PII_TAGGER_FP32=1`, plus `tokenizer.json`, `labels.json`, `persons.txt.gz`,
+`places.txt.gz` and `tagger.json`, into `~/.cache/pii-tagger`. The revision is pinned to
+the release commit:
 
 ```bash
-PII_TAGGER_DIR=~/models/pii-tagger uv run hooks-pii/pii-server.py --mode tagger --port 9123
+uv run hooks-pii/pii-server.py --mode tagger --port 9123
 ```
+
+To run your own export, point `PII_TAGGER_DIR` at a folder that holds the same files.
 
 It runs on the CPU with onnxruntime and reports `{"status":"ok","mode":"tagger","device":"cpu"}`.
 

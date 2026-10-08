@@ -2,7 +2,8 @@
 
 The module imports numpy, onnxruntime and tokenizers at module scope, so every test here
 needs those three installed. The windowing, the decoder and the folder checks run for
-real. The end-to-end test runs only when PII_TAGGER_DIR names an exported tagger.
+real. The end-to-end test runs only when PII_TAGGER_DIR names an exported tagger, so the suite
+never downloads the release.
 """
 
 from __future__ import annotations
@@ -111,12 +112,32 @@ class LabelMapTests(unittest.TestCase):
 
 
 class AssetDirTests(unittest.TestCase):
-    def test_an_unset_folder_is_an_error(self) -> None:
-        with (
-            patch.dict(os.environ, {"PII_TAGGER_DIR": ""}),
-            self.assertRaisesRegex(RuntimeError, "not set"),
-        ):
-            asset_dir()
+    def test_an_unset_folder_downloads_the_pinned_release(self) -> None:
+        calls = []
+
+        def download(**kwargs: str) -> str:
+            calls.append(kwargs)
+            path = Path(kwargs["local_dir"]) / kwargs["filename"]
+            path.write_text("")
+            return str(path)
+
+        with tempfile.TemporaryDirectory() as folder:
+            with (
+                patch.dict(os.environ, {"PII_TAGGER_DIR": "", "PII_TAGGER_FP32": ""}),
+                patch.object(pii_tagger, "CACHE_DIR", Path(folder)),
+                patch("huggingface_hub.hf_hub_download", download),
+            ):
+                self.assertEqual(asset_dir(), Path(folder))
+        self.assertEqual(
+            [call["filename"] for call in calls], ["model.int8.onnx", *REQUIRED_FILES]
+        )
+        self.assertTrue(
+            all(
+                call["repo_id"] == pii_tagger.TAGGER_REPO
+                and call["revision"] == pii_tagger.TAGGER_REVISION
+                for call in calls
+            )
+        )
 
     def test_a_folder_missing_files_names_them(self) -> None:
         with tempfile.TemporaryDirectory() as folder:

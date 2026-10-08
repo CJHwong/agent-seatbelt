@@ -107,7 +107,7 @@ def load_selected_model(mode: str) -> object:
 
         return Model(ensure_assets())
     if mode == "tagger":
-        # The bilingual tagger and its rules, from the folder PII_TAGGER_DIR names.
+        # The bilingual tagger and its rules, from the release or PII_TAGGER_DIR.
         from pii_tagger import TaggerModel, asset_dir
 
         return TaggerModel(asset_dir())

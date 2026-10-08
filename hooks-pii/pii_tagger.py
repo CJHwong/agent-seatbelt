@@ -2,8 +2,8 @@
 Traditional Chinese, then the rules it was scored with, then the deterministic secret
 and card rules.
 
-The files come from a local folder, `PII_TAGGER_DIR`, until the release is published:
-the int8 ONNX graph (fp32 with `PII_TAGGER_FP32=1`), the tokenizer, the label list, the
+The files download from the Hugging Face release on first use, or come from the local
+folder `PII_TAGGER_DIR` names: the int8 ONNX graph (fp32 with `PII_TAGGER_FP32=1`), the tokenizer, the label list, the
 public persons and places lists, and `tagger.json` with the window sizes and the url and
 username cuts.
 
@@ -33,6 +33,10 @@ from tokenizers import Tokenizer  # ty: ignore[unresolved-import]
 from pii_rules import deterministic_spans, merge_spans
 from pii_tagger_rules import apply_chain
 
+# Release 2026.10 of the model repository.
+TAGGER_REPO = "cjhwong/seatbelt-pii-tagger"
+TAGGER_REVISION = "a13c41627232a53ffa1c5bd2e354efe341762b75"
+CACHE_DIR = Path.home() / ".cache" / "pii-tagger"
 GRAPH_INT8 = "model.int8.onnx"
 GRAPH_FP32 = "model.onnx"
 REQUIRED_FILES = (
@@ -74,20 +78,35 @@ LABEL_MAP = {
 }
 
 
-def asset_dir() -> Path:
-    """The folder named by PII_TAGGER_DIR, with every file the backend reads."""
-    configured = os.environ.get("PII_TAGGER_DIR", "")
-    if not configured:
-        raise RuntimeError(
-            "PII_TAGGER_DIR is not set; point it at the exported tagger folder"
+def download(graph: str) -> Path:
+    """Download the release files into the cache and return the directory.
+
+    The revision is pinned to a commit, not the tag, so a moved tag cannot swap the
+    graph under a running hook.
+    """
+    from huggingface_hub import hf_hub_download  # ty: ignore[unresolved-import]
+
+    CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    for name in (graph, *REQUIRED_FILES):
+        hf_hub_download(
+            repo_id=TAGGER_REPO,
+            filename=name,
+            revision=TAGGER_REVISION,
+            local_dir=str(CACHE_DIR),
         )
-    folder = Path(configured).expanduser()
+    return CACHE_DIR
+
+
+def asset_dir() -> Path:
+    """The folder with every file the backend reads: PII_TAGGER_DIR, else the release."""
     graph = GRAPH_FP32 if os.environ.get("PII_TAGGER_FP32") == "1" else GRAPH_INT8
+    configured = os.environ.get("PII_TAGGER_DIR", "")
+    folder = Path(configured).expanduser() if configured else download(graph)
     missing = [
         name for name in (graph, *REQUIRED_FILES) if not (folder / name).is_file()
     ]
     if missing:
-        raise RuntimeError(f"PII_TAGGER_DIR {folder} lacks {', '.join(missing)}")
+        raise RuntimeError(f"tagger folder {folder} lacks {', '.join(missing)}")
     return folder
 
 
