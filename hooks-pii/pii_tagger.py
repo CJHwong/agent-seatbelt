@@ -30,6 +30,7 @@ import json
 import os
 import platform
 import sys
+import threading
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
@@ -300,12 +301,21 @@ class NeuralEngineForward:
     """The Core ML package on the Neural Engine: a window padded to the shortest length.
 
     The padding is masked out, so a window's logits do not depend on its length bucket.
+
+    The inputs are buffers that live as long as the process, one pair per thread and
+    length, filled in place. coremltools wraps each numpy input in an object that holds a
+    reference to it, and Core ML releases that object on its own thread when it resets an
+    idle stream, without the GIL. If that release dropped the last reference, Python would
+    free the array off its thread and the server would segfault after its first quiet
+    spell. `kept` holds every buffer, so that release never frees one.
     """
 
     device = "neural_engine"
 
     def __init__(self, functions: dict) -> None:
         self.functions = functions
+        self.local = threading.local()
+        self.kept: list[dict[str, np.ndarray]] = []
 
     @classmethod
     def load(cls, package: Path) -> NeuralEngineForward:
@@ -330,14 +340,24 @@ class NeuralEngineForward:
             raise ValueError(
                 f"a window of {len(ids)} tokens exceeds the longest Core ML length"
             )
-        padded = np.zeros((1, length), dtype=np.int32)
-        mask = np.zeros((1, length), dtype=np.int32)
-        padded[0, : len(ids)] = ids
-        mask[0, : len(ids)] = 1
-        out = self.functions[length].predict(
-            {"input_ids": padded, "attention_mask": mask}
-        )
+        feed = self.feed(length)
+        feed["input_ids"][0, : len(ids)] = ids
+        feed["input_ids"][0, len(ids) :] = 0
+        feed["attention_mask"][0, : len(ids)] = 1
+        feed["attention_mask"][0, len(ids) :] = 0
+        out = self.functions[length].predict(feed)
         return np.asarray(out["logits"], dtype=np.float32)[0, : len(ids)]
+
+    def feed(self, length: int) -> dict[str, np.ndarray]:
+        """This thread's input buffers for one length, made once and never released."""
+        feeds = self.local.__dict__.setdefault("feeds", {})
+        if length not in feeds:
+            feeds[length] = {
+                "input_ids": np.zeros((1, length), dtype=np.int32),
+                "attention_mask": np.zeros((1, length), dtype=np.int32),
+            }
+            self.kept.append(feeds[length])
+        return feeds[length]
 
 
 def load_forward(folder: Path, graph: str) -> OnnxForward | NeuralEngineForward:

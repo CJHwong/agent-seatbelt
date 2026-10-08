@@ -237,6 +237,24 @@ class NeuralEngineForwardTests(unittest.TestCase):
         self.assertEqual(logits.shape, (70, 3))
         self.assertEqual(logits.dtype, np.float32)
 
+    def test_a_thread_reuses_one_kept_buffer_per_length(self) -> None:
+        seen: list = []
+        forward = self.forward(seen)
+        forward.logits([5] * 70)
+        forward.logits([6] * 90)
+        self.assertIs(seen[0][1], seen[1][1])
+        self.assertIs(seen[0][2], seen[1][2])
+        self.assertIn(seen[0][1], [feed["input_ids"] for feed in forward.kept])
+
+    def test_a_shorter_window_clears_the_longer_one_before_it(self) -> None:
+        seen: list = []
+        forward = self.forward(seen)
+        forward.logits([5] * 90)
+        forward.logits([6] * 70)
+        _, ids, mask = seen[1]
+        self.assertEqual(ids[0].tolist(), [6] * 70 + [0] * 58)
+        self.assertEqual(mask[0].tolist(), [1] * 70 + [0] * 58)
+
     def test_a_window_longer_than_every_length_is_refused(self) -> None:
         with self.assertRaisesRegex(ValueError, "513 tokens"):
             self.forward([]).logits([1] * 513)
