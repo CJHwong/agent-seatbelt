@@ -430,7 +430,7 @@ To run your own export, point `PII_TAGGER_DIR` at a folder that holds the same f
 On Apple Silicon the server also downloads `model.mlpackage` (69 MB) and runs the network
 on the Neural Engine through Core ML. It reports
 `{"status":"ok","mode":"tagger","device":"neural_engine"}`. The package is fp16 and pads
-each window to 64, 128, 256 or 512 tokens. The Neural Engine runs only fixed shapes. Its
+each window to the shortest length it holds, from 64 to 512 tokens. The Neural Engine runs only fixed shapes. Its
 spans match the fp32 network's on all but 93 of 33,479 comparison rows. The int8 graph
 differs on 1,963. Everywhere else, and whenever Core ML fails to load, the server runs
 the int8 graph on the CPU with onnxruntime, reports `"device":"cpu"`, and logs why Core ML

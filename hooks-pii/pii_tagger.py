@@ -57,7 +57,6 @@ REQUIRED_FILES = (
 # One function per padded length over shared weights; the Neural Engine runs only fixed
 # shapes. tagger.json caps a window at 512 tokens, so the longest length holds any window.
 COREML_PACKAGE = "model.mlpackage"
-COREML_LENGTHS = (64, 128, 256, 512)
 COREML_FILES = tuple(
     f"{COREML_PACKAGE}/{name}"
     for name in (
@@ -197,11 +196,11 @@ def bioes_tables(labels: list[str]) -> tuple[np.ndarray, np.ndarray, np.ndarray]
 
 
 def viterbi(
-    log_probs: np.ndarray, tables: tuple[np.ndarray, np.ndarray, np.ndarray]
+    emissions: np.ndarray, tables: tuple[np.ndarray, np.ndarray, np.ndarray]
 ) -> list[int]:
     """The best BIOES path. Transitions are 0 or -inf, so a legal greedy path is the answer."""
     transitions, can_start, can_end = tables
-    greedy = log_probs.argmax(axis=1)
+    greedy = emissions.argmax(axis=1)
     legal = (
         can_start[greedy[0]]
         and can_end[greedy[-1]]
@@ -209,9 +208,9 @@ def viterbi(
     )
     if legal:
         return greedy.tolist()
-    scores = np.where(can_start, log_probs[0], -np.inf)
+    scores = np.where(can_start, emissions[0], -np.inf)
     back = []
-    for row in log_probs[1:]:
+    for row in emissions[1:]:
         candidates = scores[:, None] + transitions
         best = candidates.argmax(axis=0)
         scores = candidates[best, np.arange(len(can_start))] + row
@@ -321,14 +320,22 @@ class NeuralEngineForward:
     def load(cls, package: Path) -> NeuralEngineForward:
         import coremltools  # ty: ignore[unresolved-import]
 
+        # The package names its own lengths, so an older package with fewer of them
+        # still loads rather than falling back to the CPU.
+        names = [
+            function.name
+            for function in coremltools.utils.load_spec(
+                str(package)
+            ).description.functions
+        ]
         return cls(
             {
-                length: coremltools.models.MLModel(
+                int(name.removeprefix("length_")): coremltools.models.MLModel(
                     str(package),
-                    function_name=f"length_{length}",
+                    function_name=name,
                     compute_units=coremltools.ComputeUnit.CPU_AND_NE,
                 )
-                for length in COREML_LENGTHS
+                for name in names
             }
         )
 
@@ -440,26 +447,36 @@ class TaggerModel:
     def run(self, encoding) -> list[dict]:
         """One window's spans, from a session call of that window alone."""
         logits = self.forward.logits(encoding.ids)
-        log_probs = logits - np.logaddexp.reduce(logits, axis=-1, keepdims=True)
-        return self.decode(encoding, log_probs)
+        # Most windows hold nothing. When O wins every token, the all-O path is legal, so
+        # the decoder would return it and no span: skip the softmax and the token loop.
+        if (logits.argmax(axis=1) == self.outside).all():
+            return []
+        return self.decode(encoding, logits)
 
-    def decode(self, encoding, log_probs: np.ndarray) -> list[dict]:
+    def decode(self, encoding, logits: np.ndarray) -> list[dict]:
+        """Spans from raw logits. A row's softmax shifts every tag of that token by one
+        constant, which no path can tell apart, so the path comes from the logits and only
+        the tagged tokens are normalized, for their confidence."""
+        # encoding.offsets builds a new list on every read, so read it once.
+        offsets = encoding.offsets
         real = [
             index
             for index, (token, (start, end)) in enumerate(
-                zip(encoding.tokens, encoding.offsets, strict=True)
+                zip(encoding.tokens, offsets, strict=True)
             )
             if end > start and token != SPACE_MARK
         ]
         if not real:
             return []
-        rows = log_probs[real]
+        rows = logits[real]
         path = np.array(viterbi(rows, self.tables))
         # An O token neither opens nor closes a span, so only the others need decoding.
         tagged = np.flatnonzero(path != self.outside)
-        confidence = np.exp(rows[tagged, path[tagged]]).tolist()
+        picked = rows[tagged]
+        log_probs = picked - np.logaddexp.reduce(picked, axis=-1, keepdims=True)
+        confidence = np.exp(log_probs[np.arange(len(tagged)), path[tagged]]).tolist()
         return decode_spans(
             [self.labels[index] for index in path[tagged]],
-            [encoding.offsets[real[index]] for index in tagged],
+            [offsets[real[index]] for index in tagged],
             confidence,
         )
