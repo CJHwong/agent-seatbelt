@@ -427,7 +427,27 @@ uv run hooks-pii/pii-server.py --mode tagger --port 9123
 
 To run your own export, point `PII_TAGGER_DIR` at a folder that holds the same files.
 
-It runs on the CPU with onnxruntime and reports `{"status":"ok","mode":"tagger","device":"cpu"}`.
+On Apple Silicon the server also downloads `model.mlpackage` (69 MB) and runs the network
+on the Neural Engine through Core ML. It reports
+`{"status":"ok","mode":"tagger","device":"neural_engine"}`. The package is fp16 and pads
+each window to 64, 128, 256 or 512 tokens. The Neural Engine runs only fixed shapes. Its
+spans match the fp32 network's on all but 93 of 33,479 comparison rows. The int8 graph
+differs on 1,963. Everywhere else, and whenever Core ML fails to load, the server runs
+the int8 graph on the CPU with onnxruntime, reports `"device":"cpu"`, and logs why Core ML
+failed. `PII_TAGGER_FP32=1` always runs the fp32 graph on the CPU. coremltools ships its
+Core ML bindings for Python 3.13 at most, so the server script asks uv for Python 3.13 or
+older.
+
+The same requests to a server on each runtime, p50 and p95 per request (lower is better):
+
+| Machine | Load | Neural Engine | CPU, int8 |
+|---|---|---|---|
+| M5 Pro | 1 client, 1,500 texts | 1.2 ms, 9.4 ms | 2.5 ms, 12.9 ms |
+| M5 Pro | 8 clients, 1,500 texts | 10.2 ms, 69.7 ms | 20.8 ms, 93.7 ms |
+| M1 Pro | 1 client, 1,500 texts | 2.3 ms, 15.6 ms | 3.5 ms, 23.2 ms |
+| M1 Pro | 8 clients, 1,500 texts | 15.5 ms, 119.2 ms | 28.2 ms, 180.4 ms |
+
+On the CPU:
 
 Each window runs in its own session call, without padding. Several calls run at once,
 with 3 threads each, and the pool has one call per 3 cores. A window's spans therefore

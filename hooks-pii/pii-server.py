@@ -1,7 +1,10 @@
 # /// script
-# requires-python = ">=3.11"
+# # coremltools ships its Core ML bindings for Python 3.13 at most; on 3.14 tagger
+# # mode loses the Neural Engine and falls back to the CPU.
+# requires-python = ">=3.11,<3.14"
 # dependencies = [
 #     "ai-edge-litert>=2.0",
+#     "coremltools>=8; sys_platform == 'darwin' and platform_machine == 'arm64'",
 #     "huggingface_hub>=0.23,<2",
 #     "onnxruntime>=1.17",
 #     "tokenizers>=0.15",
@@ -59,7 +62,7 @@ def max_body_bytes() -> int:
 
 def health_payload(mode: str, model: object, busy: bool = False) -> dict[str, object]:
     payload: dict[str, object] = {"status": "ok", "mode": mode}
-    if mode in ("redact", "redact-torch"):
+    if mode in ("redact", "redact-torch", "tagger"):
         payload["device"] = str(getattr(model, "device", "unknown"))
     else:
         payload["device"] = "cpu"

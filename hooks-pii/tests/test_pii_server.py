@@ -60,6 +60,10 @@ class PiiServerModeTests(TestCase):
             PII_SERVER.health_payload("openai", model),
             {"status": "ok", "mode": "openai", "device": "cpu", "busy": False},
         )
+        tagger = type("Model", (), {"device": "neural_engine"})()
+        self.assertEqual(
+            PII_SERVER.health_payload("tagger", tagger)["device"], "neural_engine"
+        )
 
     def test_health_payload_carries_the_busy_flag(self) -> None:
         self.assertEqual(

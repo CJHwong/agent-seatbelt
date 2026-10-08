@@ -5,7 +5,11 @@ and card rules.
 The files download from the Hugging Face release on first use, or come from the local
 folder `PII_TAGGER_DIR` names: the int8 ONNX graph (fp32 with `PII_TAGGER_FP32=1`), the tokenizer, the label list, the
 public persons and places lists, and `tagger.json` with the window sizes and the url and
-username cuts.
+username cuts. On Apple Silicon with coremltools, the release's Core ML package runs the
+network on the Neural Engine instead: fp16, each window padded to a fixed length. Its
+spans match the fp32 network's on all but 93 of 33,479 comparison rows, against 1,963
+for int8, and a window takes 0.4 ms against 1.4 ms on an M5 Pro. When Core ML fails to
+load, the int8 graph runs on the CPU and the server log says why.
 
 Text is cut into windows of whole sentences, at most `chunk_chars` characters each, the
 way the tagger was trained and scored. Each window runs alone, without padding, and
@@ -21,8 +25,11 @@ Only tagger mode imports this module.
 from __future__ import annotations
 
 import gzip
+import importlib.util
 import json
 import os
+import platform
+import sys
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
@@ -35,7 +42,7 @@ from pii_tagger_rules import apply_chain
 
 # Release 2026.10 of the model repository.
 TAGGER_REPO = "cjhwong/seatbelt-pii-tagger"
-TAGGER_REVISION = "a13c41627232a53ffa1c5bd2e354efe341762b75"
+TAGGER_REVISION = "4e4c9d818bdcbcf4a4b10d8ec1144b35e02c997a"
 CACHE_DIR = Path.home() / ".cache" / "pii-tagger"
 GRAPH_INT8 = "model.int8.onnx"
 GRAPH_FP32 = "model.onnx"
@@ -45,6 +52,18 @@ REQUIRED_FILES = (
     "persons.txt.gz",
     "places.txt.gz",
     "tagger.json",
+)
+# One function per padded length over shared weights; the Neural Engine runs only fixed
+# shapes. tagger.json caps a window at 512 tokens, so the longest length holds any window.
+COREML_PACKAGE = "model.mlpackage"
+COREML_LENGTHS = (64, 128, 256, 512)
+COREML_FILES = tuple(
+    f"{COREML_PACKAGE}/{name}"
+    for name in (
+        "Manifest.json",
+        "Data/com.apple.CoreML/model.mlmodel",
+        "Data/com.apple.CoreML/weights/weight.bin",
+    )
 )
 SPACE_MARK = "▁"
 SENTENCE_ENDS = "。！？\n"
@@ -78,16 +97,28 @@ LABEL_MAP = {
 }
 
 
+def neural_engine_available() -> bool:
+    """Apple Silicon with coremltools installed, and no request for the fp32 graph."""
+    return (
+        platform.system() == "Darwin"
+        and platform.machine() == "arm64"
+        and os.environ.get("PII_TAGGER_FP32") != "1"
+        and importlib.util.find_spec("coremltools") is not None
+    )
+
+
 def download(graph: str) -> Path:
     """Download the release files into the cache and return the directory.
 
     The revision is pinned to a commit, not the tag, so a moved tag cannot swap the
-    graph under a running hook.
+    graph under a running hook. The CPU graph comes too on Apple Silicon, so a failed
+    Core ML load still has something to fall back to.
     """
     from huggingface_hub import hf_hub_download  # ty: ignore[unresolved-import]
 
     CACHE_DIR.mkdir(parents=True, exist_ok=True)
-    for name in (graph, *REQUIRED_FILES):
+    package = COREML_FILES if neural_engine_available() else ()
+    for name in (graph, *REQUIRED_FILES, *package):
         hf_hub_download(
             repo_id=TAGGER_REPO,
             filename=name,
@@ -246,18 +277,92 @@ def join_touching(spans: list[dict]) -> list[dict]:
     return joined
 
 
-class TaggerModel:
-    """The tagger on onnxruntime's CPU provider, behind the hook's predict(text) interface."""
+class OnnxForward:
+    """The ONNX graph on onnxruntime's CPU provider, one unpadded window per call."""
 
     device = "cpu"
 
-    def __init__(self, folder: Path) -> None:
-        graph = GRAPH_FP32 if os.environ.get("PII_TAGGER_FP32") == "1" else GRAPH_INT8
+    def __init__(self, graph: Path) -> None:
         options = onnxruntime.SessionOptions()
         options.intra_op_num_threads = THREADS_PER_CALL
         self.session = onnxruntime.InferenceSession(
-            str(folder / graph), options, providers=["CPUExecutionProvider"]
+            str(graph), options, providers=["CPUExecutionProvider"]
         )
+
+    def logits(self, ids: list[int]) -> np.ndarray:
+        batch = np.array([ids], dtype=np.int64)
+        return self.session.run(
+            ["logits"], {"input_ids": batch, "attention_mask": np.ones_like(batch)}
+        )[0][0].astype(np.float32)
+
+
+class NeuralEngineForward:
+    """The Core ML package on the Neural Engine: a window padded to the shortest length.
+
+    The padding is masked out, so a window's logits do not depend on its length bucket.
+    """
+
+    device = "neural_engine"
+
+    def __init__(self, functions: dict) -> None:
+        self.functions = functions
+
+    @classmethod
+    def load(cls, package: Path) -> NeuralEngineForward:
+        import coremltools  # ty: ignore[unresolved-import]
+
+        return cls(
+            {
+                length: coremltools.models.MLModel(
+                    str(package),
+                    function_name=f"length_{length}",
+                    compute_units=coremltools.ComputeUnit.CPU_AND_NE,
+                )
+                for length in COREML_LENGTHS
+            }
+        )
+
+    def logits(self, ids: list[int]) -> np.ndarray:
+        length = next(
+            (size for size in sorted(self.functions) if size >= len(ids)), None
+        )
+        if length is None:
+            raise ValueError(
+                f"a window of {len(ids)} tokens exceeds the longest Core ML length"
+            )
+        padded = np.zeros((1, length), dtype=np.int32)
+        mask = np.zeros((1, length), dtype=np.int32)
+        padded[0, : len(ids)] = ids
+        mask[0, : len(ids)] = 1
+        out = self.functions[length].predict(
+            {"input_ids": padded, "attention_mask": mask}
+        )
+        return np.asarray(out["logits"], dtype=np.float32)[0, : len(ids)]
+
+
+def load_forward(folder: Path, graph: str) -> OnnxForward | NeuralEngineForward:
+    """The Neural Engine when this machine and the folder allow it, else the CPU graph."""
+    package = folder / COREML_PACKAGE
+    if neural_engine_available() and package.is_dir():
+        try:
+            return NeuralEngineForward.load(package)
+        except Exception as error:  # Core ML reports a bad host through many types
+            print(
+                f"[tagger] Core ML failed to load ({type(error).__name__}: {error}); "
+                f"using {graph} on the CPU",
+                file=sys.stderr,
+                flush=True,
+            )
+    return OnnxForward(folder / graph)
+
+
+class TaggerModel:
+    """The tagger behind the hook's predict(text) interface, on the Neural Engine or the CPU."""
+
+    def __init__(self, folder: Path) -> None:
+        graph = GRAPH_FP32 if os.environ.get("PII_TAGGER_FP32") == "1" else GRAPH_INT8
+        self.forward = load_forward(folder, graph)
+        self.device = self.forward.device
         self.calls = ThreadPoolExecutor(
             max(1, (os.cpu_count() or 1) // THREADS_PER_CALL)
         )
@@ -314,10 +419,7 @@ class TaggerModel:
 
     def run(self, encoding) -> list[dict]:
         """One window's spans, from a session call of that window alone."""
-        ids = np.array([encoding.ids], dtype=np.int64)
-        logits = self.session.run(
-            ["logits"], {"input_ids": ids, "attention_mask": np.ones_like(ids)}
-        )[0][0].astype(np.float32)
+        logits = self.forward.logits(encoding.ids)
         log_probs = logits - np.logaddexp.reduce(logits, axis=-1, keepdims=True)
         return self.decode(encoding, log_probs)
 
