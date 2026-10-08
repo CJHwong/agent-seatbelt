@@ -39,7 +39,7 @@ from http.server import ThreadingHTTPServer
 from urllib.error import URLError
 from urllib.request import urlopen
 
-from hook_harness import FakePiiHandler, free_port
+from hook_harness import HOOK_CLIENT, FakePiiHandler, client_beside_script, free_port
 
 
 TESTS_DIR = Path(__file__).resolve().parent
@@ -99,11 +99,16 @@ class CanaryHarness(unittest.TestCase):
         """
         settings = self.project / ".claude" / "settings.json"
         settings.parent.mkdir(parents=True, exist_ok=True)
+        hook = (
+            str(client_beside_script())
+            if HOOK_CLIENT
+            else f"bash {HOOKS_DIR}/pii-check.sh"
+        )
         command = (
             f"PII_PORT={self.detector_port} PII_SERVER_MODE=redact "
             f"PII_ACTION_MODE={action_mode} PII_LEVEL=strict "
             f"PII_SERVER_LOG={self.project}/server.log "
-            f"bash {HOOKS_DIR}/pii-check.sh --mode {hook_mode}"
+            f"{hook} --mode {hook_mode}"
         )
         settings.write_text(
             json.dumps(

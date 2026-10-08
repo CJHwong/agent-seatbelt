@@ -16,6 +16,7 @@ This is the content-level companion to `agent-seatbelt`'s file-level sandbox. Th
 - `~/.claude/hooks/pii_redact_torch.py` — local Redact model adapter used by `pii-server.py`
 - `~/.claude/hooks/pii_tagger.py` and `pii_tagger_rules.py` — the bilingual tagger backend and the rules that follow it. See [Tagger mode](#tagger-mode)
 - `~/.claude/hooks/pii_rules_native.abi3.so` — the native rules engine, on macOS arm64 and Linux x86_64 only. See [Native rules engine](#native-rules-engine)
+- `~/.claude/hooks/pii-hook`: the native hook command Claude Code runs, on macOS arm64 and Linux x86_64 only. It hands every case it does not settle to `pii-check.sh`. Codex runs `pii-check.sh`, because Codex binds hook trust to the command string
 - For each detected agent, two entries in its hooks config:
   - `UserPromptSubmit` → blocks or warns on prompts containing PII before they reach the model provider
   - `PreToolUse` → blocks or warns on a tool call's **input** before it runs. This is the only
@@ -305,7 +306,7 @@ Codex tool runs ──> PostToolUse ──> pii-check.sh --mode codex-posttool �
 
 The server is auto-started on first hook call via `uv run`, then stays warm. Health check at `http://127.0.0.1:9123/health`.
 
-A warm call is one request. The hook sends the raw hook payload to `POST /hook`, with its settings in `X-Pii-*` headers, and the server extracts the text, runs the detector, and returns the hook's stdout and stderr. bash sends it through its own `/dev/tcp` socket, so a warm call starts no other process. `jq` and `curl` run only when no server answers, to settle locally whether there is anything to scan before the hook starts one.
+A warm call is one request. The hook sends the raw hook payload to `POST /hook`, with its settings in `X-Pii-*` headers, and the server extracts the text, runs the detector, and returns the hook's stdout and stderr. bash sends it through its own `/dev/tcp` socket, so a warm call starts no other process. Where `pii-hook` is installed, Claude Code runs it in place of the script, which also saves the start of bash. `jq` and `curl` run only when no server answers, to settle locally whether there is anything to scan before the hook starts one.
 
 For a hard boundary at the file level, see [`agent-seatbelt`](../README.md) (the sandbox in the parent dir).
 
@@ -570,7 +571,7 @@ Exclude labels that a model documents as unsupported. For example, Rampart does 
 
 ```bash
 rm ~/.claude/hooks/pii-check.sh ~/.claude/hooks/pii-server.py ~/.claude/hooks/pii_hook.py ~/.claude/hooks/pii_redact_torch.py
-rm -f ~/.claude/hooks/pii_rules_native.abi3.so
+rm -f ~/.claude/hooks/pii_rules_native.abi3.so ~/.claude/hooks/pii-hook
 # then edit ~/.claude/settings.json and ~/.codex/hooks.json and remove the entries
 ```
 

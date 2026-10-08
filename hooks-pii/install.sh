@@ -36,6 +36,7 @@ TAGGER_RULES_DEST="$HOOKS_DIR/pii_tagger_rules.py"
 HOOK_DEST="$HOOKS_DIR/pii_hook.py"
 NATIVE_DEST="$HOOKS_DIR/pii_rules_native.abi3.so"
 CHECK_DEST="$HOOKS_DIR/pii-check.sh"
+CLIENT_DEST="$HOOKS_DIR/pii-hook"
 CLAUDE_SETTINGS="$HOME/.claude/settings.json"
 CODEX_HOOKS="$HOME/.codex/hooks.json"
 PORT="${PII_PORT:-9123}"
@@ -194,13 +195,41 @@ install_native() {
 }
 install_native
 
+# The native hook command sends the request without starting a shell, and hands every
+# other case to pii-check.sh. Only Claude Code runs it. Codex binds hook trust to the
+# command string, so a new command would stop its scan until someone trusts it again.
+#
+# The file runs once before it is used: a hook command that cannot start fails open
+# on every call, so a build for the wrong CPU must leave the script in place.
+CLAUDE_HOOK="$CHECK_DEST"
+install_client() {
+    local platform
+    if ! platform=$(native_platform); then
+        rm -f "$CLIENT_DEST"
+        echo "No native hook command is built for $(uname -s) $(uname -m). Claude Code runs pii-check.sh."
+        return
+    fi
+    if curl -fsSL "$NATIVE_BASE/pii-hook-$platform" -o "$CLIENT_DEST.part" &&
+        chmod +x "$CLIENT_DEST.part" &&
+        "$CLIENT_DEST.part" --mode prompt </dev/null >/dev/null 2>&1; then
+        mv "$CLIENT_DEST.part" "$CLIENT_DEST"
+        CLAUDE_HOOK="$CLIENT_DEST"
+        echo "Installed: $CLIENT_DEST"
+    else
+        rm -f "$CLIENT_DEST.part" "$CLIENT_DEST"
+        echo "Could not install the native hook command for $platform. Claude Code runs pii-check.sh." >&2
+    fi
+}
+install_client
+
 # Add or update an entry in a hooks-shaped JSON file.
-# Idempotent on command string: if an entry already references $cmd, replace it
-# with $entry (this is how matcher changes propagate to existing installs);
-# otherwise append.
-# Args: $1 = target file, $2 = event key, $3 = entry JSON, $4 = command string to match.
+# Idempotent on command string: if an entry already references $cmd or $other, replace
+# it with $entry (this is how matcher changes propagate to existing installs, and how
+# an install moves between the script and the native command); otherwise append.
+# Args: $1 = target file, $2 = event key, $3 = entry JSON, $4 = command string to match,
+# $5 = the same command through the other hook file.
 add_entry() {
-    local target="$1" event="$2" entry="$3" cmd="$4"
+    local target="$1" event="$2" entry="$3" cmd="$4" other="$5"
     if [ ! -f "$target" ]; then
         mkdir -p "$(dirname "$target")"
         echo '{}' > "$target"
@@ -218,36 +247,40 @@ add_entry() {
         .hooks = (.hooks // {}) |
         .hooks[$event] = (
           (.hooks[$event] // []) as $entries |
-          ($entries | map(if any(.hooks[]?; .command == $cmd) then $entry else . end)) as $mapped |
+          ($entries | map(if any(.hooks[]?; .command == $cmd or .command == $other) then $entry else . end)) as $mapped |
           if any($mapped[]?; any(.hooks[]?; .command == $cmd)) then $mapped
           else $mapped + [$entry] end
         )
         '
-    jq --arg event "$event" --arg cmd "$cmd" --argjson entry "$entry" "$program" "$target" > "$tmp"
+    jq --arg event "$event" --arg cmd "$cmd" --arg other "$other" --argjson entry "$entry" "$program" "$target" > "$tmp"
     mv "$tmp" "$target"
 }
 
 wire_agent() {
-    local label="$1" target="$2" posttool_mode="$3" pretool_mode="$4"
+    local label="$1" target="$2" posttool_mode="$3" pretool_mode="$4" hook="$5"
+    local other="$CLIENT_DEST"
+    if [ "$hook" = "$CLIENT_DEST" ]; then
+        other="$CHECK_DEST"
+    fi
     local posttool_matcher="$POSTTOOL_MATCHER_CLAUDE"
     if [ "$label" = "codex" ]; then
         posttool_matcher="$POSTTOOL_MATCHER_CODEX"
     fi
 
-    local prompt_cmd="$CHECK_DEST --mode prompt"
-    local posttool_cmd="$CHECK_DEST --mode $posttool_mode"
+    local prompt_cmd="$hook --mode prompt"
+    local posttool_cmd="$hook --mode $posttool_mode"
 
     local prompt_entry
     prompt_entry=$(jq -cn --arg cmd "$prompt_cmd" \
         '{hooks:[{type:"command",command:$cmd,timeout:20}]}')
-    add_entry "$target" "UserPromptSubmit" "$prompt_entry" "$prompt_cmd"
+    add_entry "$target" "UserPromptSubmit" "$prompt_entry" "$prompt_cmd" "$other --mode prompt"
     echo "  [$label] UserPromptSubmit -> $prompt_cmd"
 
     if [ "$PROMPT_ONLY" -eq 0 ]; then
         local posttool_entry
         posttool_entry=$(jq -cn --arg cmd "$posttool_cmd" --arg matcher "$posttool_matcher" \
             '{matcher:$matcher,hooks:[{type:"command",command:$cmd,timeout:20}]}')
-        add_entry "$target" "PostToolUse" "$posttool_entry" "$posttool_cmd"
+        add_entry "$target" "PostToolUse" "$posttool_entry" "$posttool_cmd" "$other --mode $posttool_mode"
         echo "  [$label] PostToolUse ($posttool_matcher) -> $posttool_cmd"
 
         # PreToolUse is wired for both agents with the same flag as PostToolUse:
@@ -256,7 +289,7 @@ wire_agent() {
         # The timeout has to exceed the hook's own detector budget: a timed-out hook
         # fails open on PreToolUse, so the call would proceed unscanned and look checked.
         # 20 seconds against a 5 second POST budget.
-        local pretool_cmd="$CHECK_DEST --mode $pretool_mode"
+        local pretool_cmd="$hook --mode $pretool_mode"
         local pretool_matcher="$PRETOOL_MATCHER_CLAUDE"
         if [ "$label" = "codex" ]; then
             pretool_matcher="$PRETOOL_MATCHER_CODEX"
@@ -264,7 +297,7 @@ wire_agent() {
         local pretool_entry
         pretool_entry=$(jq -cn --arg cmd "$pretool_cmd" --arg matcher "$pretool_matcher" \
             '{matcher:$matcher,hooks:[{type:"command",command:$cmd,timeout:20}]}')
-        add_entry "$target" "PreToolUse" "$pretool_entry" "$pretool_cmd"
+        add_entry "$target" "PreToolUse" "$pretool_entry" "$pretool_cmd" "$other --mode $pretool_mode"
         echo "  [$label] PreToolUse ($pretool_matcher) -> $pretool_cmd"
     else
         echo "  [$label] PreToolUse and PostToolUse skipped (--prompt-only)"
@@ -353,10 +386,10 @@ fi
 echo
 echo "Wiring hooks..."
 if [ "$CLAUDE_PRESENT" -eq 1 ]; then
-    wire_agent "claude" "$CLAUDE_SETTINGS" "claude-posttool" "claude-pretool"
+    wire_agent "claude" "$CLAUDE_SETTINGS" "claude-posttool" "claude-pretool" "$CLAUDE_HOOK"
 fi
 if [ "$CODEX_PRESENT" -eq 1 ]; then
-    wire_agent "codex"  "$CODEX_HOOKS"     "codex-posttool" "codex-pretool"
+    wire_agent "codex"  "$CODEX_HOOKS"     "codex-posttool" "codex-pretool" "$CHECK_DEST"
 fi
 
 echo

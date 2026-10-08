@@ -1,0 +1,15 @@
+[package]
+name = "pii-hook"
+version = "1.0.0"
+edition = "2021"
+publish = false
+
+# The standard library only: the binary starts on every call, and each linked
+# library adds to that start.
+[dependencies]
+
+[profile.release]
+codegen-units = 1
+lto = true
+panic = "abort"
+strip = true

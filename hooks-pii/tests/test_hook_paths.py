@@ -19,6 +19,7 @@ import threading
 import time
 import unittest
 from pathlib import Path
+from typing import Any
 
 from hook_harness import (
     COV_ENV_PATH,
@@ -148,6 +149,14 @@ class MissingDependencyTests(HookHarness):
     pii-check.sh:29 prepends /opt/homebrew/bin to PATH, so `command -v jq` can never
     fail on a machine that has jq. cov_env.sh shadows the name instead.
     """
+
+    def run_hook_raw(
+        self, *args: Any, **kwargs: Any
+    ) -> subprocess.CompletedProcess[str]:
+        # The names are hidden from bash, so these tests are about the script. The
+        # native client needs neither tool, and it scans where the script reports a skip.
+        kwargs.setdefault("hook_path", HOOK_PATH)
+        return super().run_hook_raw(*args, **kwargs)
 
     def hide(self, *names: str) -> dict[str, str]:
         return {
@@ -812,8 +821,16 @@ class ColdStartChecksTests(AutostartHarness):
 
     def test_each_mode_reads_its_field_before_the_start(self) -> None:
         cases = [
-            ("claude-pretool", {"tool_input": {"command": "send this secret"}}, "PreToolUse"),
-            ("claude-posttool", {"tool_response": {"stdout": "send this secret"}}, "PostToolUse"),
+            (
+                "claude-pretool",
+                {"tool_input": {"command": "send this secret"}},
+                "PreToolUse",
+            ),
+            (
+                "claude-posttool",
+                {"tool_response": {"stdout": "send this secret"}},
+                "PostToolUse",
+            ),
             ("auto", {"prompt": "send this secret"}, "UserPromptSubmit"),
             ("auto", {"tool_response": {"stdout": "send this secret"}}, "PostToolUse"),
             ("auto", {"tool_input": {"command": "send this secret"}}, "PreToolUse"),
@@ -821,9 +838,13 @@ class ColdStartChecksTests(AutostartHarness):
         for mode, payload, event in cases:
             with self.subTest(mode=mode, payload=payload):
                 self.cold_port()
-                hook_output = self.run_hook(mode, payload, action_mode="warn", extra_env=self.start_env())
+                hook_output = self.run_hook(
+                    mode, payload, action_mode="warn", extra_env=self.start_env()
+                )
 
-                self.assertEqual(hook_output["hookSpecificOutput"]["hookEventName"], event)
+                self.assertEqual(
+                    hook_output["hookSpecificOutput"]["hookEventName"], event
+                )
 
     def test_nothing_to_scan_starts_no_server(self) -> None:
         cases = [
@@ -834,16 +855,22 @@ class ColdStartChecksTests(AutostartHarness):
         for name, payload, level in cases:
             with self.subTest(name):
                 port = self.cold_port()
-                result = self.run_hook_raw("prompt", payload, level=level, extra_env=self.start_env())
+                result = self.run_hook_raw(
+                    "prompt", payload, level=level, extra_env=self.start_env()
+                )
 
                 self.assertEqual((result.stdout, result.stderr), ("", ""))
                 self.assertEqual(listening_pids(port), [])
 
     def test_an_unparsable_payload_starts_no_server(self) -> None:
         port = self.cold_port()
-        result = self.run_hook_raw("claude-posttool", "this is not json at all", extra_env=self.start_env())
+        result = self.run_hook_raw(
+            "claude-posttool", "this is not json at all", extra_env=self.start_env()
+        )
 
-        self.assertIn("could not parse its own input", json.loads(result.stdout)["systemMessage"])
+        self.assertIn(
+            "could not parse its own input", json.loads(result.stdout)["systemMessage"]
+        )
         self.assertEqual(listening_pids(port), [])
 
     def test_a_server_that_appears_in_another_mode_is_reported(self) -> None:
@@ -861,7 +888,7 @@ class ColdStartChecksTests(AutostartHarness):
                 f'. "{COV_ENV_PATH}"\n'
                 "curl() {\n"
                 '    case "$*" in\n'
-                "        */health*) printf '%s' '{\"status\": \"ok\", \"mode\": \"redact\"}' ;;\n"
+                '        */health*) printf \'%s\' \'{"status": "ok", "mode": "redact"}\' ;;\n'
                 "        *) return 7 ;;\n"
                 "    esac\n"
                 "}\n"
@@ -873,7 +900,9 @@ class ColdStartChecksTests(AutostartHarness):
                 extra_env={**self.start_env(), "BASH_ENV": str(shim)},
             )
 
-        self.assertIn("server mode is redact, requested rules", hook_output["systemMessage"])
+        self.assertIn(
+            "server mode is redact, requested rules", hook_output["systemMessage"]
+        )
 
 
 class ClosedConnectionTests(AutostartHarness):
@@ -894,7 +923,9 @@ class ClosedConnectionTests(AutostartHarness):
                     connection.close()
 
         threading.Thread(target=close_each_connection, daemon=True).start()
-        hook_output = self.run_hook("prompt", {"prompt": "send this secret"}, action_mode="warn")
+        hook_output = self.run_hook(
+            "prompt", {"prompt": "send this secret"}, action_mode="warn"
+        )
 
         self.assertIn("failed with HTTP status '000'", hook_output["systemMessage"])
 

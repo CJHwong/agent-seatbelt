@@ -7,7 +7,9 @@ one place.
 
 from __future__ import annotations
 
+import atexit
 import contextlib
+import functools
 import json
 import os
 import shutil
@@ -31,6 +33,21 @@ from pii_hook import HookError, Policy, answer  # noqa: E402
 HOOK_PATH = TESTS_DIR.parent / "pii-check.sh"
 FAKE_SERVER_PATH = TESTS_DIR / "fake_pii_server.py"
 COV_ENV_PATH = TESTS_DIR / "cov_env.sh"
+# The native hook command, when set. The suites then run it in place of the script,
+# and every assertion holds for both. It hands failures to the pii-check.sh beside it.
+HOOK_CLIENT = os.environ.get("PII_TEST_HOOK_CLIENT", "")
+
+
+@functools.cache
+def client_beside_script() -> Path:
+    """A copy of the client in a folder where pii-check.sh is the script under test."""
+    folder = Path(tempfile.mkdtemp(prefix="pii-hook-client."))
+    atexit.register(shutil.rmtree, folder, ignore_errors=True)
+    client = folder / "pii-hook"
+    shutil.copy2(HOOK_CLIENT, client)
+    (folder / "pii-check.sh").symlink_to(HOOK_PATH)
+    return client
+
 
 # Every key the hook reads. Popped before each run so a stray value in the
 # developer's own shell cannot change a test's result.
@@ -120,7 +137,10 @@ class FakePiiHandler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:
         request_length = int(self.headers.get("Content-Length", "0"))
-        if self.refuse_body_above is not None and request_length > self.refuse_body_above:
+        if (
+            self.refuse_body_above is not None
+            and request_length > self.refuse_body_above
+        ):
             self._send_text("", 413)
             return
         body = self.rfile.read(request_length)
@@ -221,7 +241,10 @@ class HookRunner(unittest.TestCase):
                 "PII_SERVER_LOG", str(Path(temporary_directory) / "server.log")
             )
             hook_input = payload if isinstance(payload, str) else json.dumps(payload)
-            command = ["bash", str(hook_path or HOOK_PATH), "--mode", mode]
+            if HOOK_CLIENT and hook_path is None:
+                command = [str(client_beside_script()), "--mode", mode]
+            else:
+                command = ["bash", str(hook_path or HOOK_PATH), "--mode", mode]
             if extra_args:
                 command.extend(extra_args)
             result = subprocess.run(
