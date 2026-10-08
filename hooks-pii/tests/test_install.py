@@ -63,6 +63,8 @@ HOOK_FILES = (
     "pii_secret_patterns.py",
     "cl100k_base.tokens.gz",
     "pii_opf.py",
+    "pii_tagger.py",
+    "pii_tagger_rules.py",
     "pii-check.sh",
 )
 
