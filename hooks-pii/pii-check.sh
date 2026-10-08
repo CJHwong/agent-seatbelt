@@ -42,11 +42,11 @@ HOST="127.0.0.1"
 SERVER_SCRIPT="${PII_SERVER_SCRIPT:-$HOME/.claude/hooks/pii-server.py}"
 SERVER_MODE="${PII_SERVER_MODE:-redact}"
 HEALTH="http://$HOST:$PORT/health"
-PREDICT="http://$HOST:$PORT/"
+HOOK="http://$HOST:$PORT/hook"
 # Per user and per port. The old fixed /tmp/pii-server.starting was shared by every
 # session and every user on the host, so a second one skipped its own start, waited
 # out the full health poll, and then failed closed.
-LOCK="${TMPDIR:-/tmp}/pii-server.$(id -u).${PORT}.starting"
+LOCK="${TMPDIR:-/tmp}/pii-server.${EUID}.${PORT}.starting"
 SERVER_LOG="${PII_SERVER_LOG:-$HOME/.cache/pii/server.log}"
 ACTION_MODE="${PII_ACTION_MODE:-warn}"
 # Default 1 keeps the documented one-shot bypass working for existing users. A
@@ -114,17 +114,15 @@ case "$ALLOW_BYPASS" in
     *) scanner_skipped "PII_ALLOW_BYPASS is '${ALLOW_BYPASS}', which is neither 0 nor 1" "Set it to 0 or 1" ;;
 esac
 
-# --- Category tiers ---
-CRITICAL=('secret' 'account_number')
-MODERATE=('private_email' 'private_phone' 'private_address' 'private_username')
-LOW=('private_person' 'private_url' 'private_date')
-
 LEVEL="${PII_LEVEL:-${PII_BLOCK_LEVEL:-standard}}"
 ALLOW_LABELS="${PII_ALLOW_LABELS:-}"
 
-mkdir -p "$(dirname "$SERVER_LOG")"
-
-payload=$(cat)
+# Read stdin with a builtin, without starting cat, which costs about 2 ms on every
+# tool call. Not $(</dev/stdin): Claude Code passes stdin as a socket, and on Linux
+# /dev/stdin is a path that a socket cannot be opened through. read takes one byte
+# per system call, so a 64 KB tool output costs about 12 ms more than cat; half the
+# payloads are under 500 bytes, where read is the faster. A JSON payload holds no NUL.
+IFS= read -r -d '' payload || true
 
 # --- Extract text based on mode ---
 # Tool inputs and tool responses vary in shape per tool: Bash uses .command, Read
@@ -167,40 +165,52 @@ extract_text() {
     esac
 }
 
-if ! text=$(extract_text 2>/dev/null); then
-    # The payload could not be parsed at all. Under set -e an unguarded substitution
-    # here aborted the whole script with jq's exit status and no output, which a
-    # runtime reads as "no decision" and therefore as a pass.
-    scanner_skipped "the hook could not parse its own input, so it could not extract any text to scan" "Check that the runtime sends a JSON payload"
-fi
-[ -z "$text" ] && exit 0
-
-# --- Bypass ---
-[ "$LEVEL" = "off" ] && exit 0
-
-# Detect the event contract before the server call so failures use the same output shape.
-emit_mode="$MODE"
-if [ "$emit_mode" = "auto" ]; then
-    if printf '%s' "$payload" | jq -e 'has("prompt")' >/dev/null 2>&1; then
-        emit_mode="prompt"
-    elif printf '%s' "$payload" | jq -e 'has("tool_response")' >/dev/null 2>&1; then
-        emit_mode="claude-posttool"
-    else
-        emit_mode="claude-pretool"
+# The server settles the text, the level and the bypass on every request. These
+# checks run here only when no server answers, so that an input with nothing to scan
+# never starts one, exactly as before the server took them over.
+local_checks() {
+    if ! text=$(extract_text 2>/dev/null); then
+        # The payload could not be parsed at all. Under set -e an unguarded substitution
+        # here aborted the whole script with jq's exit status and no output, which a
+        # runtime reads as "no decision" and therefore as a pass.
+        scanner_skipped "the hook could not parse its own input, so it could not extract any text to scan" "Check that the runtime sends a JSON payload"
     fi
-fi
+    [ -z "$text" ] && exit 0
 
-# The pii:off prefix applies to a user prompt and to nothing else. Routing it on the
-# resolved event contract, rather than on a second guess about the payload shape, is
-# what keeps it off tool output. Tool output is content an attacker controls, so a
-# prefix there would be a bypass anyone could plant in a web page, a file, or an MCP
-# result, and it would switch off the scan for that entire response.
-if [ "$ALLOW_BYPASS" = "1" ] && [ "$emit_mode" = "prompt" ] && [[ "$text" == "pii:off"* ]]; then
-    exit 0
-fi
+    # --- Bypass ---
+    [ "$LEVEL" = "off" ] && exit 0
+
+    resolve_emit_mode
+
+    # The pii:off prefix applies to a user prompt and to nothing else. Routing it on the
+    # resolved event contract, rather than on a second guess about the payload shape, is
+    # what keeps it off tool output. Tool output is content an attacker controls, so a
+    # prefix there would be a bypass anyone could plant in a web page, a file, or an MCP
+    # result, and it would switch off the scan for that entire response.
+    if [ "$ALLOW_BYPASS" = "1" ] && [ "$emit_mode" = "prompt" ] && [[ "$text" == "pii:off"* ]]; then
+        exit 0
+    fi
+}
+
+# The event contract that words a failure. Only a failure needs it here, because the
+# server words every answer it gives.
+emit_mode=""
+resolve_emit_mode() {
+    emit_mode="$MODE"
+    if [ "$emit_mode" = "auto" ]; then
+        if printf '%s' "$payload" | jq -e 'has("prompt")' >/dev/null 2>&1; then
+            emit_mode="prompt"
+        elif printf '%s' "$payload" | jq -e 'has("tool_response")' >/dev/null 2>&1; then
+            emit_mode="claude-posttool"
+        else
+            emit_mode="claude-pretool"
+        fi
+    fi
+}
 
 # The resolved event contract is the only source for the wording of a response.
 event_subject() {
+    [ -n "$emit_mode" ] || resolve_emit_mode
     case "$emit_mode" in
         prompt)
             event_name="UserPromptSubmit"
@@ -301,7 +311,8 @@ health_ok() {
         '.status == "ok" and .mode == $mode' >/dev/null 2>&1
 }
 
-if ! health_ok; then
+# Start the server and wait for it. Runs only when nothing answered on the port.
+start_server() {
     current_health=$(health_json || true)
     current_status=$(printf '%s' "$current_health" | jq -r '.status // empty' 2>/dev/null || true)
     current_mode=$(printf '%s' "$current_health" | jq -r '.mode // "unknown"' 2>/dev/null || true)
@@ -313,6 +324,7 @@ if ! health_ok; then
     fi
 
     if mkdir "$LOCK" 2>/dev/null; then
+        mkdir -p "$(dirname "$SERVER_LOG")"
         # Rules mode imports the standard library only, so it runs on the system
         # python3. uv would resolve the script's declared model dependencies and
         # install torch for a mode that never loads it.
@@ -344,151 +356,107 @@ if ! health_ok; then
     rmdir "$LOCK" 2>/dev/null
 
     health_ok || detector_failure "server did not become healthy"
+}
+
+# One request does the whole check. The server extracts the text, runs the detector,
+# and returns the exact stdout and stderr this script used to build with jq, about
+# fifteen processes per call. The policy goes in headers, because each agent's
+# environment can differ while every agent shares one server. The payload goes through
+# stdin, never argv: the kernel caps argv, at 1 MB on macOS.
+request_timeout_seconds=5
+
+# One request over bash's own socket. It skips the curl process, about 5 ms of a hook
+# that runs on every tool call. It fails when nothing listens on the port, when this
+# bash was built without /dev/tcp, or when no whole answer comes back in time to tell
+# a timeout from a closed connection. curl then makes the request, and reports what it
+# gets as it always did.
+post_hook_tcp() {
+    # ${#payload} must count bytes, because that is what Content-Length counts.
+    local LC_ALL=C read_exit=0 written=0 started=$SECONDS
+    exec 3<>"/dev/tcp/$HOST/$PORT" || return 1
+    # The server answers 413 before it reads a body far above its cap, and closes.
+    # The rest of the write then raises SIGPIPE, which would end the hook with no
+    # output, so it is ignored for the write and the failure comes back as a status.
+    trap '' PIPE
+    printf 'POST /hook HTTP/1.0\r\nContent-Type: application/json\r\nX-Pii-Mode: %s\r\nX-Pii-Level: %s\r\nX-Pii-Allow-Labels: %s\r\nX-Pii-Action-Mode: %s\r\nX-Pii-Allow-Bypass: %s\r\nX-Pii-Server-Mode: %s\r\nContent-Length: %d\r\n\r\n%s' \
+        "$MODE" "$LEVEL" "$ALLOW_LABELS" "$ACTION_MODE" "$ALLOW_BYPASS" "$SERVER_MODE" "${#payload}" "$payload" >&3 || written=$?
+    trap - PIPE
+    if [ "$written" -ne 0 ]; then
+        exec 3<&-
+        return 1
+    fi
+    # The server closes an HTTP/1.0 connection after its answer, so the read ends at
+    # end of file. bash 3.2 leaves the variable unset when the read times out.
+    response=""
+    IFS= read -r -d '' -t "$request_timeout_seconds" response <&3 || read_exit=$?
+    exec 3<&-
+    curl_exit=0
+    case "$response" in
+        HTTP/*$'\r\n\r\n'*) ;;
+        *)
+            # No whole answer arrived. bash 4 and later end a timed-out read with a code
+            # above 128. bash 3.2, the macOS /bin/bash, ends it with 1, as at end of
+            # file, so the time spent waiting tells a timeout from a closed connection.
+            # A timeout is reported here, as curl's 28: asking again would double the wait.
+            if [ "$read_exit" -gt 128 ] || [ $((SECONDS - started)) -ge $((request_timeout_seconds - 1)) ]; then
+                curl_exit=28
+                return 0
+            fi
+            return 1
+            ;;
+    esac
+    http_status="${response#* }"
+    http_status="${http_status%% *}"
+    response="${response#*$'\r\n\r\n'}"
+}
+
+post_hook_curl() {
+    curl_exit=0
+    response=$(curl -sS --max-time "$request_timeout_seconds" -w $'\n%{http_code}' -X POST "$HOOK" \
+        -H 'Content-Type: application/json' \
+        -H "X-Pii-Mode: $MODE" \
+        -H "X-Pii-Level: $LEVEL" \
+        -H "X-Pii-Allow-Labels: $ALLOW_LABELS" \
+        -H "X-Pii-Action-Mode: $ACTION_MODE" \
+        -H "X-Pii-Allow-Bypass: $ALLOW_BYPASS" \
+        -H "X-Pii-Server-Mode: $SERVER_MODE" \
+        --data-binary @- <<<"$payload" 2>/dev/null) || curl_exit=$?
+    http_status="${response##*$'\n'}"
+    response="${response%$'\n'*}"
+}
+
+post_hook() {
+    post_hook_tcp 2>/dev/null || post_hook_curl
+}
+
+post_hook
+# curl exit 7: nothing listens on the port. Settle what needs no server, start one,
+# and ask again.
+if [ "$curl_exit" -eq 7 ]; then
+    local_checks
+    start_server
+    post_hook
 fi
 
-# Build and send the request through pipes, never through argv. `jq --arg t "$text"`
-# puts the whole payload into the argument list, and the kernel caps that, at 1 MB on
-# macOS: a larger input died with "Argument list too long" before the detector saw it,
-# and the hook reported that as a failed request rather than as a size problem.
-# An empty body here would surface as HTTP 400 from the detector, which is honest: the
-# request really was malformed. The `|| true` is what keeps set -e from aborting the
-# script with no output at all.
-request_body=$(printf '%s' "$text" | jq -Rs '{text:.}' 2>/dev/null) || true
-
-# Keep the status code. curl -f collapses every non-2xx into one failure, which is why
-# an input the detector rejected as oversized used to be reported as a dead detector.
-request_timeout_seconds=5
-curl_exit=0
-response=$(printf '%s' "$request_body" | \
-    curl -sS --max-time "$request_timeout_seconds" -w $'\n%{http_code}' -X POST "$PREDICT" \
-    -H 'Content-Type: application/json' --data-binary @- 2>/dev/null) || curl_exit=$?
-http_status="${response##*$'\n'}"
-response="${response%$'\n'*}"
-
 # curl exit 28 is its own timeout. No response arrived, so http_code is 000, and that
-# read as a dead server. The health check just passed, so the server is up but slow:
-# a large input, or other hooks queued on its single inference lock.
+# read as a dead server. The server is up but slow: a large input, or other hooks
+# queued on its single inference lock.
 if [ "$curl_exit" -eq 28 ]; then
     detector_failure "the detector request timed out after ${request_timeout_seconds}s; the server is up but did not answer in time, usually because the input is large or other checks are queued ahead of it"
 fi
 
+# The answer is stdout, a record separator, stderr, and a closing separator. The
+# closing one keeps the command substitution from trimming stderr's last newline.
 case "$http_status" in
-    200) ;;
+    200)
+        answer="${response%$'\x1e'}"
+        printf '%s' "${answer%%$'\x1e'*}"
+        printf '%s' "${answer#*$'\x1e'}" >&2
+        exit 0
+        ;;
+    409) detector_failure "server mode is $response, requested $SERVER_MODE; restart the server" ;;
     413) oversize_failure "The detector answered HTTP 413 for this input" ;;
+    422) scanner_skipped "the hook could not parse its own input, so it could not extract any text to scan" "Check that the runtime sends a JSON payload" ;;
+    502) detector_failure "the detector response did not have the expected shape" ;;
     *)   detector_failure "the detector request failed with HTTP status '${http_status:-none}'" ;;
 esac
-
-# Validate the shape, not only the container. A spans array of numbers passes a length
-# check and then kills the script later, when the label is read off a number.
-if ! count=$(printf '%s' "$response" | jq -er '
-        .spans |
-        if type != "array" then error("spans is not an array")
-        elif any(.[]; type != "object") then error("a span is not an object")
-        elif any(.[]; (.label | type) != "string") then error("a span has no string label")
-        else length end' 2>/dev/null); then
-    detector_failure "the detector response did not have the expected shape"
-fi
-[ "${count:-0}" -eq 0 ] && exit 0
-
-# --- Build the selected-labels array from the level ---
-case "$LEVEL" in
-    strict)   selected_labels=("${CRITICAL[@]}" "${MODERATE[@]}" "${LOW[@]}") ;;
-    standard) selected_labels=("${CRITICAL[@]}" "${MODERATE[@]}") ;;
-    relaxed)  selected_labels=("${CRITICAL[@]}") ;;
-    *)        selected_labels=("${CRITICAL[@]}" "${MODERATE[@]}") ;;
-esac
-
-selected_json=$(printf '%s\n' "${selected_labels[@]}" | jq -R . | jq -s .)
-if [ -n "$ALLOW_LABELS" ]; then
-    allow_json=$(printf '%s' "$ALLOW_LABELS" | jq -R 'split(",") | map(gsub("^\\s+|\\s+$"; "")) | map(select(length > 0))')
-    selected_json=$(printf '%s' "$selected_json" | jq -c --argjson allow "$allow_json" 'map(select(. as $l | $allow | index($l) | not))')
-fi
-processing_ms=$(printf '%s' "$response" | jq -r '.processing_ms // "?"')
-
-# Tier map derived from the CRITICAL/MODERATE/LOW arrays — single source of truth.
-tier_map=$(jq -cn \
-    --argjson crit "$(printf '%s\n' "${CRITICAL[@]}" | jq -R . | jq -s .)" \
-    --argjson mod  "$(printf '%s\n' "${MODERATE[@]}" | jq -R . | jq -s .)" \
-    --argjson low_ "$(printf '%s\n' "${LOW[@]}"      | jq -R . | jq -s .)" \
-    '($crit | map({(.):"critical"}) | add) +
-     ($mod  | map({(.):"moderate"}) | add) +
-     ($low_ | map({(.):"low"})      | add)')
-
-# shellcheck disable=SC2016  # the single quotes are deliberate: this is jq source
-mask_jq='
-    def mask_value:
-        (.text // "" | tostring | gsub("[\r\n\t]+"; " ") | gsub(" +"; " ")) as $s |
-        ($s | length) as $n |
-        if $n < 12 then "[redacted]"
-        else ($s[0:2] + "..." + $s[-2:])
-        end;
-'
-
-# Split spans at the level: selected spans drive the response, the rest go to stderr.
-selected_spans=$(printf '%s' "$response" | jq -c --argjson labels "$selected_json" --argjson tm "$tier_map" \
-    "$mask_jq [.spans[] | select(.label as \$l | \$labels | index(\$l)) | . + {tier: (\$tm[.label] // \"unknown\"), masked: mask_value}]")
-ignored_spans=$(printf '%s' "$response" | jq -c --argjson labels "$selected_json" --argjson tm "$tier_map" \
-    "$mask_jq [.spans[] | select(.label as \$l | \$labels | index(\$l) | not) | . + {tier: (\$tm[.label] // \"unknown\"), masked: mask_value}]")
-
-# Stderr only: spans the level does not select. The agent never sees these.
-printf '%s' "$ignored_spans" | jq -r '.[] | "PII below level: [\(.label)(\(.tier))] \(.masked)"' >&2 || true
-
-selected_count=$(printf '%s' "$selected_spans" | jq -r 'length' 2>/dev/null)
-[ "${selected_count:-0}" -eq 0 ] && exit 0
-
-# Tier-annotated, masked span list for the model-facing text, e.g. "secret(critical): sk...dc".
-selected_spans_masked=$(printf '%s' "$selected_spans" | jq -r \
-    '[.[] | "\(.label)(\(.tier)): \(.masked)"] | unique | join(", ")')
-
-if [ "$ACTION_MODE" = "warn" ]; then
-    # event_subject, not a second copy of it. The wording of an event lives in one
-    # place, so a new contract cannot be added to one copy and missed in the other.
-    event_subject
-    warning_context="PII detector warning: possible sensitive data was identified ${detected_location}: ${selected_spans_masked}. ${allowed_subject} was allowed because PII_ACTION_MODE=warn. Check whether each detection is valid. If the detection is valid, do not repeat or expose the value. Use a redacted form. Rotate or revoke a valid secret."
-    warning_message="PII detector warning: possible sensitive data was identified ${detected_location}: ${selected_spans_masked}. ${allowed_subject} was allowed because PII_ACTION_MODE=warn."
-    jq -cn \
-        --arg message "$warning_message" \
-        --arg context "$warning_context" \
-        --arg event "$event_name" \
-        '{continue: true, systemMessage: $message, hookSpecificOutput: {hookEventName: $event, additionalContext: $context}}'
-    exit 0
-fi
-
-# Stderr: tier-annotated masked blocked spans + one-line summary with processing_ms.
-printf '%s' "$selected_spans" | jq -r '.[] | "PII block: [\(.label)(\(.tier))] \(.masked)"' >&2
-echo "pii-check: blocked $selected_count span(s) in ${processing_ms}ms at level=$LEVEL" >&2
-
-# Highest tier that fired determines the remediation hint. Every label the
-# detector can emit is in the tier map, so the case covers every reachable value;
-# hint is initialized rather than defaulted in a case arm, because set -u is on
-# and every reason string below interpolates it.
-highest_tier=$(printf '%s' "$selected_spans" | jq -r '
-    [.[].tier] |
-    if any(. == "critical") then "critical"
-    elif any(. == "moderate") then "moderate"
-    elif any(. == "low") then "low"
-    else "unknown" end')
-
-hint=""
-case "$highest_tier" in
-    critical) hint="Only PII_LEVEL=off would allow this." ;;
-    moderate) hint="Drop to PII_LEVEL=relaxed to allow moderate categories (emails/phones/addresses)." ;;
-    low)      hint="Drop to PII_LEVEL=standard to allow low categories (names/urls/dates)." ;;
-esac
-
-case "$emit_mode" in
-    prompt)
-        reason="PII in prompt: ${selected_spans_masked}. Blocked at PII_LEVEL=${LEVEL}. ${hint}"
-        ;;
-    claude-pretool|codex-pretool)
-        reason="PII in tool input: ${selected_spans_masked}. Blocked at PII_LEVEL=${LEVEL}. ${hint} The tool did not run, so the value has not left this machine. Do not send it another way."
-        ;;
-    claude-posttool|codex-posttool)
-        reason="PII in tool output: ${selected_spans_masked}. Blocked at PII_LEVEL=${LEVEL}. ${hint} Do not retry the same command. Treat every value in that output as already exposed: do not repeat it, and do not write it to a file or a message."
-        ;;
-    *)
-        reason="PII detected: ${selected_spans_masked}. Blocked at PII_LEVEL=${LEVEL}. ${hint}"
-        ;;
-esac
-
-block_response "$reason"

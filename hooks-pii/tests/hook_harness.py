@@ -13,6 +13,7 @@ import os
 import shutil
 import socket
 import subprocess
+import sys
 import tempfile
 import threading
 import time
@@ -23,6 +24,10 @@ from pathlib import Path
 from typing import Any, ClassVar
 
 TESTS_DIR = Path(__file__).resolve().parent
+sys.path.insert(0, str(TESTS_DIR.parent))
+
+from pii_hook import HookError, Policy, answer  # noqa: E402
+
 HOOK_PATH = TESTS_DIR.parent / "pii-check.sh"
 FAKE_SERVER_PATH = TESTS_DIR / "fake_pii_server.py"
 COV_ENV_PATH = TESTS_DIR / "cov_env.sh"
@@ -63,6 +68,9 @@ class FakePiiHandler(BaseHTTPRequestHandler):
     health_status = 200
     health_mode = "redact"
     received_body_bytes = 0
+    # Above this many bytes, answer 413 before reading the body, as pii-server.py does
+    # for a payload far above its cap.
+    refuse_body_above: ClassVar[int | None] = None
 
     detector_response: ClassVar[dict[str, object]] = {
         "spans": [
@@ -112,11 +120,47 @@ class FakePiiHandler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:
         request_length = int(self.headers.get("Content-Length", "0"))
+        if self.refuse_body_above is not None and request_length > self.refuse_body_above:
+            self._send_text("", 413)
+            return
         body = self.rfile.read(request_length)
         FakePiiHandler.received_body_bytes = len(body)
         if self.response_delay_seconds:
             time.sleep(self.response_delay_seconds)
-        self._send_json(self.detector_response, self.response_status)
+        if self.path != "/hook":
+            self._send_json(self.detector_response, self.response_status)
+            return
+        # A server that fails its health check fails every request as well.
+        status = (
+            self.health_status if self.health_status != 200 else self.response_status
+        )
+        if status != 200:
+            self._send_text("", status)
+            return
+        try:
+            text = answer(
+                body,
+                Policy.from_headers(self.headers, self.health_mode),
+                self.health_mode,
+                2 * 1024 * 1024,
+                self._detect,
+            )
+        except HookError as error:
+            self._send_text(error.detail, error.status)
+            return
+        self._send_text(text, 200)
+
+    def _detect(self, text: str) -> tuple[list[dict], Any]:
+        response = self.detector_response
+        return response["spans"], response.get("processing_ms", "?")  # type: ignore[return-value]
+
+    def _send_text(self, text: str, status_code: int) -> None:
+        encoded_body = text.encode("utf-8")
+        self.send_response(status_code)
+        self.send_header("Content-Type", "text/plain; charset=utf-8")
+        self.send_header("Content-Length", str(len(encoded_body)))
+        self.end_headers()
+        self.wfile.write(encoded_body)
 
     def _send_json(
         self, response_body: dict[str, object], status_code: int = 200

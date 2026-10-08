@@ -21,22 +21,13 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+import pii_hook
 import pii_rules
 
 
-# The tier map in pii-check.sh (CRITICAL + MODERATE + LOW). A label outside
-# this set reaches the hook as tier "unknown".
-HOOK_TIER_LABELS = {
-    "secret",
-    "account_number",
-    "private_email",
-    "private_phone",
-    "private_address",
-    "private_username",
-    "private_person",
-    "private_url",
-    "private_date",
-}
+# The labels the hook puts in a tier. A label outside this set reaches the hook as
+# tier "unknown".
+HOOK_TIER_LABELS = set(pii_hook.TIERS)
 
 
 def span_texts(text: str) -> set[str]:

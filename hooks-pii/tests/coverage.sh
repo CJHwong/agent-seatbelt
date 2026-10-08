@@ -48,6 +48,7 @@ TARGETS=("hooks-pii/pii-check.sh" "hooks-pii/install.sh")
 TEST_PATTERNS=(
     "test_hook_*.py"
     "test_install.py"
+    "test_pii_hook.py"
     "test_pii_rules.py"
     "test_pii_server.py"
     "test_pii_tagger_rules.py"

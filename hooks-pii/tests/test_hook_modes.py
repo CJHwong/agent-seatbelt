@@ -194,6 +194,27 @@ class HookModeTests(HookHarness):
             self.assertTrue(skip_log.exists(), "no host-side line was written")
             self.assertIn("HTTP 413", skip_log.read_text())
 
+    def test_a_body_refused_unread_is_reported_as_oversize(self) -> None:
+        """The server answers 413 before it reads a body far above its cap, and closes.
+
+        The rest of the body then has nowhere to go. Writing it raised SIGPIPE, which
+        killed bash before it printed anything, so the call went through unscanned and
+        the agent was told nothing.
+        """
+        FakePiiHandler.refuse_body_above = 1024
+        try:
+            hook_output = self.run_hook(
+                "claude-posttool",
+                {"tool_response": {"stdout": "word " * 2_000_000}},
+                action_mode="warn",
+            )
+        finally:
+            FakePiiHandler.refuse_body_above = None
+
+        self.assertIn(
+            "too large for the detector to scan", hook_output["systemMessage"]
+        )
+
     def test_oversized_input_is_not_reported_as_a_dead_detector(self) -> None:
         """A 413 is a rejected input, not a broken detector, and the agent can act on it."""
         FakePiiHandler.response_status = 413

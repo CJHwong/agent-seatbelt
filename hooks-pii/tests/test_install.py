@@ -65,6 +65,7 @@ HOOK_FILES = (
     "pii_opf.py",
     "pii_tagger.py",
     "pii_tagger_rules.py",
+    "pii_hook.py",
     "pii-check.sh",
 )
 
@@ -720,6 +721,7 @@ class PilotTests(InstallerHarness):
         port = free_port()
         other = self.home / "detector.py"
         shutil.copy2(FAKE_SERVER, other)
+        shutil.copy2(HOOKS_DIR / "pii_hook.py", self.home / "pii_hook.py")
         server = subprocess.Popen(
             [sys.executable, str(other), "--port", str(port), "--mode", "rules"],
             stdout=subprocess.DEVNULL,

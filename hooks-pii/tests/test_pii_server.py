@@ -639,6 +639,83 @@ class HandlerRequestTests(TestCase):
         self.assertIsInstance(payload["processing_ms"], int)
         self.assertGreaterEqual(payload["processing_ms"], 0)
 
+    def post_hook(self, payload: bytes, **headers: str) -> tuple[int, str]:
+        connection = http.client.HTTPConnection("127.0.0.1", self.port, timeout=15)
+        try:
+            connection.request("POST", "/hook", body=payload, headers=headers)
+            response = connection.getresponse()
+            return response.status, response.read().decode("utf-8")
+        finally:
+            connection.close()
+
+    def test_hook_answers_a_clean_payload_with_two_empty_outputs(self) -> None:
+        self.assertEqual(
+            self.post_hook(b'{"prompt": "nothing sensitive here"}'), (200, "\x1e\x1e")
+        )
+
+    def test_hook_reads_the_policy_from_the_headers(self) -> None:
+        payload = b'{"prompt": "Ping dana.reyes@example.org today."}'
+
+        status, body = self.post_hook(payload, **{"X-Pii-Mode": "prompt"})
+        stdout, stderr, _ = body.split("\x1e")
+        self.assertEqual(status, 200)
+        self.assertIn(
+            "private_email(moderate): da...rg", json.loads(stdout)["systemMessage"]
+        )
+        self.assertEqual(stderr, "")
+
+        status, body = self.post_hook(payload, **{"X-Pii-Level": "relaxed"})
+        self.assertEqual(
+            (status, body),
+            (200, "\x1ePII below level: [private_email(moderate)] da...rg\n\x1e"),
+        )
+
+    def test_hook_refuses_a_caller_that_wants_another_mode(self) -> None:
+        self.assertEqual(
+            self.post_hook(b'{"prompt": "x"}', **{"X-Pii-Server-Mode": "tagger"}),
+            (409, "rules"),
+        )
+
+    def test_hook_refuses_an_unparsable_payload(self) -> None:
+        self.assertEqual(self.post_hook(b"{not json"), (422, ""))
+
+    def test_hook_refuses_a_payload_far_above_the_cap_before_the_read(self) -> None:
+        connection = http.client.HTTPConnection("127.0.0.1", self.port, timeout=10)
+        try:
+            with patch.dict(os.environ, {"PII_MAX_BODY_BYTES": "64"}):
+                connection.putrequest("POST", "/hook")
+                connection.putheader("Content-Length", "257")
+                connection.endheaders()
+                response = connection.getresponse()
+            self.assertEqual((response.status, response.read()), (413, b""))
+        finally:
+            connection.close()
+
+    def test_hook_refuses_a_text_above_the_cap(self) -> None:
+        with patch.dict(os.environ, {"PII_MAX_BODY_BYTES": "64"}):
+            self.assertEqual(
+                self.post_hook(json.dumps({"prompt": "x" * 100}).encode()), (413, "")
+            )
+
+    def test_hook_maps_model_failures_to_statuses(self) -> None:
+        class FailingModel:
+            device = "cpu"
+
+            def __init__(self, error: Exception) -> None:
+                self.error = error
+
+            def predict(self, text: str) -> list[dict]:
+                raise self.error
+
+        for error, status in (
+            (ValueError("too long"), 413),
+            (RuntimeError("bad shape"), 500),
+        ):
+            with self.subTest(status=status):
+                PII_SERVER.Handler.model = FailingModel(error)
+                self.assertEqual(self.post_hook(b'{"prompt": "x"}'), (status, ""))
+        self.assertIn("model failure: bad shape", self.server_log.getvalue())
+
 
 class StubServer:
     """Stands in for ThreadingHTTPServer so main() never binds a socket."""
