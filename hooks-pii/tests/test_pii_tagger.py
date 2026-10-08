@@ -8,6 +8,7 @@ never downloads the release.
 
 from __future__ import annotations
 
+import io
 import os
 import sys
 import tempfile
@@ -22,8 +23,10 @@ import numpy as np  # ty: ignore[unresolved-import]
 import pii_tagger
 from pii_rules import SPAN_PRIORITY
 from pii_tagger import (
+    COREML_FILES,
     LABEL_MAP,
     REQUIRED_FILES,
+    NeuralEngineForward,
     asset_dir,
     bioes_tables,
     chunk_text,
@@ -125,6 +128,7 @@ class AssetDirTests(unittest.TestCase):
             with (
                 patch.dict(os.environ, {"PII_TAGGER_DIR": "", "PII_TAGGER_FP32": ""}),
                 patch.object(pii_tagger, "CACHE_DIR", Path(folder)),
+                patch.object(pii_tagger, "neural_engine_available", return_value=False),
                 patch("huggingface_hub.hf_hub_download", download),
             ):
                 self.assertEqual(asset_dir(), Path(folder))
@@ -138,6 +142,26 @@ class AssetDirTests(unittest.TestCase):
                 for call in calls
             )
         )
+
+    def test_apple_silicon_also_downloads_the_core_ml_package(self) -> None:
+        names = []
+
+        def download(**kwargs: str) -> str:
+            names.append(kwargs["filename"])
+            path = Path(kwargs["local_dir"]) / kwargs["filename"]
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text("")
+            return str(path)
+
+        with tempfile.TemporaryDirectory() as folder:
+            with (
+                patch.dict(os.environ, {"PII_TAGGER_DIR": "", "PII_TAGGER_FP32": ""}),
+                patch.object(pii_tagger, "CACHE_DIR", Path(folder)),
+                patch.object(pii_tagger, "neural_engine_available", return_value=True),
+                patch("huggingface_hub.hf_hub_download", download),
+            ):
+                asset_dir()
+        self.assertEqual(names, ["model.int8.onnx", *REQUIRED_FILES, *COREML_FILES])
 
     def test_a_folder_missing_files_names_them(self) -> None:
         with tempfile.TemporaryDirectory() as folder:
@@ -158,6 +182,92 @@ class AssetDirTests(unittest.TestCase):
                 os.environ, {"PII_TAGGER_DIR": folder, "PII_TAGGER_FP32": "1"}
             ):
                 self.assertEqual(asset_dir(), Path(folder))
+
+
+class NeuralEngineAvailableTests(unittest.TestCase):
+    def check(self, system: str, machine: str, fp32: str, installed: bool) -> bool:
+        with (
+            patch.object(pii_tagger.platform, "system", return_value=system),
+            patch.object(pii_tagger.platform, "machine", return_value=machine),
+            patch.object(
+                pii_tagger.importlib.util,
+                "find_spec",
+                return_value=object() if installed else None,
+            ),
+            patch.dict(os.environ, {"PII_TAGGER_FP32": fp32}),
+        ):
+            return pii_tagger.neural_engine_available()
+
+    def test_apple_silicon_with_coremltools_takes_it(self) -> None:
+        self.assertTrue(self.check("Darwin", "arm64", "", True))
+
+    def test_linux_intel_fp32_or_no_coremltools_do_not(self) -> None:
+        self.assertFalse(self.check("Linux", "x86_64", "", True))
+        self.assertFalse(self.check("Darwin", "x86_64", "", True))
+        self.assertFalse(self.check("Darwin", "arm64", "1", True))
+        self.assertFalse(self.check("Darwin", "arm64", "", False))
+
+
+class FakeFunction:
+    """A Core ML function of one length: records its input, returns ranked logits."""
+
+    def __init__(self, length: int, seen: list) -> None:
+        self.length, self.seen = length, seen
+
+    def predict(self, feed: dict) -> dict:
+        self.seen.append((self.length, feed["input_ids"], feed["attention_mask"]))
+        rows = np.arange(self.length * 3, dtype=np.float16).reshape(1, self.length, 3)
+        return {"logits": rows}
+
+
+class NeuralEngineForwardTests(unittest.TestCase):
+    def forward(self, seen: list) -> NeuralEngineForward:
+        return NeuralEngineForward(
+            {length: FakeFunction(length, seen) for length in (64, 128, 256, 512)}
+        )
+
+    def test_a_window_pads_to_the_shortest_length_that_holds_it(self) -> None:
+        seen: list = []
+        logits = self.forward(seen).logits(list(range(1, 71)))
+        length, ids, mask = seen[0]
+        self.assertEqual(length, 128)
+        self.assertEqual(ids.dtype, np.int32)
+        self.assertEqual(ids[0, :70].tolist(), list(range(1, 71)))
+        self.assertEqual(mask[0].tolist(), [1] * 70 + [0] * 58)
+        self.assertEqual(logits.shape, (70, 3))
+        self.assertEqual(logits.dtype, np.float32)
+
+    def test_a_window_longer_than_every_length_is_refused(self) -> None:
+        with self.assertRaisesRegex(ValueError, "513 tokens"):
+            self.forward([]).logits([1] * 513)
+
+
+class LoadForwardTests(unittest.TestCase):
+    def test_a_core_ml_failure_falls_back_to_the_cpu_and_says_why(self) -> None:
+        with tempfile.TemporaryDirectory() as folder:
+            (Path(folder) / "model.mlpackage").mkdir()
+            with (
+                patch.object(pii_tagger, "neural_engine_available", return_value=True),
+                patch.object(
+                    pii_tagger.NeuralEngineForward,
+                    "load",
+                    side_effect=RuntimeError("no Neural Engine"),
+                ),
+                patch.object(pii_tagger, "OnnxForward", return_value="cpu forward"),
+                patch("sys.stderr", new_callable=io.StringIO) as stderr,
+            ):
+                forward = pii_tagger.load_forward(Path(folder), "model.int8.onnx")
+        self.assertEqual(forward, "cpu forward")
+        self.assertIn("no Neural Engine", stderr.getvalue())
+
+    def test_a_folder_without_the_package_uses_the_cpu(self) -> None:
+        with tempfile.TemporaryDirectory() as folder:
+            with (
+                patch.object(pii_tagger, "neural_engine_available", return_value=True),
+                patch.object(pii_tagger, "OnnxForward", return_value="cpu forward"),
+            ):
+                forward = pii_tagger.load_forward(Path(folder), "model.int8.onnx")
+        self.assertEqual(forward, "cpu forward")
 
 
 @unittest.skipUnless(
