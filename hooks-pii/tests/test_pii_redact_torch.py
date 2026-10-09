@@ -64,6 +64,7 @@ from pii_redact_torch import (
     merge_spans,
     MODEL_LABEL_MAP,
     NEG_INF,
+    NoLookupHTTPServer,
     RedactModel,
     valid_transition,
     viterbi_decode,
@@ -2372,7 +2373,7 @@ class MainWiringTests(unittest.TestCase):
                 "pii_redact_torch.ensure_assets", return_value=Path("/fixture/cache")
             ),
             patch("pii_redact_torch.RedactModel", RecordingModel),
-            patch("pii_redact_torch.ThreadingHTTPServer", RecordingServer),
+            patch("pii_redact_torch.NoLookupHTTPServer", RecordingServer),
             patch(
                 "pii_redact_torch.signal.signal",
                 side_effect=lambda number, function: signals.__setitem__(
@@ -2491,12 +2492,24 @@ pii_redact_torch.main()
 """
 
 
+class BindTests(unittest.TestCase):
+    def test_binding_skips_the_reverse_lookup_of_the_host(self):
+        # HTTPServer.server_bind names the server with socket.getfqdn(host). On a
+        # macos-15 runner that lookup took 35 s, past the hook's wait for a cold start.
+        with patch.object(socket, "getfqdn", side_effect=AssertionError("lookup")):
+            server = NoLookupHTTPServer(("127.0.0.1", 0), Handler)
+        self.addCleanup(server.server_close)
+
+        self.assertEqual(server.server_name, "127.0.0.1")
+        self.assertEqual(server.server_port, server.server_address[1])
+
+
 class ScriptEntryPointTests(unittest.TestCase):
     """Run main() in a real process, signals and all.
 
     Only the model load is stubbed, because the checkpoint is 88 MB and this
     test is about the signal wiring. The rest is the real path: signal.signal,
-    request_shutdown, ThreadingHTTPServer, serve_forever.
+    request_shutdown, NoLookupHTTPServer, serve_forever.
     """
 
     def start_server(self, port: int, device: str = "cpu") -> subprocess.Popen[str]:

@@ -718,7 +718,7 @@ class HandlerRequestTests(TestCase):
 
 
 class StubServer:
-    """Stands in for ThreadingHTTPServer so main() never binds a socket."""
+    """Stands in for NoLookupHTTPServer so main() never binds a socket."""
 
     def __init__(self, interrupt_on_serve: bool = False) -> None:
         self.interrupt_on_serve = interrupt_on_serve
@@ -747,13 +747,25 @@ class StubServer:
         self.closed = True
 
 
+class BindTests(TestCase):
+    def test_binding_skips_the_reverse_lookup_of_the_host(self) -> None:
+        # HTTPServer.server_bind names the server with socket.getfqdn(host). On a
+        # macos-15 runner that lookup took 35 s, past the hook's wait for a cold start.
+        with patch.object(socket, "getfqdn", side_effect=AssertionError("lookup")):
+            server = PII_SERVER.NoLookupHTTPServer(("127.0.0.1", 0), PII_SERVER.Handler)
+        self.addCleanup(server.server_close)
+
+        self.assertEqual(server.server_name, "127.0.0.1")
+        self.assertEqual(server.server_port, server.server_address[1])
+
+
 class MainWiringTests(TestCase):
     def test_termination_signals_are_wired_to_server_shutdown(self) -> None:
         stub = StubServer()
         with (
             patch.object(sys, "argv", ["pii-server.py", "--mode", "rules"]),
             patch.object(PII_SERVER.signal, "signal") as install,
-            patch.object(PII_SERVER, "ThreadingHTTPServer", stub.build),
+            patch.object(PII_SERVER, "NoLookupHTTPServer", stub.build),
         ):
             PII_SERVER.main()
 
@@ -770,7 +782,7 @@ class MainWiringTests(TestCase):
         with (
             patch.object(sys, "argv", ["pii-server.py", "--mode", "rules"]),
             patch.object(PII_SERVER.signal, "signal") as install,
-            patch.object(PII_SERVER, "ThreadingHTTPServer", stub.build),
+            patch.object(PII_SERVER, "NoLookupHTTPServer", stub.build),
         ):
             PII_SERVER.main()
 
@@ -787,7 +799,7 @@ class MainWiringTests(TestCase):
         with (
             patch.object(sys, "argv", ["pii-server.py", "--mode", "rules"]),
             patch.object(PII_SERVER.signal, "signal"),
-            patch.object(PII_SERVER, "ThreadingHTTPServer", stub.build),
+            patch.object(PII_SERVER, "NoLookupHTTPServer", stub.build),
         ):
             PII_SERVER.main()
 
