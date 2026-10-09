@@ -35,16 +35,20 @@ NATIVE_DEST="$PII_DIR/rules/pii_rules_native.abi3.so"
 CHECK_DEST="$PII_DIR/check.sh"
 CLIENT_DEST="$PII_DIR/hook"
 # The server's files, at the same path under server/ in the repo and under $PII_DIR.
-SERVER_FILES=(server.py answer.py)
-SERVER_FILES+=(detectors/__init__.py detectors/redact.py detectors/redact_torch.py)
-SERVER_FILES+=(detectors/privacy_filter.py detectors/tagger.py)
-SERVER_FILES+=(rules/__init__.py rules/engine.py rules/tagger_rules.py rules/secrets.py)
-SERVER_FILES+=(rules/cl100k_base.tokens.gz)
+SERVER_FILES=(
+    server.py answer.py
+    detectors/__init__.py detectors/redact.py detectors/redact_torch.py
+    detectors/privacy_filter.py detectors/tagger.py
+    rules/__init__.py rules/engine.py rules/tagger_rules.py rules/secrets.py
+    rules/cl100k_base.tokens.gz
+)
 # What an install before $PII_DIR put in $HOOKS_DIR. Removed once the hooks point at
 # $PII_DIR, and nothing else in $HOOKS_DIR is touched.
-LEGACY_FILES=(pii-server.py pii_hook.py pii_redact_lite.py pii_redact_torch.py pii_opf.py)
-LEGACY_FILES+=(pii_tagger.py pii_rules.py pii_tagger_rules.py pii_secret_patterns.py)
-LEGACY_FILES+=(cl100k_base.tokens.gz pii_rules_native.abi3.so pii-check.sh pii-hook)
+LEGACY_FILES=(
+    pii-server.py pii_hook.py pii_redact_lite.py pii_redact_torch.py pii_opf.py
+    pii_tagger.py pii_rules.py pii_tagger_rules.py pii_secret_patterns.py
+    cl100k_base.tokens.gz pii_rules_native.abi3.so pii-check.sh pii-hook
+)
 LEGACY_CHECK="$HOOKS_DIR/pii-check.sh"
 LEGACY_CLIENT="$HOOKS_DIR/pii-hook"
 CLAUDE_SETTINGS="$HOME/.claude/settings.json"

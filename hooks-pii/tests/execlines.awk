@@ -38,7 +38,7 @@
 # coverage.sh unions this with the lines bash actually traced, so a miss here
 # can only ever cost a little accuracy, never silently inflate the percentage.
 # SLACKER_COV_AUDIT=1 prints the gap between prediction and observation.
-BEGIN { in_s = 0; in_d = 0; prev_cont = 0; hd = ""; n = 0; cmd_start = 0; subst = 0; subst_close = 0; quote_close = 0; is_assign = 0 }
+BEGIN { in_s = 0; in_d = 0; prev_cont = 0; hd = ""; n = 0; cmd_start = 0; subst = 0; subst_close = 0; quote_close = 0; is_assign = 0; is_array = 0 }
 {
   line = $0
 
@@ -59,6 +59,7 @@ BEGIN { in_s = 0; in_d = 0; prev_cont = 0; hd = ""; n = 0; cmd_start = 0; subst 
     subst_close = 0
     quote_close = 0
     is_assign = ($0 ~ /^[ \t]*[A-Za-z_][A-Za-z0-9_]*=/)
+    is_array = ($0 ~ /^[ \t]*[A-Za-z_][A-Za-z0-9_]*\+?=\(/)
   }
 
   # --- lexical state for this line ----------------------------------------
@@ -102,7 +103,11 @@ BEGIN { in_s = 0; in_d = 0; prev_cont = 0; hd = ""; n = 0; cmd_start = 0; subst 
     }
     i++
   }
-  continued = (in_s || in_d) || (line ~ /\\$/)
+  # An array assignment whose `(` is still open continues too: its elements are
+  # words, not commands, and bash 3.2 and 5.3 both report it at the closing `)`.
+  # A `local` array is left out on purpose: 3.2 reports it at the close and 5.3
+  # at the first line, so no single prediction is right.
+  continued = (in_s || in_d) || (line ~ /\\$/) || (is_array && subst > 0)
 
   # A quote that was already open when the line began and is closed by the end
   # of it: the quoted text spans lines, and this is where it ends. Bash reports a
