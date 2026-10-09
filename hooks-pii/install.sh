@@ -226,28 +226,29 @@ install_native() {
 install_native
 
 # The native hook command sends the request without starting a shell, and hands every
-# other case to pii-check.sh. Only Claude Code runs it. Codex binds hook trust to the
-# command string, so a new command would stop its scan until someone trusts it again.
+# other case to pii-check.sh. Both agents run it. Codex binds hook trust to the command
+# string, so a move between the script and the build stops its scan until someone
+# trusts the new command; the closing notes say so.
 #
 # The file runs once before it is used: a hook command that cannot start fails open
 # on every call, so a build for the wrong CPU must leave the script in place.
-CLAUDE_HOOK="$CHECK_DEST"
+HOOK_COMMAND="$CHECK_DEST"
 install_client() {
     local platform
     if ! platform=$(native_platform); then
         rm -f "$CLIENT_DEST"
-        echo "No native hook command is built for $(uname -s) $(uname -m). Claude Code runs pii-check.sh."
+        echo "No native hook command is built for $(uname -s) $(uname -m). The agents run pii-check.sh."
         return
     fi
     if curl -fsSL "$NATIVE_BASE/pii-hook-$platform" -o "$CLIENT_DEST.part" &&
         chmod +x "$CLIENT_DEST.part" &&
         "$CLIENT_DEST.part" --mode prompt </dev/null >/dev/null 2>&1; then
         mv "$CLIENT_DEST.part" "$CLIENT_DEST"
-        CLAUDE_HOOK="$CLIENT_DEST"
+        HOOK_COMMAND="$CLIENT_DEST"
         echo "Installed: $CLIENT_DEST"
     else
         rm -f "$CLIENT_DEST.part" "$CLIENT_DEST"
-        echo "Could not install the native hook command for $platform. Claude Code runs pii-check.sh." >&2
+        echo "Could not install the native hook command for $platform. The agents run pii-check.sh." >&2
     fi
 }
 install_client
@@ -416,10 +417,13 @@ fi
 echo
 echo "Wiring hooks..."
 if [ "$CLAUDE_PRESENT" -eq 1 ]; then
-    wire_agent "claude" "$CLAUDE_SETTINGS" "claude-posttool" "claude-pretool" "$CLAUDE_HOOK"
+    wire_agent "claude" "$CLAUDE_SETTINGS" "claude-posttool" "claude-pretool" "$HOOK_COMMAND"
 fi
+# Read before the wiring rewrites the file: Codex runs a command only once trusted.
+CODEX_NEEDS_TRUST=0
 if [ "$CODEX_PRESENT" -eq 1 ]; then
-    wire_agent "codex"  "$CODEX_HOOKS"     "codex-posttool" "codex-pretool" "$CHECK_DEST"
+    grep -qF "\"$HOOK_COMMAND --mode prompt\"" "$CODEX_HOOKS" 2>/dev/null || CODEX_NEEDS_TRUST=1
+    wire_agent "codex"  "$CODEX_HOOKS"     "codex-posttool" "codex-pretool" "$HOOK_COMMAND"
 fi
 
 echo
@@ -429,10 +433,15 @@ if [ "$PILOT_OK" -eq 1 ]; then
 else
     echo "First matching prompt may be slow. The server will resolve deps and load the selected model."
 fi
+if [ "$CODEX_NEEDS_TRUST" -eq 1 ]; then
+    echo
+    echo "WARNING: Codex has a new hook command, $HOOK_COMMAND."
+    echo "Codex scans nothing until you trust it. Do the step below now."
+fi
 if [ "$CODEX_PRESENT" -eq 1 ]; then
     echo
     echo "Codex only: hooks require trust before they run. Launch codex, run /hooks,"
-    echo "and trust the pii-check entries (trust is remembered in ~/.codex/config.toml"
+    echo "and trust the pii entries (trust is remembered in ~/.codex/config.toml"
     echo "under [hooks.state]). Trust binds to the command string, so a new entry needs"
     echo "trusting once. A content update does not, because the hook's path does not"
     echo "change. Claude Code needs no trust step."

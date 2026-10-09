@@ -16,7 +16,7 @@ This is the content-level companion to `agent-seatbelt`'s file-level sandbox. Th
 - `~/.claude/hooks/pii_redact_torch.py` — local Redact model adapter used by `pii-server.py`
 - `~/.claude/hooks/pii_tagger.py` and `pii_tagger_rules.py` — the bilingual tagger backend and the rules that follow it. See [Tagger mode](#tagger-mode)
 - `~/.claude/hooks/pii_rules_native.abi3.so` — the native rules engine, on macOS arm64 and Linux x86_64 only. See [Native rules engine](#native-rules-engine)
-- `~/.claude/hooks/pii-hook`: the native hook command Claude Code runs, on macOS arm64 and Linux x86_64 only. It hands every case it does not settle to `pii-check.sh`. Codex runs `pii-check.sh`, because Codex binds hook trust to the command string
+- `~/.claude/hooks/pii-hook`: the native hook command both agents run, on macOS arm64 and Linux x86_64 only. It hands every case it does not settle to `pii-check.sh`. On another platform both agents run `pii-check.sh`. Codex binds hook trust to the command string, so a move between the two needs trust again, and the installer warns when it happens
 - For each detected agent, two entries in its hooks config:
   - `UserPromptSubmit` → blocks or warns on prompts containing PII before they reach the model provider
   - `PreToolUse` → blocks or warns on a tool call's **input** before it runs. This is the only
@@ -268,7 +268,7 @@ This is a high-recall filter, not a hard gate. Three failure modes worth knowing
 
 1. **Adversarial reformatting bypass.** A motivated agent (or a model trying to satisfy a "show me the file" prompt) can reshape tool output past the NER's pattern matching: `od -c file`, `base64 file`, `xxd file`, `tr a-z A-Z < file`, splitting bytes across lines, etc. Observed empirically — given a blocked `cat secrets.txt`, a model adapted within one turn to `od -c` and the byte-spread output flowed through unblocked. The NER labels patterns it recognizes; spread-out or re-encoded versions of the same content are not labeled. Content-based filtering can't close this gap without semantic execution; treat the hook as defense-in-depth alongside the file-level sandbox, not a perimeter.
 
-2. **Codex trust requirement.** Codex CLI gates external hooks behind a per-hook trust list. Until you trust each command, Codex registers the hook in `~/.codex/hooks.json` but does not invoke it. Trust lives in `~/.codex/config.toml` under `[hooks.state]`, keyed by `<hooks.json path>:<event>:<group>:<index>`, with `enabled = true` and a `trusted_hash` for the command. Review and trust via `/hooks` in the Codex TUI. Re-running the installer after a command change requires trust again. A fresh live test with `codex-cli 0.154.0` confirmed both `UserPromptSubmit` and `PostToolUse` blocking for unified shell output. Warning mode also displayed the masked `systemMessage` and continued the turn. Claude Code runs both hooks without a trust step.
+2. **Codex trust requirement.** Codex CLI gates external hooks behind a per-hook trust list. Until you trust each command, Codex registers the hook in `~/.codex/hooks.json` but does not invoke it. Trust lives in `~/.codex/config.toml` under `[hooks.state]`, keyed by `<hooks.json path>:<event>:<group>:<index>`, with `enabled = true` and a `trusted_hash` for the command. Review and trust via `/hooks` in the Codex TUI. Re-running the installer after a command change requires trust again, and the installer prints a warning when it changes the Codex command, for example from `pii-check.sh` to `pii-hook`. A fresh live test with `codex-cli 0.154.0` confirmed both `UserPromptSubmit` and `PostToolUse` blocking for unified shell output. Warning mode also displayed the masked `systemMessage` and continued the turn. Claude Code runs both hooks without a trust step.
 
    Two constraints apply to a Codex PreToolUse deny. Its hook output schema sets
    `additionalProperties: false`, so one unexpected key discards the entire reply, and a
@@ -308,7 +308,7 @@ Codex tool runs ──> PostToolUse ──> pii-check.sh --mode codex-posttool �
 
 The server is auto-started on first hook call via `uv run`, then stays warm. Health check at `http://127.0.0.1:9123/health`.
 
-A warm call is one request. The hook sends the raw hook payload to `POST /hook`, with its settings in `X-Pii-*` headers, and the server extracts the text, runs the detector, and returns the hook's stdout and stderr. bash sends it through its own `/dev/tcp` socket, so a warm call starts no other process. Where `pii-hook` is installed, Claude Code runs it in place of the script, which also saves the start of bash. `jq` and `curl` run only when no server answers, to settle locally whether there is anything to scan before the hook starts one.
+A warm call is one request. The hook sends the raw hook payload to `POST /hook`, with its settings in `X-Pii-*` headers, and the server extracts the text, runs the detector, and returns the hook's stdout and stderr. bash sends it through its own `/dev/tcp` socket, so a warm call starts no other process. Where `pii-hook` is installed, both agents run it in place of the script, which also saves the start of bash. `jq` and `curl` run only when no server answers, to settle locally whether there is anything to scan before the hook starts one.
 
 For a hard boundary at the file level, see [`agent-seatbelt`](../README.md) (the sandbox in the parent dir).
 

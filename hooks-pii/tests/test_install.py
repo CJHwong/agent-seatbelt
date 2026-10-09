@@ -369,7 +369,7 @@ class NativeHookCommandTests(InstallerHarness):
     def codex_hooks(self) -> dict:
         return json.loads((self.home / ".codex" / "hooks.json").read_text())
 
-    def test_a_build_that_runs_becomes_the_claude_command(self) -> None:
+    def test_a_build_that_runs_becomes_the_command_of_both_agents(self) -> None:
         self.add_agent("claude")
         self.add_agent("codex")
         self.release_client()
@@ -387,16 +387,36 @@ class NativeHookCommandTests(InstallerHarness):
                 f"{client} --mode claude-posttool",
             ],
         )
-        # Codex binds trust to the command string, so it keeps the script.
-        script = self.installed_dir() / "pii-check.sh"
         self.assertEqual(
             self.wired(self.codex_hooks()),
             [
-                f"{script} --mode prompt",
-                f"{script} --mode codex-pretool",
-                f"{script} --mode codex-posttool",
+                f"{client} --mode prompt",
+                f"{client} --mode codex-pretool",
+                f"{client} --mode codex-posttool",
             ],
         )
+
+    def test_a_new_codex_command_warns_that_codex_scans_nothing_until_trusted(
+        self,
+    ) -> None:
+        """Codex binds trust to the command string, so the move stops its scan."""
+        self.add_agent("codex")
+        self.run_installer()
+        self.release_client()
+
+        result = self.run_installer()
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("Codex scans nothing until you trust", result.stdout)
+
+    def test_the_same_codex_command_does_not_warn(self) -> None:
+        self.add_agent("codex")
+        self.release_client()
+        self.run_installer()
+
+        result = self.run_installer()
+
+        self.assertNotIn("Codex scans nothing until you trust", result.stdout)
 
     def test_a_build_that_cannot_run_leaves_the_script(self) -> None:
         self.add_agent("claude")
