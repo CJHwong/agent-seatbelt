@@ -8,8 +8,9 @@ variables the test sets before running the hook.
 
     FAKE_PII_HEALTH_STATUS   200 (default). Anything else fails /health.
     FAKE_PII_HEALTH_MODE     mode reported by /health. Defaults to --mode.
-    FAKE_PII_RESPONSE        JSON body for POST /. Defaults to no spans.
-    FAKE_PII_RESPONSE_STATUS HTTP status for POST /. Defaults to 200.
+    FAKE_PII_RESPONSE        JSON body for POST /, and the spans POST /hook answers on.
+                             Defaults to no spans.
+    FAKE_PII_RESPONSE_STATUS HTTP status for POST / and POST /hook. Defaults to 200.
     FAKE_PII_RESPONSE_BODY   Raw body for POST /, for the invalid-JSON test.
     FAKE_PII_START_DELAY     Seconds to wait before binding. Defaults to 0.
 """
@@ -21,6 +22,14 @@ import os
 import sys
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
+
+# pii_hook.py sits one level up in the checkout, and next to this file once the
+# install tests copy it in as pii-server.py.
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+from pii_hook import HookError, Policy, answer  # noqa: E402
 
 
 class FakeDetectorHandler(BaseHTTPRequestHandler):
@@ -42,8 +51,32 @@ class FakeDetectorHandler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:
         request_length = int(self.headers.get("Content-Length", "0"))
-        self.rfile.read(request_length)
-        self._send_raw(self.response_body, self.response_status)
+        body = self.rfile.read(request_length)
+        if self.path != "/hook":
+            self._send_raw(self.response_body, self.response_status)
+            return
+        status = (
+            self.health_status if self.health_status != 200 else self.response_status
+        )
+        if status != 200:
+            self._send_raw("", status)
+            return
+        try:
+            spans = json.loads(self.response_body)["spans"]
+            text = answer(
+                body,
+                Policy.from_headers(self.headers, self.health_mode),
+                self.health_mode,
+                2 * 1024 * 1024,
+                lambda _: (spans, 1),
+            )
+        except HookError as error:
+            self._send_raw(error.detail, error.status)
+            return
+        except (ValueError, KeyError, TypeError):
+            self._send_raw("", 500)
+            return
+        self._send_raw(text, 200)
 
     def _send_json(self, body: str, status_code: int = 200) -> None:
         self._send_raw(body, status_code)

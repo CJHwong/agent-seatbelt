@@ -12,15 +12,20 @@ from __future__ import annotations
 import contextlib
 import json
 import os
+import socket
 import subprocess
 import tempfile
+import threading
 import time
 import unittest
 from pathlib import Path
+from typing import Any
 
 from hook_harness import (
     COV_ENV_PATH,
     FAKE_SERVER_PATH,
+    HOOK_ENV_KEYS,
+    HOOK_PATH,
     FakePiiHandler,
     HookHarness,
     HookRunner,
@@ -144,6 +149,14 @@ class MissingDependencyTests(HookHarness):
     pii-check.sh:29 prepends /opt/homebrew/bin to PATH, so `command -v jq` can never
     fail on a machine that has jq. cov_env.sh shadows the name instead.
     """
+
+    def run_hook_raw(
+        self, *args: Any, **kwargs: Any
+    ) -> subprocess.CompletedProcess[str]:
+        # The names are hidden from bash, so these tests are about the script. The
+        # native client needs neither tool, and it scans where the script reports a skip.
+        kwargs.setdefault("hook_path", HOOK_PATH)
+        return super().run_hook_raw(*args, **kwargs)
 
     def hide(self, *names: str) -> dict[str, str]:
         return {
@@ -283,6 +296,38 @@ class TextExtractionTests(HookHarness):
 
         parsed = json.loads(result.stdout)
         self.assertIn("could not parse its own input", parsed["systemMessage"])
+
+    def test_a_payload_on_a_socket_reaches_the_detector(self) -> None:
+        """Claude Code hands a hook its payload on a socket, not a pipe.
+
+        On Linux /dev/stdin is /proc/self/fd/0, and opening it fails for a socket.
+        A hook that read stdin by that path exited under set -e with no output, which
+        Claude Code reads as no decision, so a block did not stop the turn.
+        """
+        environment = {
+            key: value for key, value in os.environ.items() if key not in HOOK_ENV_KEYS
+        }
+        environment.update(
+            PII_PORT=str(self.detector_port),
+            PII_SERVER_MODE=self.server_mode,
+            PII_ACTION_MODE="block",
+        )
+        ours, theirs = socket.socketpair()
+        with ours, theirs:
+            ours.sendall(json.dumps({"prompt": "send this secret"}).encode())
+            ours.shutdown(socket.SHUT_WR)
+            result = subprocess.run(
+                ["bash", str(HOOK_PATH), "--mode", "prompt"],
+                stdin=theirs.fileno(),
+                env=environment,
+                capture_output=True,
+                text=True,
+                timeout=60,
+                check=False,
+            )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(json.loads(result.stdout)["decision"], "block")
 
     def test_a_payload_above_the_argument_list_limit_reaches_the_detector(self) -> None:
         """The body used to travel through argv, which the kernel caps at 1 MB here.
@@ -760,6 +805,129 @@ class AutostartTests(AutostartHarness):
 
         context = hook_output["hookSpecificOutput"]["additionalContext"]
         self.assertIn("server did not become healthy", context)
+
+
+class ColdStartChecksTests(AutostartHarness):
+    """With no server to ask, the hook reads the payload itself before it starts one.
+
+    A warm server settles the text, the level and the bypass. On a cold port the hook
+    settles them first, so that an input with nothing to scan never starts a server.
+    """
+
+    def cold_port(self) -> int:
+        self.detector_port = free_port()
+        self.addCleanup(kill_listener, self.detector_port)
+        return self.detector_port
+
+    def test_each_mode_reads_its_field_before_the_start(self) -> None:
+        cases = [
+            (
+                "claude-pretool",
+                {"tool_input": {"command": "send this secret"}},
+                "PreToolUse",
+            ),
+            (
+                "claude-posttool",
+                {"tool_response": {"stdout": "send this secret"}},
+                "PostToolUse",
+            ),
+            ("auto", {"prompt": "send this secret"}, "UserPromptSubmit"),
+            ("auto", {"tool_response": {"stdout": "send this secret"}}, "PostToolUse"),
+            ("auto", {"tool_input": {"command": "send this secret"}}, "PreToolUse"),
+        ]
+        for mode, payload, event in cases:
+            with self.subTest(mode=mode, payload=payload):
+                self.cold_port()
+                hook_output = self.run_hook(
+                    mode, payload, action_mode="warn", extra_env=self.start_env()
+                )
+
+                self.assertEqual(
+                    hook_output["hookSpecificOutput"]["hookEventName"], event
+                )
+
+    def test_nothing_to_scan_starts_no_server(self) -> None:
+        cases = [
+            ("an empty prompt", {"prompt": ""}, "standard"),
+            ("PII_LEVEL=off", {"prompt": "send this secret"}, "off"),
+            ("the bypass prefix", {"prompt": "pii:off send this secret"}, "standard"),
+        ]
+        for name, payload, level in cases:
+            with self.subTest(name):
+                port = self.cold_port()
+                result = self.run_hook_raw(
+                    "prompt", payload, level=level, extra_env=self.start_env()
+                )
+
+                self.assertEqual((result.stdout, result.stderr), ("", ""))
+                self.assertEqual(listening_pids(port), [])
+
+    def test_an_unparsable_payload_starts_no_server(self) -> None:
+        port = self.cold_port()
+        result = self.run_hook_raw(
+            "claude-posttool", "this is not json at all", extra_env=self.start_env()
+        )
+
+        self.assertIn(
+            "could not parse its own input", json.loads(result.stdout)["systemMessage"]
+        )
+        self.assertEqual(listening_pids(port), [])
+
+    def test_a_server_that_appears_in_another_mode_is_reported(self) -> None:
+        """The request found no server, and by the start one answers in another mode.
+
+        Two hooks can race to a cold port. Starting a second server would fail to
+        bind, and the hook would then wait out the whole health poll for a mode that
+        never comes. A curl function stands in for the other hook's server, because
+        only the health check may see it.
+        """
+        self.cold_port()
+        with tempfile.TemporaryDirectory() as directory:
+            shim = Path(directory) / "other_server.sh"
+            shim.write_text(
+                f'. "{COV_ENV_PATH}"\n'
+                "curl() {\n"
+                '    case "$*" in\n'
+                '        */health*) printf \'%s\' \'{"status": "ok", "mode": "redact"}\' ;;\n'
+                "        *) return 7 ;;\n"
+                "    esac\n"
+                "}\n"
+            )
+            hook_output = self.run_hook(
+                "prompt",
+                {"prompt": "send this secret"},
+                action_mode="warn",
+                extra_env={**self.start_env(), "BASH_ENV": str(shim)},
+            )
+
+        self.assertIn(
+            "server mode is redact, requested rules", hook_output["systemMessage"]
+        )
+
+
+class ClosedConnectionTests(AutostartHarness):
+    """A server that takes the request and closes the connection without an answer."""
+
+    def test_no_reply_is_reported_as_curl_reported_it(self) -> None:
+        listener = socket.socket()
+        listener.bind(("127.0.0.1", 0))
+        listener.listen()
+        self.addCleanup(listener.close)
+        self.detector_port = listener.getsockname()[1]
+
+        def close_each_connection() -> None:
+            with contextlib.suppress(OSError):
+                while True:
+                    connection, _ = listener.accept()
+                    connection.recv(65536)
+                    connection.close()
+
+        threading.Thread(target=close_each_connection, daemon=True).start()
+        hook_output = self.run_hook(
+            "prompt", {"prompt": "send this secret"}, action_mode="warn"
+        )
+
+        self.assertIn("failed with HTTP status '000'", hook_output["systemMessage"])
 
 
 class PreToolUseTests(HookHarness):

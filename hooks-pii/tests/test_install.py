@@ -65,6 +65,7 @@ HOOK_FILES = (
     "pii_opf.py",
     "pii_tagger.py",
     "pii_tagger_rules.py",
+    "pii_hook.py",
     "pii-check.sh",
 )
 
@@ -75,6 +76,9 @@ NATIVE_ASSETS = {
     ("Darwin", "arm64"): "pii_rules_native-darwin-arm64.abi3.so",
 }
 NATIVE_FILE = "pii_rules_native.abi3.so"
+CLIENT_FILE = "pii-hook"
+# Stands in for the native hook command. It runs, which is all the installer checks.
+RUNNABLE_CLIENT = "#!/bin/sh\ncat >/dev/null\n"
 
 # Answers -s and -m from the environment and defers everything else. The shell
 # only reads these two, so the stand-in needs nothing more.
@@ -293,6 +297,103 @@ class NativeEngineTests(InstallerHarness):
         self.assertFalse((self.installed_dir() / f"{NATIVE_FILE}.part").exists())
         self.assertIn(
             "Could not download the native rules engine for linux-x86_64", result.stderr
+        )
+
+
+class NativeHookCommandTests(InstallerHarness):
+    """Claude Code runs the native hook command when one is built and runs here."""
+
+    def release_client(self, content: str = RUNNABLE_CLIENT) -> None:
+        (self.release / "pii-hook-linux-x86_64").write_text(content)
+
+    def wired(self, document: dict) -> list[str]:
+        return [
+            command
+            for event in ("UserPromptSubmit", "PreToolUse", "PostToolUse")
+            for command in self.commands(document, event)
+        ]
+
+    def codex_hooks(self) -> dict:
+        return json.loads((self.home / ".codex" / "hooks.json").read_text())
+
+    def test_a_build_that_runs_becomes_the_claude_command(self) -> None:
+        self.add_agent("claude")
+        self.add_agent("codex")
+        self.release_client()
+        result = self.run_installer()
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        client = self.installed_dir() / CLIENT_FILE
+        self.assertTrue(os.access(client, os.X_OK))
+        self.assertIn(f"Installed: {client}", result.stdout)
+        self.assertEqual(
+            self.wired(self.settings()),
+            [
+                f"{client} --mode prompt",
+                f"{client} --mode claude-pretool",
+                f"{client} --mode claude-posttool",
+            ],
+        )
+        # Codex binds trust to the command string, so it keeps the script.
+        script = self.installed_dir() / "pii-check.sh"
+        self.assertEqual(
+            self.wired(self.codex_hooks()),
+            [
+                f"{script} --mode prompt",
+                f"{script} --mode codex-pretool",
+                f"{script} --mode codex-posttool",
+            ],
+        )
+
+    def test_a_build_that_cannot_run_leaves_the_script(self) -> None:
+        self.add_agent("claude")
+        self.release_client("#!/bin/sh\nexit 126\n")
+        result = self.run_installer("--no-codex")
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertFalse((self.installed_dir() / CLIENT_FILE).exists())
+        self.assertFalse((self.installed_dir() / f"{CLIENT_FILE}.part").exists())
+        self.assertIn(
+            "Could not install the native hook command for linux-x86_64", result.stderr
+        )
+        script = self.installed_dir() / "pii-check.sh"
+        self.assertEqual(
+            self.commands(self.settings(), "UserPromptSubmit"),
+            [f"{script} --mode prompt"],
+        )
+
+    def test_another_platform_removes_an_earlier_build(self) -> None:
+        self.add_agent("claude")
+        self.installed_dir().mkdir(parents=True)
+        (self.installed_dir() / CLIENT_FILE).write_text("stale")
+        result = self.run_installer("--no-codex", platform=("Linux", "aarch64"))
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertFalse((self.installed_dir() / CLIENT_FILE).exists())
+        self.assertIn(
+            "No native hook command is built for Linux aarch64", result.stdout
+        )
+
+    def test_moving_between_the_script_and_the_build_keeps_one_entry_per_event(
+        self,
+    ) -> None:
+        self.add_agent("claude")
+        client = self.installed_dir() / CLIENT_FILE
+        script = self.installed_dir() / "pii-check.sh"
+
+        self.run_installer("--no-codex")
+        self.release_client()
+        self.run_installer("--no-codex")
+        self.assertEqual(
+            self.commands(self.settings(), "PreToolUse"),
+            [f"{client} --mode claude-pretool"],
+        )
+
+        (self.release / "pii-hook-linux-x86_64").unlink()
+        self.run_installer("--no-codex")
+        self.assertEqual(
+            self.commands(self.settings(), "PreToolUse"),
+            [f"{script} --mode claude-pretool"],
         )
 
 
@@ -720,6 +821,7 @@ class PilotTests(InstallerHarness):
         port = free_port()
         other = self.home / "detector.py"
         shutil.copy2(FAKE_SERVER, other)
+        shutil.copy2(HOOKS_DIR / "pii_hook.py", self.home / "pii_hook.py")
         server = subprocess.Popen(
             [sys.executable, str(other), "--port", str(port), "--mode", "rules"],
             stdout=subprocess.DEVNULL,

@@ -20,6 +20,7 @@
 that already has one.
 
 POST / {"text": "..."} -> {"spans": [{"start": int, "end": int, "label": str, "text": str}, ...]}
+POST /hook <raw hook payload>, policy in X-Pii-* headers -> what pii-check.sh prints (pii_hook.py)
 """
 
 from __future__ import annotations
@@ -35,10 +36,16 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
 
+from pii_hook import HookError, Policy, answer
+
 SUPPORTED_MODES = ("redact", "redact-torch", "openai", "rules", "tagger")
 DEFAULT_MODE = "redact"
 DEFAULT_MAX_BODY_BYTES = 2 * 1024 * 1024
 HANDLER_TIMEOUT_SECONDS = 30
+# A hook payload wraps the text in JSON with the tool's other fields, so it may run
+# larger than the text the body limit applies to. The limit itself is checked on the
+# text, as POST / always did.
+HOOK_PAYLOAD_FACTOR = 4
 
 
 def resolve_mode(requested: str | None = None) -> str:
@@ -137,10 +144,15 @@ class Handler(BaseHTTPRequestHandler):
         sys.stderr.write(f"[{self.mode}] {self.address_string()} {format % args}\n")
 
     def _send_json(self, code: int, payload: dict) -> None:
-        body = json.dumps(payload).encode("utf-8")
+        self._send(code, json.dumps(payload).encode("utf-8"), "application/json")
+
+    def _send_text(self, code: int, text: str) -> None:
+        self._send(code, text.encode("utf-8"), "text/plain; charset=utf-8")
+
+    def _send(self, code: int, body: bytes, content_type: str) -> None:
         try:
             self.send_response(code)
-            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Type", content_type)
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
             self.wfile.write(body)
@@ -170,7 +182,39 @@ class Handler(BaseHTTPRequestHandler):
             return None
         return text
 
+    def _detect(self, text: str) -> tuple[list[dict], int]:
+        started_at = time.perf_counter()
+        try:
+            with self.inference_lock:
+                spans = self.model.predict(text)
+        except ValueError as exc:
+            raise HookError(413) from exc
+        except RuntimeError as exc:
+            self.log_message("model failure: %s", exc)
+            raise HookError(500) from exc
+        return spans, round((time.perf_counter() - started_at) * 1000)
+
+    def _hook(self) -> None:
+        length = self._content_length()
+        if length is None:
+            return
+        cap = max_body_bytes()
+        if length > HOOK_PAYLOAD_FACTOR * cap:
+            self._send_text(413, "")
+            return
+        payload = self.rfile.read(length) if length > 0 else b""
+        policy = Policy.from_headers(self.headers, self.mode)
+        try:
+            body = answer(payload, policy, self.mode, cap, self._detect)
+        except HookError as error:
+            self._send_text(error.status, error.detail)
+            return
+        self._send_text(200, body)
+
     def do_POST(self):
+        if self.path == "/hook":
+            self._hook()
+            return
         length = self._content_length()
         if length is None:
             return

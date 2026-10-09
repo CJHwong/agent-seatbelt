@@ -12,9 +12,11 @@ This is the content-level companion to `agent-seatbelt`'s file-level sandbox. Th
 
 - `~/.claude/hooks/pii-check.sh` — the hook binary, called on prompt submit and tool response
 - `~/.claude/hooks/pii-server.py` — local HTTP server that loads the selected model and returns labeled spans
+- `~/.claude/hooks/pii_hook.py`: builds the server's answer to a hook call, from the text to scan to the hook's exact output
 - `~/.claude/hooks/pii_redact_torch.py` — local Redact model adapter used by `pii-server.py`
 - `~/.claude/hooks/pii_tagger.py` and `pii_tagger_rules.py` — the bilingual tagger backend and the rules that follow it. See [Tagger mode](#tagger-mode)
 - `~/.claude/hooks/pii_rules_native.abi3.so` — the native rules engine, on macOS arm64 and Linux x86_64 only. See [Native rules engine](#native-rules-engine)
+- `~/.claude/hooks/pii-hook`: the native hook command Claude Code runs, on macOS arm64 and Linux x86_64 only. It hands every case it does not settle to `pii-check.sh`. Codex runs `pii-check.sh`, because Codex binds hook trust to the command string
 - For each detected agent, two entries in its hooks config:
   - `UserPromptSubmit` → blocks or warns on prompts containing PII before they reach the model provider
   - `PreToolUse` → blocks or warns on a tool call's **input** before it runs. This is the only
@@ -304,6 +306,8 @@ Codex tool runs ──> PostToolUse ──> pii-check.sh --mode codex-posttool �
 
 The server is auto-started on first hook call via `uv run`, then stays warm. Health check at `http://127.0.0.1:9123/health`.
 
+A warm call is one request. The hook sends the raw hook payload to `POST /hook`, with its settings in `X-Pii-*` headers, and the server extracts the text, runs the detector, and returns the hook's stdout and stderr. bash sends it through its own `/dev/tcp` socket, so a warm call starts no other process. Where `pii-hook` is installed, Claude Code runs it in place of the script, which also saves the start of bash. `jq` and `curl` run only when no server answers, to settle locally whether there is anything to scan before the hook starts one.
+
 For a hard boundary at the file level, see [`agent-seatbelt`](../README.md) (the sandbox in the parent dir).
 
 ## Configuration knobs
@@ -430,7 +434,7 @@ To run your own export, point `PII_TAGGER_DIR` at a folder that holds the same f
 On Apple Silicon the server also downloads `model.mlpackage` (69 MB) and runs the network
 on the Neural Engine through Core ML. It reports
 `{"status":"ok","mode":"tagger","device":"neural_engine"}`. The package is fp16 and pads
-each window to 64, 128, 256 or 512 tokens. The Neural Engine runs only fixed shapes. Its
+each window to the shortest length it holds, from 64 to 512 tokens. The Neural Engine runs only fixed shapes. Its
 spans match the fp32 network's on all but 93 of 33,479 comparison rows. The int8 graph
 differs on 1,963. Everywhere else, and whenever Core ML fails to load, the server runs
 the int8 graph on the CPU with onnxruntime, reports `"device":"cpu"`, and logs why Core ML
@@ -566,8 +570,8 @@ Exclude labels that a model documents as unsupported. For example, Rampart does 
 ## Uninstall
 
 ```bash
-rm ~/.claude/hooks/pii-check.sh ~/.claude/hooks/pii-server.py ~/.claude/hooks/pii_redact_torch.py
-rm -f ~/.claude/hooks/pii_rules_native.abi3.so
+rm ~/.claude/hooks/pii-check.sh ~/.claude/hooks/pii-server.py ~/.claude/hooks/pii_hook.py ~/.claude/hooks/pii_redact_torch.py
+rm -f ~/.claude/hooks/pii_rules_native.abi3.so ~/.claude/hooks/pii-hook
 # then edit ~/.claude/settings.json and ~/.codex/hooks.json and remove the entries
 ```
 

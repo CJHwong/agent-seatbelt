@@ -11,8 +11,8 @@ on:
   pull_request:
   push:
     branches: [main]
-    # A version tag also publishes the native rules engine as release assets,
-    # which is where install.sh downloads it from.
+    # A version tag also publishes the native rules engine and the native hook
+    # command as release assets, which is where install.sh downloads them from.
     tags: ["v*"]
 
 permissions:
@@ -88,8 +88,10 @@ jobs:
             quay.io/pypa/manylinux_2_28_x86_64 bash -c '
               curl -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal &&
               . "$HOME/.cargo/env" &&
-              PYO3_PYTHON=/opt/python/cp39-cp39/bin/python3 cargo build --release --locked'
+              PYO3_PYTHON=/opt/python/cp39-cp39/bin/python3 cargo build --release --locked &&
+              cargo build --release --locked --manifest-path ../client/Cargo.toml'
           sudo cp hooks-pii/native/target/release/libpii_rules_native.so hooks-pii/pii_rules_native.abi3.so
+          sudo cp hooks-pii/client/target/release/pii-hook hooks-pii/pii-hook
 
       - name: Build on macOS
         if: runner.os == 'macOS'
@@ -97,6 +99,8 @@ jobs:
         run: |
           cargo build --release --locked
           cp target/release/libpii_rules_native.dylib ../pii_rules_native.abi3.so
+          cargo build --release --locked --manifest-path ../client/Cargo.toml
+          cp ../client/target/release/pii-hook ../pii-hook
 
       - name: Check the module loads as the native engine
         working-directory: hooks-pii
@@ -106,13 +110,24 @@ jobs:
         working-directory: hooks-pii
         run: python3 -m unittest discover -s tests -p test_pii_rules.py
 
-      - name: Name the file for the release
-        run: cp hooks-pii/pii_rules_native.abi3.so pii_rules_native-${{ matrix.platform }}.abi3.so
+      # The hook suites again, with the native command in place of the script. Every
+      # assertion has to hold for both; the canary suite needs the Claude Code CLI and
+      # stays in the test job.
+      - name: Hook suites on the native command
+        working-directory: hooks-pii
+        run: PII_TEST_HOOK_CLIENT="$PWD/pii-hook" python3 -m unittest discover -s tests -p 'test_hook_[mp]*.py'
+
+      - name: Name the files for the release
+        run: |
+          cp hooks-pii/pii_rules_native.abi3.so pii_rules_native-${{ matrix.platform }}.abi3.so
+          cp hooks-pii/pii-hook pii-hook-${{ matrix.platform }}
 
       - uses: actions/upload-artifact@v4
         with:
-          name: pii_rules_native-${{ matrix.platform }}
-          path: pii_rules_native-${{ matrix.platform }}.abi3.so
+          name: native-${{ matrix.platform }}
+          path: |
+            pii_rules_native-${{ matrix.platform }}.abi3.so
+            pii-hook-${{ matrix.platform }}
           if-no-files-found: error
 
   release:
@@ -125,7 +140,7 @@ jobs:
     steps:
       - uses: actions/download-artifact@v4
         with:
-          pattern: pii_rules_native-*
+          pattern: native-*
           merge-multiple: true
 
       - name: Attach the native builds to the release
@@ -134,4 +149,4 @@ jobs:
         run: |
           gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1 ||
             gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --generate-notes
-          gh release upload "$GITHUB_REF_NAME" pii_rules_native-*.abi3.so --repo "$GITHUB_REPOSITORY" --clobber
+          gh release upload "$GITHUB_REF_NAME" pii_rules_native-*.abi3.so pii-hook-* --repo "$GITHUB_REPOSITORY" --clobber

@@ -14,7 +14,8 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from types import SimpleNamespace
+from unittest.mock import MagicMock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
@@ -258,6 +259,45 @@ class NeuralEngineForwardTests(unittest.TestCase):
     def test_a_window_longer_than_every_length_is_refused(self) -> None:
         with self.assertRaisesRegex(ValueError, "513 tokens"):
             self.forward([]).logits([1] * 513)
+
+
+class NeuralEngineLoadTests(unittest.TestCase):
+    def test_load_takes_every_length_the_package_holds(self) -> None:
+        names = ["length_64", "length_128", "length_192"]
+        spec = SimpleNamespace(
+            description=SimpleNamespace(
+                functions=[SimpleNamespace(name=name) for name in names]
+            )
+        )
+        coremltools = MagicMock()
+        coremltools.utils.load_spec.return_value = spec
+        coremltools.models.MLModel.side_effect = (
+            lambda path, function_name, compute_units: function_name
+        )
+        with patch.dict(sys.modules, {"coremltools": coremltools}):
+            forward = NeuralEngineForward.load(Path("model.mlpackage"))
+        self.assertEqual(
+            forward.functions, {64: "length_64", 128: "length_128", 192: "length_192"}
+        )
+
+
+class WindowShortcutTests(unittest.TestCase):
+    def model(self, logits: np.ndarray) -> tuple[pii_tagger.TaggerModel, MagicMock]:
+        model = object.__new__(pii_tagger.TaggerModel)
+        model.forward = SimpleNamespace(logits=lambda ids: logits)
+        model.outside = 0
+        decode = MagicMock(return_value=["decoded"])
+        model.decode = decode
+        return model, decode
+
+    def test_a_window_with_no_tag_above_o_skips_decoding(self) -> None:
+        model, decode = self.model(np.array([[5.0, 1.0, 0.0], [4.0, 3.0, 2.0]]))
+        self.assertEqual(model.run(SimpleNamespace(ids=[1, 2])), [])
+        decode.assert_not_called()
+
+    def test_a_window_with_one_tag_above_o_is_decoded(self) -> None:
+        model, _ = self.model(np.array([[5.0, 1.0, 0.0], [1.0, 3.0, 2.0]]))
+        self.assertEqual(model.run(SimpleNamespace(ids=[1, 2])), ["decoded"])
 
 
 class LoadForwardTests(unittest.TestCase):
