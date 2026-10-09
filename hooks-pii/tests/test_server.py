@@ -22,10 +22,10 @@ from unittest import TestCase
 from unittest.mock import patch
 
 
-HOOKS_DIR = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(HOOKS_DIR))
+SERVER_DIR = Path(__file__).resolve().parents[1] / "server"
+sys.path.insert(0, str(SERVER_DIR))
 
-MODULE_PATH = HOOKS_DIR / "pii-server.py"
+MODULE_PATH = SERVER_DIR / "server.py"
 MODULE_SPEC = importlib.util.spec_from_file_location("pii_server", MODULE_PATH)
 if MODULE_SPEC is None or MODULE_SPEC.loader is None:
     raise RuntimeError(f"cannot load server module: {MODULE_PATH}")
@@ -158,9 +158,9 @@ class RulesModelTests(TestCase):
 
     def test_rules_module_pulls_no_model_framework(self) -> None:
         probe = (
-            "import sys; sys.path.insert(0, %r); import pii_rules; "
+            "import sys; sys.path.insert(0, %r); from rules import engine; "
             "print(sorted(m for m in ('torch', 'numpy', 'onnxruntime', 'tokenizers') "
-            "if m in sys.modules))" % str(HOOKS_DIR)
+            "if m in sys.modules))" % str(SERVER_DIR)
         )
         result = subprocess.run(
             [sys.executable, "-c", probe], capture_output=True, text=True, check=True
@@ -174,7 +174,7 @@ class RulesModelTests(TestCase):
             "module = importlib.util.module_from_spec(spec); "
             "spec.loader.exec_module(module); "
             "print(sorted(m for m in ('torch', 'numpy', 'onnxruntime', 'tokenizers') "
-            "if m in sys.modules))" % (str(HOOKS_DIR), str(MODULE_PATH))
+            "if m in sys.modules))" % (str(SERVER_DIR), str(MODULE_PATH))
         )
         result = subprocess.run(
             [sys.executable, "-c", probe], capture_output=True, text=True, check=True
@@ -189,7 +189,7 @@ class RulesModelTests(TestCase):
             "spec.loader.exec_module(module); "
             "module.load_selected_model('rules').predict('Ping dana@example.org.'); "
             "print(sorted(m for m in ('torch', 'numpy', 'onnxruntime', 'tokenizers') "
-            "if m in sys.modules))" % (str(HOOKS_DIR), str(MODULE_PATH))
+            "if m in sys.modules))" % (str(SERVER_DIR), str(MODULE_PATH))
         )
         result = subprocess.run(
             [sys.executable, "-c", probe], capture_output=True, text=True, check=True
@@ -198,7 +198,7 @@ class RulesModelTests(TestCase):
 
 
 class StubRedactModel:
-    """Records what pii-server forwards to the Redact constructor."""
+    """Records what server.py forwards to the Redact constructor."""
 
     created: ClassVar[list[StubRedactModel]] = []
 
@@ -214,16 +214,16 @@ ASSET_DIRECTORY = Path("/nonexistent/redact-assets")
 @contextlib.contextmanager
 def stubbed_redact_module() -> Iterator[None]:
     """Swap in a Redact module, so the test needs no 88 MB checkpoint."""
-    stub_module = types.ModuleType("pii_redact_torch")
+    stub_module = types.ModuleType("detectors.redact_torch")
     setattr(stub_module, "RedactModel", StubRedactModel)
     setattr(stub_module, "ensure_assets", lambda: ASSET_DIRECTORY)
     StubRedactModel.created = []
-    with patch.dict(sys.modules, {"pii_redact_torch": stub_module}):
+    with patch.dict(sys.modules, {"detectors.redact_torch": stub_module}):
         yield
 
 
 class StubLiteRedactModel:
-    """Records what pii-server forwards to the LiteRT constructor."""
+    """Records what server.py forwards to the LiteRT constructor."""
 
     created: ClassVar[list[StubLiteRedactModel]] = []
 
@@ -235,17 +235,17 @@ class StubLiteRedactModel:
 @contextlib.contextmanager
 def stubbed_lite_module() -> Iterator[None]:
     """Swap in the LiteRT backend, so the test needs no 23 MB graph."""
-    stub_module = types.ModuleType("pii_redact_lite")
+    stub_module = types.ModuleType("detectors.redact")
     setattr(stub_module, "LitertRedactModel", StubLiteRedactModel)
     setattr(stub_module, "ensure_assets", lambda: ASSET_DIRECTORY)
     StubLiteRedactModel.created = []
-    with patch.dict(sys.modules, {"pii_redact_lite": stub_module}):
+    with patch.dict(sys.modules, {"detectors.redact": stub_module}):
         yield
 
 
 class ModelSelectionTests(TestCase):
     def test_openai_mode_builds_the_model_from_the_asset_directory(self) -> None:
-        stub_module = types.ModuleType("pii_opf")
+        stub_module = types.ModuleType("detectors.privacy_filter")
         built: list[Path] = []
 
         class StubModel:
@@ -254,7 +254,7 @@ class ModelSelectionTests(TestCase):
 
         setattr(stub_module, "Model", StubModel)
         setattr(stub_module, "ensure_assets", lambda: ASSET_DIRECTORY)
-        with patch.dict(sys.modules, {"pii_opf": stub_module}):
+        with patch.dict(sys.modules, {"detectors.privacy_filter": stub_module}):
             model = PII_SERVER.load_selected_model("openai")
 
         self.assertIsInstance(model, StubModel)
@@ -269,7 +269,7 @@ class ModelSelectionTests(TestCase):
         self.assertIsInstance(model, StubLiteRedactModel)
         self.assertEqual(StubLiteRedactModel.created[0].cache_dir, ASSET_DIRECTORY)
 
-    def test_pii_redact_torch_mode_defaults_the_requested_device_to_auto(self) -> None:
+    def test_redact_torch_mode_defaults_the_requested_device_to_auto(self) -> None:
         with stubbed_redact_module(), patch.dict(os.environ, {}, clear=True):
             model = PII_SERVER.load_selected_model("redact-torch")
 
@@ -277,7 +277,7 @@ class ModelSelectionTests(TestCase):
         self.assertEqual(StubRedactModel.created[0].cache_dir, ASSET_DIRECTORY)
         self.assertEqual(StubRedactModel.created[0].requested_device, "auto")
 
-    def test_pii_redact_torch_mode_forwards_the_requested_device(self) -> None:
+    def test_redact_torch_mode_forwards_the_requested_device(self) -> None:
         with (
             stubbed_redact_module(),
             patch.dict(os.environ, {"REDACT_DEVICE": "cpu"}, clear=True),
@@ -287,7 +287,7 @@ class ModelSelectionTests(TestCase):
         self.assertEqual(StubRedactModel.created[0].requested_device, "cpu")
 
     def test_server_directory_is_added_to_the_import_path(self) -> None:
-        server_directory = str(HOOKS_DIR)
+        server_directory = str(SERVER_DIR)
         without_server_directory = [
             entry for entry in sys.path if entry != server_directory
         ]
@@ -300,7 +300,7 @@ class ModelSelectionTests(TestCase):
         self.assertIsInstance(model, PII_SERVER.RulesModel)
 
     def test_server_directory_is_not_added_when_it_is_already_there(self) -> None:
-        server_directory = str(HOOKS_DIR)
+        server_directory = str(SERVER_DIR)
         present_already = sys.path.count(server_directory)
         self.assertGreater(present_already, 0)
 
@@ -812,7 +812,7 @@ class MainWiringTests(TestCase):
     def test_termination_signals_are_wired_to_server_shutdown(self) -> None:
         stub = StubServer()
         with (
-            patch.object(sys, "argv", ["pii-server.py", "--mode", "rules"]),
+            patch.object(sys, "argv", ["server.py", "--mode", "rules"]),
             patch.object(PII_SERVER.signal, "signal") as install,
             patch.object(PII_SERVER, "NoLookupHTTPServer", stub.build),
         ):
@@ -829,7 +829,7 @@ class MainWiringTests(TestCase):
     def test_shutdown_runs_off_the_serving_thread(self) -> None:
         stub = StubServer()
         with (
-            patch.object(sys, "argv", ["pii-server.py", "--mode", "rules"]),
+            patch.object(sys, "argv", ["server.py", "--mode", "rules"]),
             patch.object(PII_SERVER.signal, "signal") as install,
             patch.object(PII_SERVER, "NoLookupHTTPServer", stub.build),
         ):
@@ -846,7 +846,7 @@ class MainWiringTests(TestCase):
     def test_keyboard_interrupt_during_serve_closes_the_server(self) -> None:
         stub = StubServer(interrupt_on_serve=True)
         with (
-            patch.object(sys, "argv", ["pii-server.py", "--mode", "rules"]),
+            patch.object(sys, "argv", ["server.py", "--mode", "rules"]),
             patch.object(PII_SERVER.signal, "signal"),
             patch.object(PII_SERVER, "NoLookupHTTPServer", stub.build),
         ):

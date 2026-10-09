@@ -10,9 +10,9 @@ import sys
 import unittest
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "server"))
 
-from pii_tagger_rules import (
+from rules.tagger_rules import (
     apply_chain,
     office_filter,
     place_filter,

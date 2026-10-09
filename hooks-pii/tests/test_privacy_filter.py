@@ -20,7 +20,7 @@ from types import ModuleType
 from typing import Any, Protocol
 from unittest.mock import patch
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "server"))
 
 import numpy as np  # ty: ignore[unresolved-import]
 from tokenizers import (  # ty: ignore[unresolved-import]
@@ -29,8 +29,8 @@ from tokenizers import (  # ty: ignore[unresolved-import]
     pre_tokenizers,
 )
 
-import pii_opf
-from pii_opf import (
+from detectors import privacy_filter
+from detectors.privacy_filter import (
     NEG_INF,
     LabelSpace,
     Model,
@@ -44,7 +44,9 @@ from pii_opf import (
 )
 
 
-MODULE_PATH = Path(__file__).resolve().parents[1] / "pii_opf.py"
+MODULE_PATH = (
+    Path(__file__).resolve().parents[1] / "server" / "detectors" / "privacy_filter.py"
+)
 
 # The real checkpoint ships 33 BioES labels with "O" at index 0. This keeps the
 # layout and drops the entities the tests do not need.
@@ -78,7 +80,7 @@ VOCAB = {
 
 
 def load_module_copy(environ: dict[str, str]) -> ModuleType:
-    """Import a second copy of pii_opf so module-level env reads can be observed."""
+    """Import a second copy of privacy_filter so module-level env reads can be observed."""
     with patch.dict(os.environ, environ, clear=True):
         spec = importlib.util.spec_from_file_location("pii_opf_reloaded", MODULE_PATH)
         if spec is None or spec.loader is None:
@@ -212,7 +214,7 @@ class PiiOpfTestCase(unittest.TestCase):
         (directory / "config.json").write_text(json.dumps(settings))
         self.write_tokenizer(directory, vocab or VOCAB)
         with patch.object(
-            pii_opf.ort, "InferenceSession", return_value=session
+            privacy_filter.ort, "InferenceSession", return_value=session
         ) as constructor:
             model = Model(directory)
         return model, constructor
@@ -443,8 +445,8 @@ class AssetResolutionTests(PiiOpfTestCase):
 
     def test_ensure_assets_requests_every_required_file_into_the_cache(self) -> None:
         cache = self.temporary_directory() / "nested" / "opf"
-        with patch.object(pii_opf, "CACHE_DIR", cache):
-            with patch.object(pii_opf, "hf_hub_download") as download:
+        with patch.object(privacy_filter, "CACHE_DIR", cache):
+            with patch.object(privacy_filter, "hf_hub_download") as download:
                 result = ensure_assets()
 
         self.assertEqual(result, cache)
@@ -469,9 +471,9 @@ class AssetResolutionTests(PiiOpfTestCase):
 
     def test_a_failed_download_is_not_swallowed(self) -> None:
         cache = self.temporary_directory()
-        with patch.object(pii_opf, "CACHE_DIR", cache):
+        with patch.object(privacy_filter, "CACHE_DIR", cache):
             with patch.object(
-                pii_opf, "hf_hub_download", side_effect=OSError("offline")
+                privacy_filter, "hf_hub_download", side_effect=OSError("offline")
             ):
                 with self.assertRaises(OSError):
                     ensure_assets()

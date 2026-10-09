@@ -18,7 +18,8 @@
 # leaves the server warm so the first agent session skips the cold start. The
 # server is a shared singleton on 127.0.0.1:9123 that both agents reuse.
 #
-# Scripts are installed to ~/.claude/hooks/ regardless of agent. Both agents reference that path.
+# Everything is installed to ~/.claude/hooks/pii/ regardless of agent. Both agents reference that path.
+# An install from before that folder is moved into it, and its old files are removed.
 # Idempotent. Re-running won't duplicate hook entries.
 
 set -euo pipefail
@@ -28,19 +29,24 @@ REPO_BASE="${HOOKS_PII_BASE_URL:-https://raw.githubusercontent.com/CJHwong/agent
 # not as a file in the tree.
 NATIVE_BASE="${HOOKS_PII_NATIVE_BASE_URL:-https://github.com/CJHwong/agent-seatbelt/releases/latest/download}"
 HOOKS_DIR="$HOME/.claude/hooks"
-SERVER_DEST="$HOOKS_DIR/pii-server.py"
-TORCH_DEST="$HOOKS_DIR/pii_redact_torch.py"
-LITE_DEST="$HOOKS_DIR/pii_redact_lite.py"
-RULES_DEST="$HOOKS_DIR/pii_rules.py"
-PATTERNS_DEST="$HOOKS_DIR/pii_secret_patterns.py"
-VOCABULARY_DEST="$HOOKS_DIR/cl100k_base.tokens.gz"
-OPF_DEST="$HOOKS_DIR/pii_opf.py"
-TAGGER_DEST="$HOOKS_DIR/pii_tagger.py"
-TAGGER_RULES_DEST="$HOOKS_DIR/pii_tagger_rules.py"
-HOOK_DEST="$HOOKS_DIR/pii_hook.py"
-NATIVE_DEST="$HOOKS_DIR/pii_rules_native.abi3.so"
-CHECK_DEST="$HOOKS_DIR/pii-check.sh"
-CLIENT_DEST="$HOOKS_DIR/pii-hook"
+PII_DIR="$HOOKS_DIR/pii"
+SERVER_DEST="$PII_DIR/server.py"
+NATIVE_DEST="$PII_DIR/rules/pii_rules_native.abi3.so"
+CHECK_DEST="$PII_DIR/check.sh"
+CLIENT_DEST="$PII_DIR/hook"
+# The server's files, at the same path under server/ in the repo and under $PII_DIR.
+SERVER_FILES=(server.py answer.py)
+SERVER_FILES+=(detectors/__init__.py detectors/redact.py detectors/redact_torch.py)
+SERVER_FILES+=(detectors/privacy_filter.py detectors/tagger.py)
+SERVER_FILES+=(rules/__init__.py rules/engine.py rules/tagger_rules.py rules/secrets.py)
+SERVER_FILES+=(rules/cl100k_base.tokens.gz)
+# What an install before $PII_DIR put in $HOOKS_DIR. Removed once the hooks point at
+# $PII_DIR, and nothing else in $HOOKS_DIR is touched.
+LEGACY_FILES=(pii-server.py pii_hook.py pii_redact_lite.py pii_redact_torch.py pii_opf.py)
+LEGACY_FILES+=(pii_tagger.py pii_rules.py pii_tagger_rules.py pii_secret_patterns.py)
+LEGACY_FILES+=(cl100k_base.tokens.gz pii_rules_native.abi3.so pii-check.sh pii-hook)
+LEGACY_CHECK="$HOOKS_DIR/pii-check.sh"
+LEGACY_CLIENT="$HOOKS_DIR/pii-hook"
 CLAUDE_SETTINGS="$HOME/.claude/settings.json"
 CODEX_HOOKS="$HOME/.codex/hooks.json"
 PORT="${PII_PORT:-9123}"
@@ -167,31 +173,15 @@ if [ "$CLAUDE_PRESENT" -eq 0 ] && [ "$CODEX_PRESENT" -eq 0 ]; then
     exit 1
 fi
 
-mkdir -p "$HOOKS_DIR"
+mkdir -p "$PII_DIR/detectors" "$PII_DIR/rules"
 
 echo "Downloading hook files..."
-curl -fsSL "$REPO_BASE/pii-server.py" -o "$SERVER_DEST"
-curl -fsSL "$REPO_BASE/pii_redact_torch.py" -o "$TORCH_DEST"
-curl -fsSL "$REPO_BASE/pii_redact_lite.py" -o "$LITE_DEST"
-curl -fsSL "$REPO_BASE/pii_rules.py" -o "$RULES_DEST"
-curl -fsSL "$REPO_BASE/pii_secret_patterns.py" -o "$PATTERNS_DEST"
-curl -fsSL "$REPO_BASE/cl100k_base.tokens.gz" -o "$VOCABULARY_DEST"
-curl -fsSL "$REPO_BASE/pii_opf.py" -o "$OPF_DEST"
-curl -fsSL "$REPO_BASE/pii_tagger.py" -o "$TAGGER_DEST"
-curl -fsSL "$REPO_BASE/pii_tagger_rules.py" -o "$TAGGER_RULES_DEST"
-curl -fsSL "$REPO_BASE/pii_hook.py" -o "$HOOK_DEST"
-curl -fsSL "$REPO_BASE/pii-check.sh"  -o "$CHECK_DEST"
+for file in "${SERVER_FILES[@]}"; do
+    curl -fsSL "$REPO_BASE/server/$file" -o "$PII_DIR/$file"
+    echo "Installed: $PII_DIR/$file"
+done
+curl -fsSL "$REPO_BASE/hook/check.sh" -o "$CHECK_DEST"
 chmod +x "$CHECK_DEST"
-echo "Installed: $SERVER_DEST"
-echo "Installed: $TORCH_DEST"
-echo "Installed: $LITE_DEST"
-echo "Installed: $RULES_DEST"
-echo "Installed: $PATTERNS_DEST"
-echo "Installed: $VOCABULARY_DEST"
-echo "Installed: $OPF_DEST"
-echo "Installed: $TAGGER_DEST"
-echo "Installed: $TAGGER_RULES_DEST"
-echo "Installed: $HOOK_DEST"
 echo "Installed: $CHECK_DEST"
 
 # The release carries one native build per OS and CPU. Any other platform keeps
@@ -226,7 +216,7 @@ install_native() {
 install_native
 
 # The native hook command sends the request without starting a shell, and hands every
-# other case to pii-check.sh. Both agents run it. Codex binds hook trust to the command
+# other case to check.sh. Both agents run it. Codex binds hook trust to the command
 # string, so a move between the script and the build stops its scan until someone
 # trusts the new command; the closing notes say so.
 #
@@ -237,7 +227,7 @@ install_client() {
     local platform
     if ! platform=$(native_platform); then
         rm -f "$CLIENT_DEST"
-        echo "No native hook command is built for $(uname -s) $(uname -m). The agents run pii-check.sh."
+        echo "No native hook command is built for $(uname -s) $(uname -m). The agents run check.sh."
         return
     fi
     if curl -fsSL "$NATIVE_BASE/pii-hook-$platform" -o "$CLIENT_DEST.part" &&
@@ -248,19 +238,20 @@ install_client() {
         echo "Installed: $CLIENT_DEST"
     else
         rm -f "$CLIENT_DEST.part" "$CLIENT_DEST"
-        echo "Could not install the native hook command for $platform. The agents run pii-check.sh." >&2
+        echo "Could not install the native hook command for $platform. The agents run check.sh." >&2
     fi
 }
 install_client
 
 # Add or update an entry in a hooks-shaped JSON file.
-# Idempotent on command string: if an entry already references $cmd or $other, replace
-# it with $entry (this is how matcher changes propagate to existing installs, and how
-# an install moves between the script and the native command); otherwise append.
+# Idempotent on command string: if an entry already references $cmd or one of $others,
+# replace it with $entry (this is how matcher changes propagate to existing installs,
+# and how an install moves between the script, the native command and an older
+# install's paths); otherwise append.
 # Args: $1 = target file, $2 = event key, $3 = entry JSON, $4 = command string to match,
-# $5 = the same command through the other hook file.
+# $5 = a JSON array of the same command through every other hook file.
 add_entry() {
-    local target="$1" event="$2" entry="$3" cmd="$4" other="$5"
+    local target="$1" event="$2" entry="$3" cmd="$4" others="$5"
     if [ ! -f "$target" ]; then
         mkdir -p "$(dirname "$target")"
         echo '{}' > "$target"
@@ -278,21 +269,27 @@ add_entry() {
         .hooks = (.hooks // {}) |
         .hooks[$event] = (
           (.hooks[$event] // []) as $entries |
-          ($entries | map(if any(.hooks[]?; .command == $cmd or .command == $other) then $entry else . end)) as $mapped |
+          ($entries | map(if any(.hooks[]?; .command as $found | $found == $cmd or any($others[]; . == $found)) then $entry else . end)) as $mapped |
           if any($mapped[]?; any(.hooks[]?; .command == $cmd)) then $mapped
           else $mapped + [$entry] end
         )
         '
-    jq --arg event "$event" --arg cmd "$cmd" --arg other "$other" --argjson entry "$entry" "$program" "$target" > "$tmp"
+    jq --arg event "$event" --arg cmd "$cmd" --argjson others "$others" --argjson entry "$entry" "$program" "$target" > "$tmp"
     mv "$tmp" "$target"
+}
+
+# The command for one mode through every hook file but $1, as a JSON array.
+other_commands() {
+    local hook="$1" mode="$2" candidate
+    local candidates=()
+    for candidate in "$CLIENT_DEST" "$CHECK_DEST" "$LEGACY_CLIENT" "$LEGACY_CHECK"; do
+        [ "$candidate" = "$hook" ] || candidates+=("$candidate --mode $mode")
+    done
+    jq -cn '$ARGS.positional' --args "${candidates[@]}"
 }
 
 wire_agent() {
     local label="$1" target="$2" posttool_mode="$3" pretool_mode="$4" hook="$5"
-    local other="$CLIENT_DEST"
-    if [ "$hook" = "$CLIENT_DEST" ]; then
-        other="$CHECK_DEST"
-    fi
     local posttool_matcher="$POSTTOOL_MATCHER_CLAUDE"
     if [ "$label" = "codex" ]; then
         posttool_matcher="$POSTTOOL_MATCHER_CODEX"
@@ -304,14 +301,14 @@ wire_agent() {
     local prompt_entry
     prompt_entry=$(jq -cn --arg cmd "$prompt_cmd" \
         '{hooks:[{type:"command",command:$cmd,timeout:20}]}')
-    add_entry "$target" "UserPromptSubmit" "$prompt_entry" "$prompt_cmd" "$other --mode prompt"
+    add_entry "$target" "UserPromptSubmit" "$prompt_entry" "$prompt_cmd" "$(other_commands "$hook" prompt)"
     echo "  [$label] UserPromptSubmit -> $prompt_cmd"
 
     if [ "$PROMPT_ONLY" -eq 0 ]; then
         local posttool_entry
         posttool_entry=$(jq -cn --arg cmd "$posttool_cmd" --arg matcher "$posttool_matcher" \
             '{matcher:$matcher,hooks:[{type:"command",command:$cmd,timeout:20}]}')
-        add_entry "$target" "PostToolUse" "$posttool_entry" "$posttool_cmd" "$other --mode $posttool_mode"
+        add_entry "$target" "PostToolUse" "$posttool_entry" "$posttool_cmd" "$(other_commands "$hook" "$posttool_mode")"
         echo "  [$label] PostToolUse ($posttool_matcher) -> $posttool_cmd"
 
         # PreToolUse is wired for both agents with the same flag as PostToolUse:
@@ -328,7 +325,7 @@ wire_agent() {
         local pretool_entry
         pretool_entry=$(jq -cn --arg cmd "$pretool_cmd" --arg matcher "$pretool_matcher" \
             '{matcher:$matcher,hooks:[{type:"command",command:$cmd,timeout:20}]}')
-        add_entry "$target" "PreToolUse" "$pretool_entry" "$pretool_cmd" "$other --mode $pretool_mode"
+        add_entry "$target" "PreToolUse" "$pretool_entry" "$pretool_cmd" "$(other_commands "$hook" "$pretool_mode")"
         echo "  [$label] PreToolUse ($pretool_matcher) -> $pretool_cmd"
     else
         echo "  [$label] PreToolUse and PostToolUse skipped (--prompt-only)"
@@ -383,9 +380,10 @@ pilot_run() {
 }
 
 # A running server keeps the code it started with, so the new files take effect
-# only once it stops. Match the script name and the port, not the path: a server
-# started by hand from the hooks directory shows only "pii-server.py".
-SERVER_PATTERN="pii[-_]server\.py .*--port $PORT( |\$)"
+# only once it stops. Match the script name and the port, not the full path: a server
+# started by hand from the hooks directory shows only "pii/server.py", and one from an
+# install before that folder shows "pii-server.py".
+SERVER_PATTERN="pii([-_]|/)server\.py .*--port $PORT( |\$)"
 stop_running_server() {
     local pids
     pids=$(pgrep -f "$SERVER_PATTERN" | tr '\n' ' ' || true)
@@ -425,6 +423,16 @@ if [ "$CODEX_PRESENT" -eq 1 ]; then
     grep -qF "\"$HOOK_COMMAND --mode prompt\"" "$CODEX_HOOKS" 2>/dev/null || CODEX_NEEDS_TRUST=1
     wire_agent "codex"  "$CODEX_HOOKS"     "codex-posttool" "codex-pretool" "$HOOK_COMMAND"
 fi
+
+# Only now: until the wiring above, a hook could still run an old file.
+for file in "${LEGACY_FILES[@]}"; do
+    [ -e "$HOOKS_DIR/$file" ] || continue
+    rm -f "$HOOKS_DIR/$file"
+    echo "Removed the old $HOOKS_DIR/$file"
+done
+# Python cached the old modules beside them. Other hooks may share the folder.
+rm -f "$HOOKS_DIR"/__pycache__/pii_*.pyc
+rmdir "$HOOKS_DIR/__pycache__" 2>/dev/null || true
 
 echo
 echo "Done. Restart any running agent for the changes to take effect."

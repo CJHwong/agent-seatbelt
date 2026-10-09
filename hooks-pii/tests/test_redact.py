@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
-"""Tests for pii_redact_lite.py.
+"""Tests for redact.py.
 
 This suite needs the model dependencies, so it is not in coverage.sh's offline
 set and CI does not run it. Run it with:
 
   uv run --with ai-edge-litert --with tokenizers --with numpy \
-      --with torch --with transformers python -m unittest discover -s . -p 'test_pii_redact_lite.py'
+      --with torch --with transformers python -m unittest discover -s . -p 'test_redact.py'
 
 The interpreter is stubbed rather than loaded. A real 23 MB graph would test the
 LiteRT runtime, and what these tests are for is the code around it: the graph
@@ -31,11 +31,11 @@ from tokenizers import (  # ty: ignore[unresolved-import]
 )
 
 # The module under test lives one directory up, beside the server that imports it.
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "server"))
 
-import pii_redact_lite
-from pii_redact_lite import LitertRedactModel
-from pii_redact_torch import MAX_SEQUENCE_LENGTH, _window_ranges
+from detectors import redact
+from detectors.redact import LitertRedactModel
+from detectors.redact_torch import MAX_SEQUENCE_LENGTH, _window_ranges
 
 
 LITE_ID2LABEL = {
@@ -135,7 +135,7 @@ class FakeInterpreter:
 
 def load(cache_dir: Path, num_threads: int | None = None) -> LitertRedactModel:
     """Build a model with the interpreter swapped for the fake."""
-    with patch.object(pii_redact_lite, "Interpreter", FakeInterpreter):
+    with patch.object(redact, "Interpreter", FakeInterpreter):
         return LitertRedactModel(cache_dir, num_threads)
 
 
@@ -152,20 +152,20 @@ class EnsureAssetsTests(unittest.TestCase):
                 return str(cache_dir / kwargs["filename"])
 
             with (
-                patch.object(pii_redact_lite, "CACHE_DIR", cache_dir),
+                patch.object(redact, "CACHE_DIR", cache_dir),
                 patch("huggingface_hub.hf_hub_download", record),
             ):
-                returned = pii_redact_lite.ensure_assets()
+                returned = redact.ensure_assets()
 
             self.assertEqual(returned, cache_dir)
             self.assertTrue(cache_dir.is_dir())
             self.assertEqual(
                 [call["filename"] for call in calls],
-                list(pii_redact_lite.REQUIRED_FILES),
+                list(redact.REQUIRED_FILES),
             )
             for call in calls:
-                self.assertEqual(call["repo_id"], pii_redact_lite.REDACT_REPO)
-                self.assertEqual(call["revision"], pii_redact_lite.REDACT_REVISION)
+                self.assertEqual(call["repo_id"], redact.REDACT_REPO)
+                self.assertEqual(call["revision"], redact.REDACT_REVISION)
                 self.assertEqual(call["local_dir"], str(cache_dir))
 
 
@@ -219,7 +219,7 @@ class GraphContractTests(unittest.TestCase):
             return [{"name": "x", "shape": np.array([1, 256]), "index": 0}]
 
         with (
-            patch.object(pii_redact_lite, "Interpreter", FakeInterpreter),
+            patch.object(redact, "Interpreter", FakeInterpreter),
             patch.object(FakeInterpreter, "get_input_details", unnamed),
         ):
             with self.assertRaisesRegex(RuntimeError, "no input named"):
@@ -286,7 +286,7 @@ class WindowProbabilityTests(unittest.TestCase):
         that reading, so the two arms are given different high classes at the
         same token and both must survive.
         """
-        from pii_redact_torch import CONTENT_WINDOW_LENGTH, WINDOW_OVERLAP
+        from detectors.redact_torch import CONTENT_WINDOW_LENGTH, WINDOW_OVERLAP
 
         # The last token the second window starts on, so both windows cover it:
         # content index `overlap_token` in the first, and index 0 in the second.

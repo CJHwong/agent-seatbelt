@@ -28,14 +28,14 @@ from typing import Any
 import numpy as np  # ty: ignore[unresolved-import]
 from ai_edge_litert.interpreter import Interpreter  # ty: ignore[unresolved-import]
 
-from pii_redact_torch import (
+from detectors.redact_torch import (
     CACHE_DIR,
     MAX_SEQUENCE_LENGTH,
     REDACT_REPO,
     REDACT_REVISION,
     RedactModel,
     # The window geometry belongs to the graph, not to the PyTorch backend: both
-    # backends run 254-token windows over a 256-wide input. pii_redact_torch names
+    # backends run 254-token windows over a 256-wide input. redact_torch.py names
     # it with a leading underscore, but its own tests import it by that name, so
     # it is already shared rather than private.
     _window_ranges,

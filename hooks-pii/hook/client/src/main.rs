@@ -1,10 +1,10 @@
 //! The hook command, without a shell.
 //!
-//! pii-check.sh spends most of a warm call starting bash, about 5 ms on Linux and
+//! check.sh spends most of a warm call starting bash, about 5 ms on Linux and
 //! 9 ms for a Homebrew bash, before it sends one request. This binary sends the
 //! same request to POST /hook and prints the answer. It handles the answer the
 //! server gives when the scan ran, and nothing else: a cold port, a failure status,
-//! a timeout, or a setting the script would refuse all go to pii-check.sh, with the
+//! a timeout, or a setting the script would refuse all go to check.sh, with the
 //! same payload and arguments. The script then gives the answer it always gave, so
 //! every failure message lives in one place.
 
@@ -15,7 +15,7 @@ use std::path::Path;
 use std::process::{self, Command, Stdio};
 use std::time::{Duration, Instant};
 
-/// The script's own budget for one request, in pii-check.sh.
+/// The script's own budget for one request, in check.sh.
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
 /// Closes the stdout part and the stderr part of a /hook answer.
 const SEPARATOR: u8 = 0x1e;
@@ -39,7 +39,7 @@ fn main() {
     let _ = io::stderr().write_all(&stderr);
 }
 
-/// The HTTP request pii-check.sh sends, or None for a call the script must judge.
+/// The HTTP request check.sh sends, or None for a call the script must judge.
 fn request(arguments: &[String], payload: &[u8]) -> Option<Vec<u8>> {
     let mode = mode(arguments)?;
     let server_mode = setting("PII_SERVER_MODE", "redact");
@@ -118,11 +118,11 @@ fn exchange(request: &[u8]) -> Option<Vec<u8>> {
     }
 }
 
-/// Run pii-check.sh from this binary's folder on the same input, and exit as it exits.
+/// Run check.sh from this binary's folder on the same input, and exit as it exits.
 fn hand_off(arguments: &[String], payload: &[u8]) -> ! {
     let script = match env::current_exe() {
-        Ok(path) => path.with_file_name("pii-check.sh"),
-        Err(error) => fail(&format!("could not locate pii-check.sh: {error}")),
+        Ok(path) => path.with_file_name("check.sh"),
+        Err(error) => fail(&format!("could not locate check.sh: {error}")),
     };
     let mut child = match Command::new(&script)
         .args(arguments)

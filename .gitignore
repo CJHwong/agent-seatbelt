@@ -30,9 +30,9 @@ dist/
 .DS_Store
 
 # The native rules engine: cargo output and the module built from it
-hooks-pii/native/target*/
-hooks-pii/pii_rules_native*.so
+hooks-pii/server/rules/native/target*/
+hooks-pii/server/rules/pii_rules_native*.so
 
 # The native hook command: cargo output and the binary CI copies beside the script
-hooks-pii/client/target/
-hooks-pii/pii-hook
+hooks-pii/hook/client/target/
+hooks-pii/hook/hook

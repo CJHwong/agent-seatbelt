@@ -1,4 +1,4 @@
-"""Shared harness for the pii-check.sh tests.
+"""Shared harness for the check.sh tests.
 
 Holds no tests. Both test_hook_modes.py and test_hook_paths.py build on it, so
 the fake detector, the environment scrubbing, and the subprocess call live in
@@ -26,27 +26,27 @@ from pathlib import Path
 from typing import Any, ClassVar
 
 TESTS_DIR = Path(__file__).resolve().parent
-sys.path.insert(0, str(TESTS_DIR.parent))
+sys.path.insert(0, str(TESTS_DIR.parent / "server"))
 
 from fake_pii_server import NoLookupHTTPServer  # noqa: E402
-from pii_hook import HookError, Policy, answer  # noqa: E402
+from answer import HookError, Policy, answer  # noqa: E402
 
-HOOK_PATH = TESTS_DIR.parent / "pii-check.sh"
+HOOK_PATH = TESTS_DIR.parent / "hook" / "check.sh"
 FAKE_SERVER_PATH = TESTS_DIR / "fake_pii_server.py"
 COV_ENV_PATH = TESTS_DIR / "cov_env.sh"
 # The native hook command, when set. The suites then run it in place of the script,
-# and every assertion holds for both. It hands failures to the pii-check.sh beside it.
+# and every assertion holds for both. It hands failures to the check.sh beside it.
 HOOK_CLIENT = os.environ.get("PII_TEST_HOOK_CLIENT", "")
 
 
 @functools.cache
 def client_beside_script() -> Path:
-    """A copy of the client in a folder where pii-check.sh is the script under test."""
+    """A copy of the client in a folder where check.sh is the script under test."""
     folder = Path(tempfile.mkdtemp(prefix="pii-hook-client."))
     atexit.register(shutil.rmtree, folder, ignore_errors=True)
-    client = folder / "pii-hook"
+    client = folder / "hook"
     shutil.copy2(HOOK_CLIENT, client)
-    (folder / "pii-check.sh").symlink_to(HOOK_PATH)
+    (folder / "check.sh").symlink_to(HOOK_PATH)
     return client
 
 
@@ -86,7 +86,7 @@ class FakePiiHandler(BaseHTTPRequestHandler):
     health_status = 200
     health_mode = "redact"
     received_body_bytes = 0
-    # Above this many bytes, answer 413 before reading the body, as pii-server.py does
+    # Above this many bytes, answer 413 before reading the body, as server.py does
     # for a payload far above its cap.
     refuse_body_above: ClassVar[int | None] = None
 
@@ -198,7 +198,7 @@ class FakePiiHandler(BaseHTTPRequestHandler):
 
 
 class HookRunner(unittest.TestCase):
-    """Runs pii-check.sh with a controlled environment. Holds no tests."""
+    """Runs check.sh with a controlled environment. Holds no tests."""
 
     detector_port: int = 0
     server_mode = "redact"

@@ -13,3 +13,8 @@ codegen-units = 1
 lto = true
 panic = "abort"
 strip = true
+
+# Installed as ~/.claude/hooks/pii/hook. The release asset keeps the name pii-hook-<platform>.
+[[bin]]
+name = "hook"
+path = "src/main.rs"

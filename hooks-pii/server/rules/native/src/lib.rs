@@ -1,6 +1,6 @@
 //! Native matcher for pii_rules.
 //!
-//! It holds no rule of its own. pii_rules.py hands over its pattern strings,
+//! It holds no rule of its own. rules/engine.py hands over its pattern strings,
 //! their required keywords, and the characters it strips, so the rules keep one
 //! source of truth. This module only finds the matches, faster than `re` does:
 //! PCRE2 compiles each pattern to machine code, and one Aho-Corasick pass over

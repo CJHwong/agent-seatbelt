@@ -38,8 +38,8 @@ import numpy as np  # ty: ignore[unresolved-import]
 import onnxruntime  # ty: ignore[unresolved-import]
 from tokenizers import Tokenizer  # ty: ignore[unresolved-import]
 
-from pii_rules import deterministic_spans, merge_spans
-from pii_tagger_rules import apply_chain
+from rules.engine import deterministic_spans, merge_spans
+from rules.tagger_rules import apply_chain
 
 # Release 2026.10 of the model repository.
 TAGGER_REPO = "cjhwong/seatbelt-pii-tagger"

@@ -2,7 +2,7 @@
 # PII scanner hook — works for Claude Code, Codex, and UserPromptSubmit.
 # Auto-starts the local ONNX int8 server on first call, fail-open on any error.
 #
-# Usage: pii-check.sh --mode <mode>
+# Usage: check.sh --mode <mode>
 #   prompt           UserPromptSubmit (Claude Code + Codex)
 #   claude-posttool  Claude Code PostToolUse
 #   codex-posttool   Codex PostToolUse
@@ -39,7 +39,7 @@ done
 
 PORT="${PII_PORT:-9123}"
 HOST="127.0.0.1"
-SERVER_SCRIPT="${PII_SERVER_SCRIPT:-$HOME/.claude/hooks/pii-server.py}"
+SERVER_SCRIPT="${PII_SERVER_SCRIPT:-$HOME/.claude/hooks/pii/server.py}"
 SERVER_MODE="${PII_SERVER_MODE:-redact}"
 HEALTH="http://$HOST:$PORT/health"
 HOOK="http://$HOST:$PORT/hook"
@@ -358,21 +358,23 @@ start_server() {
     health_ok || detector_failure "server did not become healthy"
 }
 
-# The hash code_version in pii_hook.py takes: the script, then each pii_*.py beside
-# it by name. LC_ALL=C sorts the glob by byte, as Python sorts the paths. A glob with
-# no match fails cat, and the hash of the script alone is still the right answer.
+# The hash code_version in answer.py takes: every .py file in the server's folder and
+# below, in the byte order of its relative path. LC_ALL=C gives sort that order; a
+# UTF-8 locale can put redact_torch.py before redact.py.
 installed_version() {
-    local LC_ALL=C
-    cat "$SERVER_SCRIPT" "${SERVER_SCRIPT%/*}"/pii_*.py 2>/dev/null | shasum -a 256 2>/dev/null | cut -d' ' -f1 || true
+    [ -f "$SERVER_SCRIPT" ] || return 0
+    (cd "${SERVER_SCRIPT%/*}" && find . -name '*.py' | LC_ALL=C sort | tr '\n' '\0' | xargs -0 cat) 2>/dev/null |
+        shasum -a 256 2>/dev/null | cut -d' ' -f1 || true
 }
 
 # A server keeps the code it started with. When the hook files change under it, as a
 # copy synced from another machine does, /health still answers ok while the old code
 # fails each request. Stop such a server so start_server brings up the installed code.
 # Returns 1 when the server is current, when no version can be compared, or when the
-# process is not a pii-server on this port, the installer's pattern. The status the
-# caller holds then stands.
-SERVER_PATTERN="pii[-_]server\.py .*--port $PORT( |\$)"
+# process is not a pii server on this port, the installer's pattern: the new
+# pii/server.py or the pii-server.py of an install before it. The status the caller
+# holds then stands.
+SERVER_PATTERN="pii([-_]|/)server\.py .*--port $PORT( |\$)"
 stop_stale_server() {
     local current_health running expected pids
     current_health=$(health_json) || return 1

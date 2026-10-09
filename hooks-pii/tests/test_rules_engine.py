@@ -19,27 +19,26 @@ from typing import cast
 from unittest import mock
 
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "server"))
 
-import pii_hook
-import pii_rules
-
+import answer
+from rules import engine
 
 # The labels the hook puts in a tier. A label outside this set reaches the hook as
 # tier "unknown".
-HOOK_TIER_LABELS = set(pii_hook.TIERS)
+HOOK_TIER_LABELS = set(answer.TIERS)
 
 
 def span_texts(text: str) -> set[str]:
     """Return the exact source text each deterministic span covers."""
-    return {str(span["text"]) for span in pii_rules.deterministic_spans(text)}
+    return {str(span["text"]) for span in engine.deterministic_spans(text)}
 
 
 def labeled_texts(text: str) -> set[tuple[str, str]]:
     """Return (text, label) for each deterministic span."""
     return {
         (str(span["text"]), str(span["label"]))
-        for span in pii_rules.deterministic_spans(text)
+        for span in engine.deterministic_spans(text)
     }
 
 
@@ -47,14 +46,14 @@ def span_tuples(text: str) -> list[tuple[int, int, str]]:
     """Return (start, end, label) for each deterministic span, in order."""
     return [
         (cast(int, span["start"]), cast(int, span["end"]), str(span["label"]))
-        for span in pii_rules.deterministic_spans(text)
+        for span in engine.deterministic_spans(text)
     ]
 
 
 class ContactAndIdentifierTests(unittest.TestCase):
     def test_clean_text_produces_no_spans(self) -> None:
         self.assertEqual(
-            pii_rules.deterministic_spans("the quick brown fox jumps over it"), []
+            engine.deterministic_spans("the quick brown fox jumps over it"), []
         )
 
     def test_email_is_labeled_private_email(self) -> None:
@@ -112,7 +111,7 @@ class ContactAndIdentifierTests(unittest.TestCase):
 
     def test_spans_never_overlap_and_come_back_in_reading_order(self) -> None:
         text = "Contact alice@example.com or 415-555-1234 about 2024-01-15."
-        spans = pii_rules.deterministic_spans(text)
+        spans = engine.deterministic_spans(text)
         self.assertEqual(
             [str(span["label"]) for span in spans],
             ["private_email", "private_phone", "private_date"],
@@ -202,7 +201,7 @@ class GuardContextMatrixTests(unittest.TestCase):
                 str(span["label"]),
                 str(span["text"]),
             )
-            for span in pii_rules.deterministic_spans(text)
+            for span in engine.deterministic_spans(text)
         ]
 
     def test_a_trailing_context_never_hides_a_value(self) -> None:
@@ -255,7 +254,7 @@ class InvisibleCharacterTests(unittest.TestCase):
     BELL = chr(0x07)
 
     def visible_spans(self, text: str) -> list[tuple[int, int, str]]:
-        spans = pii_rules.deterministic_spans(text)
+        spans = engine.deterministic_spans(text)
         self.assertTrue(spans, text)
         for span in spans:
             start = cast(int, span["start"])
@@ -405,11 +404,11 @@ class PhoneRuleTests(unittest.TestCase):
 class LuhnTests(unittest.TestCase):
     def test_doubling_a_digit_above_four_subtracts_nine(self) -> None:
         # 59 -> 9 + (5 * 2 - 9) = 10. Only the subtract-nine branch can make it 0.
-        self.assertTrue(pii_rules.luhn_valid("59"))
+        self.assertTrue(engine.luhn_valid("59"))
 
     def test_checksum_that_is_not_a_multiple_of_ten_is_invalid(self) -> None:
         # 19 -> 9 + 1 * 2 = 11.
-        self.assertFalse(pii_rules.luhn_valid("19"))
+        self.assertFalse(engine.luhn_valid("19"))
 
 
 # Built with join rather than written out. Contiguous, this is a credential-shaped
@@ -530,17 +529,17 @@ class SecretPlaceholderTests(unittest.TestCase):
     def test_blank_values_are_placeholders(self) -> None:
         for value in ("", "   "):
             with self.subTest(value=value):
-                self.assertTrue(pii_rules._is_secret_placeholder(value))
+                self.assertTrue(engine._is_secret_placeholder(value))
 
     def test_brace_and_variable_tokens_are_placeholders(self) -> None:
         for value in ("<your-key>", "$TOKEN", "[redacted]", "{value}"):
             with self.subTest(value=value):
-                self.assertTrue(pii_rules._is_secret_placeholder(value))
+                self.assertTrue(engine._is_secret_placeholder(value))
 
     def test_demo_words_are_placeholders_regardless_of_case(self) -> None:
         for value in ("changeme", "REDACTED", "None", "  Test  "):
             with self.subTest(value=value):
-                self.assertTrue(pii_rules._is_secret_placeholder(value))
+                self.assertTrue(engine._is_secret_placeholder(value))
 
     def test_example_prefixes_are_placeholders(self) -> None:
         for value in (
@@ -551,10 +550,10 @@ class SecretPlaceholderTests(unittest.TestCase):
             "removed 000000",
         ):
             with self.subTest(value=value):
-                self.assertTrue(pii_rules._is_secret_placeholder(value))
+                self.assertTrue(engine._is_secret_placeholder(value))
 
     def test_a_real_looking_value_is_not_a_placeholder(self) -> None:
-        self.assertFalse(pii_rules._is_secret_placeholder("hunter2xyz"))
+        self.assertFalse(engine._is_secret_placeholder("hunter2xyz"))
 
 
 class CsvSecretTests(unittest.TestCase):
@@ -599,7 +598,7 @@ class MergeSpansTests(unittest.TestCase):
             {"start": 20, "end": 37, "label": "private_email"},
             {"start": 0, "end": 15, "label": "private_email"},
         ]
-        merged = pii_rules.merge_spans(text, spans)
+        merged = engine.merge_spans(text, spans)
         self.assertEqual(
             [span["text"] for span in merged],
             ["bob@example.com", "alice@example.com"],
@@ -611,7 +610,7 @@ class MergeSpansTests(unittest.TestCase):
             {"start": 0, "end": len(text), "label": "private_url"},
             {"start": 0, "end": len(text), "label": "secret"},
         ]
-        merged = pii_rules.merge_spans(text, spans)
+        merged = engine.merge_spans(text, spans)
         self.assertEqual([span["label"] for span in merged], ["secret"])
         self.assertEqual(merged[0]["text"], text)
 
@@ -621,7 +620,7 @@ class MergeSpansTests(unittest.TestCase):
             {"start": 0, "end": 5, "label": "private_email"},
             {"start": 0, "end": 17, "label": "private_email"},
         ]
-        merged = pii_rules.merge_spans(text, spans)
+        merged = engine.merge_spans(text, spans)
         self.assertEqual([(span["start"], span["end"]) for span in merged], [(0, 17)])
 
     def test_an_equal_length_overlap_keeps_the_tail_of_the_later_span(self) -> None:
@@ -630,7 +629,7 @@ class MergeSpansTests(unittest.TestCase):
             {"start": 3, "end": 8, "label": "private_date"},
             {"start": 0, "end": 5, "label": "private_date"},
         ]
-        merged = pii_rules.merge_spans(text, spans)
+        merged = engine.merge_spans(text, spans)
         self.assertEqual(
             [(span["start"], span["end"]) for span in merged], [(0, 5), (5, 8)]
         )
@@ -645,7 +644,7 @@ class MergeSpansTests(unittest.TestCase):
             {"start": 8, "end": 11, "label": "secret"},
             {"start": 12, "end": 20, "label": "secret"},
         ]
-        merged = pii_rules.merge_spans(text, spans)
+        merged = engine.merge_spans(text, spans)
         self.assertEqual(
             [
                 (span["start"], span["end"], span["label"], span["text"])
@@ -664,7 +663,7 @@ class MergeSpansTests(unittest.TestCase):
             {"start": 0, "end": 10, "label": "private_url"},
             {"start": 5, "end": 9, "label": "secret"},
         ]
-        merged = pii_rules.merge_spans(text, spans)
+        merged = engine.merge_spans(text, spans)
         self.assertEqual(
             [(span["start"], span["end"], span["label"]) for span in merged],
             [(0, 5, "private_url"), (5, 9, "secret")],
@@ -683,7 +682,7 @@ class MergeSpansTests(unittest.TestCase):
             {"start": 3, "end": 7, "label": "secret"},
             {"start": 0, "end": 10, "label": "private_url"},
         ]
-        merged = pii_rules.merge_spans(text, spans)
+        merged = engine.merge_spans(text, spans)
         self.assertEqual(
             [
                 (span["start"], span["end"], span["label"], span["text"])
@@ -702,7 +701,7 @@ class MergeSpansTests(unittest.TestCase):
             {"start": 0, "end": 10, "label": "secret"},
             {"start": 2, "end": 8, "label": "private_url"},
         ]
-        merged = pii_rules.merge_spans(text, spans)
+        merged = engine.merge_spans(text, spans)
         self.assertEqual(
             [(span["start"], span["end"], span["label"]) for span in merged],
             [(0, 10, "secret")],
@@ -714,7 +713,7 @@ class MergeSpansTests(unittest.TestCase):
             {"start": 0, "end": 8, "label": "made_up"},
             {"start": 0, "end": 8, "label": "private_date"},
         ]
-        merged = pii_rules.merge_spans(text, spans)
+        merged = engine.merge_spans(text, spans)
         self.assertEqual([span["label"] for span in merged], ["private_date"])
 
     def test_out_of_range_spans_are_dropped_before_the_priority_sort(self) -> None:
@@ -726,7 +725,7 @@ class MergeSpansTests(unittest.TestCase):
             {"start": 0, "end": 99, "label": "secret"},
             {"start": 0, "end": 5, "label": "private_date"},
         ]
-        merged = pii_rules.merge_spans(text, spans)
+        merged = engine.merge_spans(text, spans)
         self.assertEqual(len(merged), 1)
         self.assertEqual(merged[0]["label"], "private_date")
         self.assertEqual(merged[0]["text"], "hello")
@@ -734,7 +733,7 @@ class MergeSpansTests(unittest.TestCase):
 
 class LabelContractTests(unittest.TestCase):
     def test_the_priority_map_matches_the_hook_tier_map(self) -> None:
-        self.assertEqual(set(pii_rules.SPAN_PRIORITY), HOOK_TIER_LABELS)
+        self.assertEqual(set(engine.SPAN_PRIORITY), HOOK_TIER_LABELS)
 
     def test_every_emitted_label_has_a_priority(self) -> None:
         samples = (
@@ -750,10 +749,10 @@ class LabelContractTests(unittest.TestCase):
         emitted = {
             str(span["label"])
             for text in samples
-            for span in pii_rules.deterministic_spans(text)
+            for span in engine.deterministic_spans(text)
         }
         self.assertTrue(emitted)
-        self.assertLessEqual(emitted, set(pii_rules.SPAN_PRIORITY))
+        self.assertLessEqual(emitted, set(engine.SPAN_PRIORITY))
 
 
 TESTS_DIR = Path(__file__).resolve().parent
@@ -777,7 +776,7 @@ def corpus_texts() -> list[tuple[str, str]]:
         case = json.loads(line)
         texts.append((case["id"], case["text"]))
     # The rule source itself: long, dense with keywords, and holding CJK text.
-    texts.append(("pii_rules.py", Path(pii_rules.__file__).read_text()))
+    texts.append(("rules/engine.py", Path(engine.__file__).read_text()))
     for sample in PORTED_SAMPLES:
         texts.append((f"sample:{sample['rule']}", sample["text"]))
     return texts
@@ -795,10 +794,10 @@ PORTED_SAMPLES = [
 
 def only_ported_rule(rule_id: str):
     """Scan with one ported rule as the only secret rule."""
-    pattern = pii_rules.PORTED_PATTERNS[rule_id]
-    checks = tuple(c for c in pii_rules.PORTED_CHECKS if c[0] is pattern)
+    pattern = engine.PORTED_PATTERNS[rule_id]
+    checks = tuple(c for c in engine.PORTED_CHECKS if c[0] is pattern)
     return mock.patch.multiple(
-        pii_rules, SECRET_RULES=(), PORTED_CHECKS=checks, _NATIVE_ENGINE=None
+        engine, SECRET_RULES=(), PORTED_CHECKS=checks, _NATIVE_ENGINE=None
     )
 
 
@@ -817,8 +816,7 @@ class RuleFalsePositiveTests(unittest.TestCase):
         for case_id in [f"clean-{number:03}" for number in range(51, 58)]:
             with self.subTest(case=case_id):
                 labels = {
-                    span["label"]
-                    for span in pii_rules.deterministic_spans(cases[case_id])
+                    span["label"] for span in engine.deterministic_spans(cases[case_id])
                 }
                 self.assertLessEqual(labels, {"private_url"})
 
@@ -853,7 +851,7 @@ class PortedRuleTests(unittest.TestCase):
     def test_every_rule_finds_its_sample(self) -> None:
         self.assertEqual(
             {sample["rule"] for sample in PORTED_SAMPLES},
-            set(pii_rules.PORTED_PATTERNS),
+            set(engine.PORTED_PATTERNS),
         )
         for sample in PORTED_SAMPLES:
             with self.subTest(rule=sample["rule"]), only_ported_rule(sample["rule"]):
@@ -896,9 +894,9 @@ class PortedRuleTests(unittest.TestCase):
             if name.startswith("sample:"):
                 continue
             with self.subTest(case=name), python_engine():
-                with mock.patch.object(pii_rules, "PORTED_CHECKS", ()):
-                    without = pii_rules.deterministic_spans(text)
-                self.assertEqual(pii_rules.deterministic_spans(text), without)
+                with mock.patch.object(engine, "PORTED_CHECKS", ()):
+                    without = engine.deterministic_spans(text)
+                self.assertEqual(engine.deterministic_spans(text), without)
 
     def test_the_github_checklist_names_only_real_rules(self) -> None:
         rows = [
@@ -910,15 +908,15 @@ class PortedRuleTests(unittest.TestCase):
             rows[0], ["secret_type", "provider", "push_protection", "rule_id"]
         )
         named = {row[3] for row in rows[1:]} - {"-"}
-        rule_patterns = {name for name in vars(pii_rules) if name.endswith("_PATTERN")}
+        rule_patterns = {name for name in vars(engine) if name.endswith("_PATTERN")}
         # Every ported rule covers a type, and every name is a rule.
-        self.assertLessEqual(set(pii_rules.PORTED_PATTERNS), named)
-        self.assertLessEqual(named, set(pii_rules.PORTED_PATTERNS) | rule_patterns)
+        self.assertLessEqual(set(engine.PORTED_PATTERNS), named)
+        self.assertLessEqual(named, set(engine.PORTED_PATTERNS) | rule_patterns)
 
 
 class TokenCountTests(unittest.TestCase):
     def test_the_vocabulary_keeps_every_rank(self) -> None:
-        ranks = pii_rules._cl100k_ranks()
+        ranks = engine._cl100k_ranks()
         self.assertEqual(sorted(ranks.values()), list(range(100256)))
         # Ranks from OpenAI's tiktoken.
         self.assertEqual(ranks[b"hello"], 15339)
@@ -941,11 +939,11 @@ class TokenCountTests(unittest.TestCase):
         }
         for text, count in expected.items():
             with self.subTest(text=text):
-                self.assertEqual(pii_rules._token_count(text), count)
+                self.assertEqual(engine._token_count(text), count)
 
 
 def python_engine():
-    return mock.patch.object(pii_rules, "_NATIVE_ENGINE", None)
+    return mock.patch.object(engine, "_NATIVE_ENGINE", None)
 
 
 class KeywordGateTests(unittest.TestCase):
@@ -953,16 +951,16 @@ class KeywordGateTests(unittest.TestCase):
 
     def test_the_gates_never_change_a_result(self) -> None:
         # Ported keywords are rule semantics, not literals the pattern needs.
-        ported = set(pii_rules.PORTED_PATTERNS.values())
+        ported = set(engine.PORTED_PATTERNS.values())
         ungated = {
             pattern: keywords if pattern in ported else ()
-            for pattern, keywords in pii_rules.RULE_KEYWORDS.items()
+            for pattern, keywords in engine.RULE_KEYWORDS.items()
         }
         for name, text in corpus_texts():
             with self.subTest(case=name), python_engine():
-                gated_spans = pii_rules.deterministic_spans(text)
-                with mock.patch.object(pii_rules, "RULE_KEYWORDS", ungated):
-                    self.assertEqual(gated_spans, pii_rules.deterministic_spans(text))
+                gated_spans = engine.deterministic_spans(text)
+                with mock.patch.object(engine, "RULE_KEYWORDS", ungated):
+                    self.assertEqual(gated_spans, engine.deterministic_spans(text))
 
     def test_a_folding_character_opens_every_gate(self) -> None:
         # IGNORECASE matches the long s to "s", so "ſecret" is the secret
@@ -973,16 +971,14 @@ class KeywordGateTests(unittest.TestCase):
                 ("q8Rv2LmX7pWz4NbK", "secret"),
                 [
                     (str(span["text"]), str(span["label"]))
-                    for span in pii_rules.deterministic_spans(text)
+                    for span in engine.deterministic_spans(text)
                 ],
             )
 
     def test_every_secret_column_name_holds_a_keyword(self) -> None:
-        for name in pii_rules.SECRET_COLUMN_NAMES:
+        for name in engine.SECRET_COLUMN_NAMES:
             with self.subTest(name=name):
-                self.assertTrue(
-                    any(k in name for k in pii_rules.SECRET_COLUMN_KEYWORDS)
-                )
+                self.assertTrue(any(k in name for k in engine.SECRET_COLUMN_KEYWORDS))
 
     def test_a_header_that_folds_to_a_secret_column_is_still_read(self) -> None:
         # casefold turns "PAßWORD" into "password", and lower() does not.
@@ -993,28 +989,28 @@ class KeywordGateTests(unittest.TestCase):
         not_rules = ("INVISIBLE_PATTERN",)
         declared = {
             value
-            for name, value in vars(pii_rules).items()
+            for name, value in vars(engine).items()
             if name.endswith("_PATTERN") and name not in not_rules
         }
-        declared.update(pii_rules.PORTED_PATTERNS.values())
-        self.assertEqual(declared, set(pii_rules.RULE_KEYWORDS))
+        declared.update(engine.PORTED_PATTERNS.values())
+        self.assertEqual(declared, set(engine.RULE_KEYWORDS))
 
 
 @unittest.skipUnless(
-    pii_rules.RULES_ENGINE == "native", "the native engine is not built here"
+    engine.RULES_ENGINE == "native", "the native engine is not built here"
 )
 class NativeEngineTests(unittest.TestCase):
     """The native engine must return exactly what re returns."""
 
     def native_scan(self, text: str):
-        engine = pii_rules._NATIVE_ENGINE
-        assert engine is not None
-        return engine.scan(text)
+        native = engine._NATIVE_ENGINE
+        assert native is not None
+        return native.scan(text)
 
     def assert_same_as_python(self, text: str) -> None:
-        native_spans = pii_rules.deterministic_spans(text)
+        native_spans = engine.deterministic_spans(text)
         with python_engine():
-            self.assertEqual(native_spans, pii_rules.deterministic_spans(text))
+            self.assertEqual(native_spans, engine.deterministic_spans(text))
 
     def test_native_matches_python_on_every_corpus_text(self) -> None:
         for name, text in corpus_texts():
@@ -1039,10 +1035,10 @@ class NativeEngineTests(unittest.TestCase):
                 self.assert_same_as_python(text)
 
     def test_a_character_the_unicode_tables_disagree_on_is_declined(self) -> None:
-        import pii_rules_native  # ty: ignore[unresolved-import]
+        from rules import pii_rules_native  # ty: ignore[unresolved-import]
 
-        decline = pii_rules._native_decline_characters(pii_rules_native)
-        newer = [c for c in decline if c not in pii_rules.FOLDING_CHARACTERS]
+        decline = engine._native_decline_characters(pii_rules_native)
+        newer = [c for c in decline if c not in engine.FOLDING_CHARACTERS]
         if not newer:
             self.skipTest("Python and PCRE2 share one Unicode version here")
         text = f"{newer[0]}1234567890 ada@example.com"
@@ -1055,15 +1051,15 @@ class NativeEngineTests(unittest.TestCase):
         A text without those characters is matched with PCRE2's \\w and \\b,
         so any other difference would reach a result.
         """
-        import pii_rules_native  # ty: ignore[unresolved-import]
+        from rules import pii_rules_native  # ty: ignore[unresolved-import]
 
         every = "".join(
             map(chr, itertools.chain(range(0xD800), range(0xE000, 0x110000)))
         )
         members = pii_rules_native.class_members
         own = set(members(r"\w", False, every))
-        spelled = set(members(f"[{pii_rules.PYTHON_WORD_CHARACTERS}]", False, every))
-        checked = set(members(pii_rules.PCRE2_WORD_DIFFERENCE, False, every))
+        spelled = set(members(f"[{engine.PYTHON_WORD_CHARACTERS}]", False, every))
+        checked = set(members(engine.PCRE2_WORD_DIFFERENCE, False, every))
         self.assertEqual(own ^ spelled, checked)
 
     def test_the_tables_only_disagree_on_characters_python_does_not_know(self) -> None:
@@ -1073,13 +1069,13 @@ class NativeEngineTests(unittest.TestCase):
         a character the two engines place differently must be one this
         Python's Unicode tables leave unassigned.
         """
-        import pii_rules_native  # ty: ignore[unresolved-import]
+        from rules import pii_rules_native  # ty: ignore[unresolved-import]
 
-        derived = pii_rules._derive_decline_characters(pii_rules_native.class_members)
+        derived = engine._derive_decline_characters(pii_rules_native.class_members)
         unexplained = [
             f"U+{ord(c):04X}"
             for c in derived
-            if c not in pii_rules.FOLDING_CHARACTERS and unicodedata.category(c) != "Cn"
+            if c not in engine.FOLDING_CHARACTERS and unicodedata.category(c) != "Cn"
         ]
         self.assertEqual(unexplained, [])
         self.assertTrue(all(not c.isascii() for c in derived))
@@ -1103,30 +1099,30 @@ class NativeEngineTests(unittest.TestCase):
 class PatternTranslationTests(unittest.TestCase):
     """The native engine reads \\w and \\b the way re does."""
 
-    word = f"[{pii_rules.PYTHON_WORD_CHARACTERS}]"
+    word = f"[{engine.PYTHON_WORD_CHARACTERS}]"
 
     def test_a_word_class_outside_a_set_becomes_a_set(self) -> None:
-        self.assertEqual(pii_rules._pcre2_source(r"a\wb"), f"a{self.word}b")
+        self.assertEqual(engine._pcre2_source(r"a\wb"), f"a{self.word}b")
 
     def test_a_word_class_inside_a_set_joins_it(self) -> None:
         self.assertEqual(
-            pii_rules._pcre2_source(r"(?<![\w+-])"),
-            f"(?<![{pii_rules.PYTHON_WORD_CHARACTERS}+-])",
+            engine._pcre2_source(r"(?<![\w+-])"),
+            f"(?<![{engine.PYTHON_WORD_CHARACTERS}+-])",
         )
 
     def test_a_word_boundary_becomes_lookarounds(self) -> None:
         self.assertEqual(
-            pii_rules._pcre2_source(r"\bAKIA"), pii_rules.PYTHON_WORD_BOUNDARY + "AKIA"
+            engine._pcre2_source(r"\bAKIA"), engine.PYTHON_WORD_BOUNDARY + "AKIA"
         )
 
     def test_an_escaped_backslash_is_left_alone(self) -> None:
-        self.assertEqual(pii_rules._pcre2_source(r"\\w\\b"), r"\\w\\b")
+        self.assertEqual(engine._pcre2_source(r"\\w\\b"), r"\\w\\b")
 
     def test_a_class_with_no_translation_is_refused(self) -> None:
         for source in (r"\W", r"\B"):
             with self.subTest(source=source):
                 with self.assertRaises(ValueError):
-                    pii_rules._pcre2_source(source)
+                    engine._pcre2_source(source)
 
 
 class UnicodeVersionTests(unittest.TestCase):
@@ -1140,8 +1136,8 @@ class UnicodeVersionTests(unittest.TestCase):
             UNICODE_VERSION=unicodedata.unidata_version, class_members=never
         )
         self.assertEqual(
-            set(pii_rules._native_decline_characters(module)),
-            set(pii_rules.FOLDING_CHARACTERS),
+            set(engine._native_decline_characters(module)),
+            set(engine.FOLDING_CHARACTERS),
         )
 
     def test_another_version_derives_the_characters(self) -> None:
@@ -1155,10 +1151,10 @@ class UnicodeVersionTests(unittest.TestCase):
 
         module = types.SimpleNamespace(UNICODE_VERSION="0.0.0", class_members=members)
         self.assertEqual(
-            set(pii_rules._native_decline_characters(module)),
-            set(pii_rules.FOLDING_CHARACTERS),
+            set(engine._native_decline_characters(module)),
+            set(engine.FOLDING_CHARACTERS),
         )
-        self.assertEqual(len(calls), len(pii_rules.UNICODE_CLASS_CHECKS))
+        self.assertEqual(len(calls), len(engine.UNICODE_CLASS_CHECKS))
 
 
 class StandInEngine:
@@ -1184,20 +1180,18 @@ class EngineFallbackTests(unittest.TestCase):
     expected = [(5, 20, "private_email")]
 
     def load_with(self, module) -> tuple[object | None, str]:
-        with mock.patch.dict(sys.modules, {"pii_rules_native": module}):
-            return pii_rules._load_native_engine()
+        with mock.patch.dict(sys.modules, {"rules.pii_rules_native": module}):
+            return engine._load_native_engine()
 
     def test_a_missing_module_names_the_reason(self) -> None:
-        engine, reason = self.load_with(None)
-        self.assertIsNone(engine)
+        native, reason = self.load_with(None)
+        self.assertIsNone(native)
         self.assertTrue(reason.startswith("python ("), reason)
 
     def test_a_module_of_another_version_is_ignored(self) -> None:
-        module = types.SimpleNamespace(
-            ENGINE_VERSION=pii_rules.NATIVE_ENGINE_VERSION + 1
-        )
-        engine, reason = self.load_with(module)
-        self.assertIsNone(engine)
+        module = types.SimpleNamespace(ENGINE_VERSION=engine.NATIVE_ENGINE_VERSION + 1)
+        native, reason = self.load_with(module)
+        self.assertIsNone(native)
         self.assertIn("these rules need version", reason)
 
     def test_a_module_that_refuses_a_pattern_is_ignored(self) -> None:
@@ -1205,16 +1199,16 @@ class EngineFallbackTests(unittest.TestCase):
             raise ValueError("unsupported construct")
 
         module = types.SimpleNamespace(
-            ENGINE_VERSION=pii_rules.NATIVE_ENGINE_VERSION,
+            ENGINE_VERSION=engine.NATIVE_ENGINE_VERSION,
             UNICODE_VERSION=unicodedata.unidata_version,
             Engine=refuse,
         )
-        engine, reason = self.load_with(module)
-        self.assertIsNone(engine)
+        native, reason = self.load_with(module)
+        self.assertIsNone(native)
         self.assertIn("unsupported construct", reason)
 
     def test_a_declined_text_is_scanned_by_re(self) -> None:
-        with mock.patch.object(pii_rules, "_NATIVE_ENGINE", StandInEngine()):
+        with mock.patch.object(engine, "_NATIVE_ENGINE", StandInEngine()):
             self.assertEqual(span_tuples(self.text), self.expected)
 
     def test_a_scan_error_is_scanned_by_re(self) -> None:
@@ -1225,7 +1219,7 @@ class EngineFallbackTests(unittest.TestCase):
         for error in errors:
             stand_in = StandInEngine(scan_error=error)
             with self.subTest(error=type(error).__name__):
-                with mock.patch.object(pii_rules, "_NATIVE_ENGINE", stand_in):
+                with mock.patch.object(engine, "_NATIVE_ENGINE", stand_in):
                     self.assertEqual(span_tuples(self.text), self.expected)
 
 

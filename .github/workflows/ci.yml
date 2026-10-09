@@ -84,43 +84,43 @@ jobs:
       - name: Build on Linux
         if: runner.os == 'Linux'
         run: |
-          docker run --rm -v "$PWD":/io -w /io/hooks-pii/native \
+          docker run --rm -v "$PWD":/io -w /io/hooks-pii/server/rules/native \
             quay.io/pypa/manylinux_2_28_x86_64 bash -c '
               curl -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal &&
               . "$HOME/.cargo/env" &&
               PYO3_PYTHON=/opt/python/cp39-cp39/bin/python3 cargo build --release --locked &&
-              cargo build --release --locked --manifest-path ../client/Cargo.toml'
-          sudo cp hooks-pii/native/target/release/libpii_rules_native.so hooks-pii/pii_rules_native.abi3.so
-          sudo cp hooks-pii/client/target/release/pii-hook hooks-pii/pii-hook
+              cargo build --release --locked --manifest-path ../../../hook/client/Cargo.toml'
+          sudo cp hooks-pii/server/rules/native/target/release/libpii_rules_native.so hooks-pii/server/rules/pii_rules_native.abi3.so
+          sudo cp hooks-pii/hook/client/target/release/hook hooks-pii/hook/hook
 
       - name: Build on macOS
         if: runner.os == 'macOS'
-        working-directory: hooks-pii/native
+        working-directory: hooks-pii/server/rules/native
         run: |
           cargo build --release --locked
           cp target/release/libpii_rules_native.dylib ../pii_rules_native.abi3.so
-          cargo build --release --locked --manifest-path ../client/Cargo.toml
-          cp ../client/target/release/pii-hook ../pii-hook
+          cargo build --release --locked --manifest-path ../../../hook/client/Cargo.toml
+          cp ../../../hook/client/target/release/hook ../../../hook/hook
 
       - name: Check the module loads as the native engine
-        working-directory: hooks-pii
-        run: python3 -c "import pii_rules; print(pii_rules.RULES_ENGINE); assert pii_rules.RULES_ENGINE == 'native'"
+        working-directory: hooks-pii/server
+        run: python3 -c "from rules import engine; print(engine.RULES_ENGINE); assert engine.RULES_ENGINE == 'native'"
 
       - name: Rules suite on the native engine
         working-directory: hooks-pii
-        run: python3 -m unittest discover -s tests -p test_pii_rules.py
+        run: python3 -m unittest discover -s tests -p test_rules_engine.py
 
       # The hook suites again, with the native command in place of the script. Every
       # assertion has to hold for both; the canary suite needs the Claude Code CLI and
       # stays in the test job.
       - name: Hook suites on the native command
         working-directory: hooks-pii
-        run: PII_TEST_HOOK_CLIENT="$PWD/pii-hook" python3 -m unittest discover -s tests -p 'test_hook_[mp]*.py'
+        run: PII_TEST_HOOK_CLIENT="$PWD/hook/hook" python3 -m unittest discover -s tests -p 'test_hook_[mp]*.py'
 
       - name: Name the files for the release
         run: |
-          cp hooks-pii/pii_rules_native.abi3.so pii_rules_native-${{ matrix.platform }}.abi3.so
-          cp hooks-pii/pii-hook pii-hook-${{ matrix.platform }}
+          cp hooks-pii/server/rules/pii_rules_native.abi3.so pii_rules_native-${{ matrix.platform }}.abi3.so
+          cp hooks-pii/hook/hook pii-hook-${{ matrix.platform }}
 
       - uses: actions/upload-artifact@v4
         with:
