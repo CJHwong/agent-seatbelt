@@ -43,7 +43,7 @@ from pii_tagger_rules import apply_chain
 
 # Release 2026.10 of the model repository.
 TAGGER_REPO = "cjhwong/seatbelt-pii-tagger"
-TAGGER_REVISION = "4e4c9d818bdcbcf4a4b10d8ec1144b35e02c997a"
+TAGGER_REVISION = "b6a894eafd18475b3dad4620def0017ce9589838"
 CACHE_DIR = Path.home() / ".cache" / "pii-tagger"
 GRAPH_INT8 = "model.int8.onnx"
 GRAPH_FP32 = "model.onnx"
