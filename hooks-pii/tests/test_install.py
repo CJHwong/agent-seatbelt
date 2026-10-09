@@ -126,6 +126,7 @@ class InstallerHarness(unittest.TestCase):
         pilot: bool = False,
         piped: bool = False,
         platform: tuple[str, str] = ("Linux", "x86_64"),
+        confirm: bool = False,
     ) -> subprocess.CompletedProcess[str]:
         """Run the real installer against the temporary HOME.
 
@@ -134,7 +135,10 @@ class InstallerHarness(unittest.TestCase):
         run, which is off by default because it resolves model dependencies and
         leaves a listening process behind. `piped` feeds the script on stdin the way
         a `curl | bash` install does, which leaves `$0` as "bash" instead of a path.
-        `platform` is what uname reports, as (-s, -m).
+        `platform` is what uname reports, as (-s, -m). `confirm` leaves out --yes,
+        so the run reaches the risk prompt. It also starts a new session, which
+        drops the controlling terminal, so the prompt finds no /dev/tty to ask
+        on even when the suite runs from a shell.
         """
         environment = os.environ.copy()
         # Cleared first so an inherited one cannot decide the test.
@@ -162,6 +166,8 @@ class InstallerHarness(unittest.TestCase):
         if extra_env:
             environment.update(extra_env)
         command = [BASH, "-s", "--"] if piped else [BASH, str(INSTALL)]
+        if not confirm:
+            command.append("--yes")
         if not pilot:
             command.append("--no-pilot")
         command.extend(args)
@@ -172,6 +178,7 @@ class InstallerHarness(unittest.TestCase):
             text=True,
             capture_output=True,
             check=False,
+            start_new_session=confirm,
         )
 
     def fake_source(self, server_script: Path | None = None) -> Path:
@@ -649,6 +656,24 @@ class RefusalTests(InstallerHarness):
 
         self.assertEqual(result.returncode, 1)
         self.assertIn("unknown arg", result.stderr)
+        self.assertEqual(self.files_under_home(), set())
+
+    def test_no_terminal_and_no_yes_is_refused_before_writing(self) -> None:
+        """The risk prompt cannot ask without a terminal, so it must not proceed."""
+        self.add_agent("claude")
+        result = self.run_installer("--no-codex", confirm=True)
+
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("WARNING: this installer downloads code", result.stderr)
+        self.assertIn("re-run with -y", result.stderr)
+        self.assertEqual(self.files_under_home(), set())
+
+    def test_no_terminal_and_no_yes_is_refused_when_piped(self) -> None:
+        self.add_agent("claude")
+        result = self.run_installer("--no-codex", confirm=True, piped=True)
+
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("re-run with -y", result.stderr)
         self.assertEqual(self.files_under_home(), set())
 
     def test_a_missing_tool_is_refused(self) -> None:

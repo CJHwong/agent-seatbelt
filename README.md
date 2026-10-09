@@ -102,6 +102,8 @@ Powered by [Desert Ant Redact](https://desertant.com) by default: a 24 MB LiteRT
 curl -fsSL https://raw.githubusercontent.com/CJHwong/agent-seatbelt/main/hooks-pii/install.sh | bash
 ```
 
+The installer first warns that a piped script runs as you and asks `[Y/n]` on the terminal. An agent or CI job has no terminal, so it passes `-s -- -y`.
+
 Auto-detects Claude Code (`~/.claude/`) and Codex (`~/.codex/`) and wires both `UserPromptSubmit` and `PostToolUse` on each. Pass `-s -- --prompt-only` to skip PostToolUse, or `-s -- --no-codex` to ignore Codex.
 
 Full docs, block-level tuning, test fixture, known limitations: see [`hooks-pii/README.md`](hooks-pii/README.md).

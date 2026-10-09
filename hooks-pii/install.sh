@@ -8,6 +8,10 @@
 #   curl -fsSL .../install.sh | bash -s -- --prompt-only   # skip the tool hooks
 #   curl -fsSL .../install.sh | bash -s -- --no-codex      # skip Codex even if present
 #   curl -fsSL .../install.sh | bash -s -- --no-pilot      # skip the model warm-up run
+#   curl -fsSL .../install.sh | bash -s -- -y              # skip the risk prompt (agents, CI)
+#
+# Every run first warns that it runs downloaded code as you and asks [Y/n] on the
+# terminal. With no terminal and no -y, it refuses before it writes anything.
 #
 # A server already running on the port is stopped, so the new files take effect.
 # Before wiring, a pilot run resolves uv deps and starts the selected model, then
@@ -68,8 +72,10 @@ PRETOOL_MATCHER_CODEX='*'
 PROMPT_ONLY=0
 SKIP_CODEX=0
 RUN_PILOT=1
+ASSUME_YES=0
 while [[ $# -gt 0 ]]; do
     case "$1" in
+        -y|--yes)      ASSUME_YES=1; shift ;;
         --prompt-only) PROMPT_ONLY=1; shift ;;
         --no-codex)    SKIP_CODEX=1; shift ;;
         --no-pilot)    RUN_PILOT=0; shift ;;
@@ -80,7 +86,8 @@ while [[ $# -gt 0 ]]; do
             cat <<'USAGE'
 Installs hooks-pii and wires the PII hooks on whichever agents are present.
 
-Usage: install.sh [--prompt-only] [--no-codex] [--no-pilot]
+Usage: install.sh [-y] [--prompt-only] [--no-codex] [--no-pilot]
+  -y, --yes       skip the risk prompt (for agents and CI)
   --prompt-only   wire the prompt hook only, skipping both tool hooks
   --no-codex      ignore Codex even if ~/.codex exists
   --no-pilot      skip the model warm-up run
@@ -95,6 +102,29 @@ USAGE
         *) echo "unknown arg: $1" >&2; exit 1 ;;
     esac
 done
+
+# A piped install runs whatever the server sends, with your permissions, so ask
+# first. The answer comes from /dev/tty because stdin is the script itself.
+confirm_install() {
+    cat >&2 <<'EOF'
+WARNING: this installer downloads code from the internet and runs it as you.
+It can read, change, or delete anything your user account can.
+The server can send different code each time, so read the script first:
+  https://github.com/CJHwong/agent-seatbelt/blob/main/hooks-pii/install.sh
+Pass -y to skip this question (for agents and CI).
+EOF
+    if ! (: </dev/tty) 2>/dev/null; then
+        echo "install.sh: no terminal to ask on; re-run with -y to accept the risk" >&2
+        exit 1
+    fi
+    printf 'Proceed? [Y/n] ' >&2
+    local answer=""
+    read -r answer </dev/tty || answer=""
+    case "$answer" in
+        n|N|no|No|NO) echo "install.sh: aborted" >&2; exit 1 ;;
+    esac
+}
+[ "$ASSUME_YES" -eq 1 ] || confirm_install
 
 need_cmd() {
     command -v "$1" >/dev/null 2>&1 || {
