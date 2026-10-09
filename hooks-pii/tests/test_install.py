@@ -86,7 +86,18 @@ NATIVE_ASSETS = {
 NATIVE_FILE = "rules/pii_rules_native.abi3.so"
 CLIENT_FILE = "hook"
 # Stands in for the native hook command. It runs, which is all the installer checks.
-RUNNABLE_CLIENT = "#!/bin/sh\ncat >/dev/null\n"
+# Hands every call to check.sh in its own folder, as the real build does with a
+# call it cannot settle.
+RUNNABLE_CLIENT = '#!/bin/sh\nexec "$(dirname "$0")/check.sh" "$@"\n'
+# A release from before the hook folder, with a server up: it answers a call it can
+# settle, and hands any other to pii-check.sh, which an install of these files no
+# longer has.
+OLDER_RELEASE_CLIENT = """#!/bin/sh
+case "${PII_SERVER_MODE:-redact}" in
+    redact|redact-torch|openai|rules|tagger) cat >/dev/null; exit 0 ;;
+esac
+exec "$(dirname "$0")/pii-check.sh" "$@"
+"""
 
 # Answers -s and -m from the environment and defers everything else. The shell
 # only reads these two, so the stand-in needs nothing more.
@@ -422,6 +433,32 @@ class NativeHookCommandTests(InstallerHarness):
         result = self.run_installer()
 
         self.assertNotIn("Codex scans nothing until you trust", result.stdout)
+
+    def test_a_build_that_hands_off_to_another_script_leaves_the_script(
+        self,
+    ) -> None:
+        """Until a release is cut from these files, the latest one is older than them."""
+        self.add_agent("claude")
+        self.release_client(OLDER_RELEASE_CLIENT)
+        result = self.run_installer("--no-codex")
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertFalse((self.installed_dir() / CLIENT_FILE).exists())
+        self.assertIn(
+            "Could not install the native hook command for linux-x86_64", result.stderr
+        )
+        script = self.installed_dir() / "check.sh"
+        self.assertEqual(
+            self.commands(self.settings(), "UserPromptSubmit"),
+            [f"{script} --mode prompt"],
+        )
+
+    def test_the_probe_of_a_build_leaves_no_skip_event(self) -> None:
+        self.add_agent("claude")
+        self.release_client()
+        self.run_installer("--no-codex")
+
+        self.assertFalse((self.home / ".cache" / "pii" / "pii-skips.log").exists())
 
     def test_a_build_that_cannot_run_leaves_the_script(self) -> None:
         self.add_agent("claude")
@@ -1188,6 +1225,69 @@ class PilotTests(InstallerHarness):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("server warm, smoke test flagged 1 span(s)", result.stdout)
         self.assertIn("Model is warm", result.stdout)
+
+    def start_lock(self, port: int) -> Path:
+        """The lock check.sh takes for this port, under a TMPDIR of the test's own."""
+        return self.home / "tmp" / f"pii-server.{os.geteuid()}.{port}.starting"
+
+    def install_cold(self, port: int, *, sleep_stub: bool = False):
+        (self.home / "tmp").mkdir(exist_ok=True)
+        environment = {
+            "PII_PORT": str(port),
+            "PII_SERVER_MODE": "rules",
+            "FAKE_PII_RESPONSE": self.SPAN_RESPONSE,
+            "TMPDIR": str(self.home / "tmp"),
+        }
+        if sleep_stub:
+            stub_dir = self.home / "stubs"
+            stub_dir.mkdir()
+            (stub_dir / "sleep").write_text("#!/bin/sh\nexit 0\n")
+            (stub_dir / "sleep").chmod(0o755)
+            environment["PATH"] = f"{stub_dir}{os.pathsep}{os.environ['PATH']}"
+        return self.run_installer(
+            "--no-codex", pilot=True, source=self.fake_source(), extra_env=environment
+        )
+
+    def test_pilot_releases_the_start_lock_it_took(self) -> None:
+        self.add_agent("claude")
+        port = free_port()
+        self.addCleanup(self.reap, port)
+
+        result = self.install_cold(port)
+
+        self.assertIn("server warm", result.stdout)
+        self.assertFalse(self.start_lock(port).exists())
+
+    def test_pilot_leaves_the_start_to_a_hook_that_holds_the_lock(self) -> None:
+        """A hook that fired during the install starts the server; a second start
+        would only lose the port to the first."""
+        self.add_agent("claude")
+        port = free_port()
+        self.addCleanup(self.reap, port)
+        lock = self.start_lock(port)
+        lock.mkdir(parents=True)
+
+        result = self.install_cold(port, sleep_stub=True)
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("a hook is already starting the server", result.stdout)
+        self.assertNotIn("starting the rules server", result.stdout)
+        self.assertEqual(self.health_mode(port), "")
+        self.assertTrue(lock.exists())
+
+    def test_pilot_takes_over_a_start_lock_older_than_a_minute(self) -> None:
+        self.add_agent("claude")
+        port = free_port()
+        self.addCleanup(self.reap, port)
+        lock = self.start_lock(port)
+        lock.mkdir(parents=True)
+        stale = time.time() - 120
+        os.utime(lock, (stale, stale))
+
+        result = self.install_cold(port)
+
+        self.assertIn("server warm", result.stdout)
+        self.assertFalse(lock.exists())
 
     def test_pilot_starts_a_cold_server_with_uv_for_a_model_mode(self) -> None:
         """The non-rules branch resolves dependencies through uv before starting."""

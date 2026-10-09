@@ -19,7 +19,7 @@ More detail:
 Everything goes in `~/.claude/hooks/pii/`:
 
 - `check.sh` — the hook script, called on prompt submit and tool response
-- `hook` — the native hook command both agents run, on macOS arm64 and Linux x86_64 only. It hands every case it does not settle to `check.sh`. On another platform both agents run `check.sh`. Codex binds hook trust to the command string, so a move between the two needs trust again, and the installer warns when it happens
+- `hook` — the native hook command both agents run, on macOS arm64 and Linux x86_64 only. It hands every case it does not settle to `check.sh`. On another platform, or when the release build cannot hand off to this `check.sh`, both agents run `check.sh`. Codex binds hook trust to the command string, so a move between the two needs trust again, and the installer warns when it happens
 - `server.py` — local HTTP server that loads the selected model and returns labeled spans
 - `answer.py`: builds the server's answer to a hook call, from the text to scan to the hook's exact output
 - `detectors/` — one file per model backend: `redact.py`, `redact_torch.py`, `privacy_filter.py`, and `tagger.py`. See [Tagger mode](docs/detectors.md#tagger-mode)

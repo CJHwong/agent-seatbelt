@@ -221,7 +221,10 @@ install_native
 # trusts the new command; the closing notes say so.
 #
 # The file runs once before it is used: a hook command that cannot start fails open
-# on every call, so a build for the wrong CPU must leave the script in place.
+# on every call, so a build for the wrong CPU must leave the script in place. The run
+# also proves the build hands off to check.sh: an unknown server mode is a call the
+# build gives to the script, and only the script answers "PII scanner skipped". A
+# release older than these files looks for a script under another name, and fails here.
 HOOK_COMMAND="$CHECK_DEST"
 install_client() {
     local platform
@@ -232,7 +235,8 @@ install_client() {
     fi
     if curl -fsSL "$NATIVE_BASE/pii-hook-$platform" -o "$CLIENT_DEST.part" &&
         chmod +x "$CLIENT_DEST.part" &&
-        "$CLIENT_DEST.part" --mode prompt </dev/null >/dev/null 2>&1; then
+        PII_SERVER_MODE=handoff-probe PII_SKIP_EVENT_PATH=/dev/null "$CLIENT_DEST.part" --mode prompt </dev/null 2>/dev/null |
+        grep -q "PII scanner skipped"; then
         mv "$CLIENT_DEST.part" "$CLIENT_DEST"
         HOOK_COMMAND="$CLIENT_DEST"
         echo "Installed: $CLIENT_DEST"
@@ -332,6 +336,19 @@ wire_agent() {
     fi
 }
 
+start_pilot_server() {
+    mkdir -p "$(dirname "$SERVER_LOG")"
+    if [ "$SERVER_MODE" = "rules" ]; then
+        # Rules mode needs no dependencies, so it runs on the system python3.
+        echo "  starting the rules server on python3 (no dependencies to resolve)..."
+        nohup python3 "$SERVER_DEST" --port "$PORT" --mode "$SERVER_MODE" >"$SERVER_LOG" 2>&1 </dev/null &
+    else
+        echo "  resolving deps + loading the $SERVER_MODE model (one-time)..."
+        nohup uv run "$SERVER_DEST" --port "$PORT" --mode "$SERVER_MODE" >"$SERVER_LOG" 2>&1 </dev/null &
+    fi
+    disown
+}
+
 # Start the server once so uv deps and model loading happen now, not in the
 # user's first agent turn. Waits far longer than the hook's 10s, then smoke-tests
 # one known-PII string. Leaves the
@@ -345,21 +362,26 @@ pilot_run() {
         echo "  stop it and rerun the installer" >&2
         return
     fi
-    mkdir -p "$(dirname "$SERVER_LOG")"
-    if [ "$SERVER_MODE" = "rules" ]; then
-        # Rules mode needs no dependencies, so it runs on the system python3.
-        echo "  starting the rules server on python3 (no dependencies to resolve)..."
-        nohup python3 "$SERVER_DEST" --port "$PORT" --mode "$SERVER_MODE" >"$SERVER_LOG" 2>&1 </dev/null &
-    else
-        echo "  resolving deps + loading the $SERVER_MODE model (one-time)..."
-        nohup uv run "$SERVER_DEST" --port "$PORT" --mode "$SERVER_MODE" >"$SERVER_LOG" 2>&1 </dev/null &
+    # The lock check.sh takes before it starts a server. A hook that fires during the
+    # install then waits for this server instead of starting a second one, and a hook
+    # that got there first keeps its own start.
+    # A lock older than a minute outlived the start it guarded, as check.sh judges it.
+    local lock="${TMPDIR:-/tmp}/pii-server.${EUID}.${PORT}.starting" owned=0
+    if [ -d "$lock" ] && [ -n "$(find "$lock" -maxdepth 0 -mmin +1 2>/dev/null)" ]; then
+        rmdir "$lock" 2>/dev/null || true
     fi
-    disown
+    if mkdir "$lock" 2>/dev/null; then
+        owned=1
+        start_pilot_server
+    else
+        echo "  a hook is already starting the server; waiting for it..."
+    fi
     for _ in $(seq 1 120); do   # up to ~60s for a cold download
         curl -sSf --max-time 1 "$health" | jq -e --arg mode "$SERVER_MODE" \
             '.status == "ok" and .mode == $mode' >/dev/null 2>&1 && break
         sleep 0.5
     done
+    [ "$owned" = 0 ] || rmdir "$lock" 2>/dev/null || true
     if ! curl -sSf --max-time 1 "$health" | jq -e --arg mode "$SERVER_MODE" \
         '.status == "ok" and .mode == $mode' >/dev/null 2>&1; then
         echo "  server not up after ~60s; model may still be downloading in the" >&2
