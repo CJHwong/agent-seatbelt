@@ -37,7 +37,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
 
-from pii_hook import HookError, Policy, answer
+from pii_hook import HookError, Policy, answer, code_version
 
 SUPPORTED_MODES = ("redact", "redact-torch", "openai", "rules", "tagger")
 DEFAULT_MODE = "redact"
@@ -68,13 +68,16 @@ def max_body_bytes() -> int:
     return configured if configured > 0 else DEFAULT_MAX_BODY_BYTES
 
 
-def health_payload(mode: str, model: object, busy: bool = False) -> dict[str, object]:
+def health_payload(
+    mode: str, model: object, busy: bool = False, version: str = ""
+) -> dict[str, object]:
     payload: dict[str, object] = {"status": "ok", "mode": mode}
     if mode in ("redact", "redact-torch", "tagger"):
         payload["device"] = str(getattr(model, "device", "unknown"))
     else:
         payload["device"] = "cpu"
     payload["busy"] = busy
+    payload["version"] = version
     return payload
 
 
@@ -153,6 +156,7 @@ def load_selected_model(mode: str) -> object:
 class Handler(BaseHTTPRequestHandler):
     model: Any
     mode: str
+    version = ""
     inference_lock = threading.Lock()
     timeout = HANDLER_TIMEOUT_SECONDS
 
@@ -270,7 +274,12 @@ class Handler(BaseHTTPRequestHandler):
         if self.path == "/health":
             self._send_json(
                 200,
-                health_payload(self.mode, self.model, self.inference_lock.locked()),
+                health_payload(
+                    self.mode,
+                    self.model,
+                    self.inference_lock.locked(),
+                    self.version,
+                ),
             )
             return
         self._send_json(404, {"error": "not found"})
@@ -284,6 +293,9 @@ def main() -> None:
     args = parser.parse_args()
 
     mode = resolve_mode(args.mode)
+    # Hashed before the slow model load, so the version is the code this process
+    # imported, not a later copy of the files.
+    Handler.version = code_version(Path(__file__))
     print(f"[{mode}] loading model...", file=sys.stderr, flush=True)
     Handler.model = load_selected_model(mode)
     Handler.mode = mode

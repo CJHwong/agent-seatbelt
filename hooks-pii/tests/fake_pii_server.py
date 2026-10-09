@@ -8,6 +8,8 @@ variables the test sets before running the hook.
 
     FAKE_PII_HEALTH_STATUS   200 (default). Anything else fails /health.
     FAKE_PII_HEALTH_MODE     mode reported by /health. Defaults to --mode.
+    FAKE_PII_HEALTH_VERSION  version reported by /health. Defaults to the hash of
+                             this script, the version pii-check.sh expects of it.
     FAKE_PII_RESPONSE        JSON body for POST /, and the spans POST /hook answers on.
                              Defaults to no spans.
     FAKE_PII_RESPONSE_STATUS HTTP status for POST / and POST /hook. Defaults to 200.
@@ -30,7 +32,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from pii_hook import HookError, Policy, answer  # noqa: E402
+from pii_hook import HookError, Policy, answer, code_version  # noqa: E402
 
 
 class NoLookupHTTPServer(ThreadingHTTPServer):
@@ -46,6 +48,7 @@ class NoLookupHTTPServer(ThreadingHTTPServer):
 class FakeDetectorHandler(BaseHTTPRequestHandler):
     health_status = 200
     health_mode = "redact"
+    health_version = ""
     response_status = 200
     response_body = '{"spans": [], "processing_ms": 1.0}'
 
@@ -57,7 +60,14 @@ class FakeDetectorHandler(BaseHTTPRequestHandler):
             self.send_error(self.health_status)
             return
         self._send_json(
-            json.dumps({"status": "ok", "mode": self.health_mode, "device": "cpu"})
+            json.dumps(
+                {
+                    "status": "ok",
+                    "mode": self.health_mode,
+                    "device": "cpu",
+                    "version": self.health_version,
+                }
+            )
         )
 
     def do_POST(self) -> None:
@@ -127,6 +137,9 @@ def main() -> int:
     )
     FakeDetectorHandler.health_mode = os.environ.get(
         "FAKE_PII_HEALTH_MODE", server_mode or "redact"
+    )
+    FakeDetectorHandler.health_version = os.environ.get(
+        "FAKE_PII_HEALTH_VERSION", code_version(Path(__file__))
     )
     FakeDetectorHandler.response_status = int(
         os.environ.get("FAKE_PII_RESPONSE_STATUS", "200")

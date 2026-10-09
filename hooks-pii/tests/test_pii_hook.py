@@ -7,14 +7,25 @@ jq, which the hook suites do not reach.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from pii_hook import SEPARATOR, HookError, Policy, answer, hook_text, mask, parse
+from pii_hook import (
+    SEPARATOR,
+    HookError,
+    Policy,
+    answer,
+    code_version,
+    hook_text,
+    mask,
+    parse,
+)
 
 KEY_SPAN = {
     "start": 0,
@@ -53,6 +64,32 @@ def run(payload: object, spans: list, **overrides: str) -> tuple[str, str]:
     stdout, stderr, closing = framed.split(SEPARATOR)
     assert closing == ""
     return stdout, stderr
+
+
+class CodeVersionTests(unittest.TestCase):
+    """pii-check.sh hashes the installed files the same way, so the order is a contract."""
+
+    def test_the_script_comes_first_then_each_module_by_name(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            folder = Path(directory)
+            (folder / "pii-server.py").write_bytes(b"server")
+            (folder / "pii_b.py").write_bytes(b"b")
+            (folder / "pii_a.py").write_bytes(b"a")
+            (folder / "other.py").write_bytes(b"ignored")
+
+            version = code_version(folder / "pii-server.py")
+
+        self.assertEqual(version, hashlib.sha256(b"serverab").hexdigest())
+
+    def test_a_changed_module_changes_the_version(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            folder = Path(directory)
+            (folder / "pii-server.py").write_bytes(b"server")
+            (folder / "pii_hook.py").write_bytes(b"old")
+            before = code_version(folder / "pii-server.py")
+            (folder / "pii_hook.py").write_bytes(b"new")
+
+            self.assertNotEqual(code_version(folder / "pii-server.py"), before)
 
 
 class TextTests(unittest.TestCase):

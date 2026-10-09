@@ -54,11 +54,23 @@ class PiiServerModeTests(TestCase):
         model = type("Model", (), {"device": "mps"})()
         self.assertEqual(
             PII_SERVER.health_payload("redact", model),
-            {"status": "ok", "mode": "redact", "device": "mps", "busy": False},
+            {
+                "status": "ok",
+                "mode": "redact",
+                "device": "mps",
+                "busy": False,
+                "version": "",
+            },
         )
         self.assertEqual(
             PII_SERVER.health_payload("openai", model),
-            {"status": "ok", "mode": "openai", "device": "cpu", "busy": False},
+            {
+                "status": "ok",
+                "mode": "openai",
+                "device": "cpu",
+                "busy": False,
+                "version": "",
+            },
         )
         tagger = type("Model", (), {"device": "neural_engine"})()
         self.assertEqual(
@@ -68,8 +80,21 @@ class PiiServerModeTests(TestCase):
     def test_health_payload_carries_the_busy_flag(self) -> None:
         self.assertEqual(
             PII_SERVER.health_payload("rules", PII_SERVER.RulesModel(), busy=True),
-            {"status": "ok", "mode": "rules", "device": "cpu", "busy": True},
+            {
+                "status": "ok",
+                "mode": "rules",
+                "device": "cpu",
+                "busy": True,
+                "version": "",
+            },
         )
+
+    def test_health_payload_carries_the_code_version(self) -> None:
+        payload = PII_SERVER.health_payload(
+            "rules", PII_SERVER.RulesModel(), version="abc123"
+        )
+
+        self.assertEqual(payload["version"], "abc123")
 
     def test_environment_selects_rules_mode(self) -> None:
         with patch.dict(os.environ, {"PII_SERVER_MODE": "rules"}, clear=True):
@@ -78,7 +103,13 @@ class PiiServerModeTests(TestCase):
     def test_rules_mode_reports_no_accelerator(self) -> None:
         self.assertEqual(
             PII_SERVER.health_payload("rules", PII_SERVER.RulesModel()),
-            {"status": "ok", "mode": "rules", "device": "cpu", "busy": False},
+            {
+                "status": "ok",
+                "mode": "rules",
+                "device": "cpu",
+                "busy": False,
+                "version": "",
+            },
         )
 
 
@@ -358,6 +389,7 @@ class HandlerRequestTests(TestCase):
     def setUp(self) -> None:
         PII_SERVER.Handler.mode = "rules"
         PII_SERVER.Handler.model = PII_SERVER.RulesModel()
+        PII_SERVER.Handler.version = "abc123"
         self.server_log = io.StringIO()
         redirect = contextlib.redirect_stderr(self.server_log)
         redirect.__enter__()
@@ -372,7 +404,16 @@ class HandlerRequestTests(TestCase):
     def test_health_endpoint_reports_the_rules_mode(self) -> None:
         self.assertEqual(
             self.request("GET", "/health"),
-            (200, {"status": "ok", "mode": "rules", "device": "cpu", "busy": False}),
+            (
+                200,
+                {
+                    "status": "ok",
+                    "mode": "rules",
+                    "device": "cpu",
+                    "busy": False,
+                    "version": "abc123",
+                },
+            ),
         )
 
     def test_unknown_path_is_not_found(self) -> None:
@@ -461,7 +502,13 @@ class HandlerRequestTests(TestCase):
                 self.request("GET", "/health"),
                 (
                     200,
-                    {"status": "ok", "mode": "rules", "device": "cpu", "busy": True},
+                    {
+                        "status": "ok",
+                        "mode": "rules",
+                        "device": "cpu",
+                        "busy": True,
+                        "version": "abc123",
+                    },
                 ),
             )
         finally:
@@ -616,8 +663,10 @@ class HandlerRequestTests(TestCase):
 
             self.assertTrue(
                 wait_until(
-                    lambda: "client disconnected before the response"
-                    in self.server_log.getvalue()
+                    lambda: (
+                        "client disconnected before the response"
+                        in self.server_log.getvalue()
+                    )
                 ),
                 self.server_log.getvalue(),
             )
@@ -841,7 +890,13 @@ class ScriptEntryPointTests(TestCase):
                 wait_for_health(port),
                 (
                     200,
-                    {"status": "ok", "mode": "rules", "device": "cpu", "busy": False},
+                    {
+                        "status": "ok",
+                        "mode": "rules",
+                        "device": "cpu",
+                        "busy": False,
+                        "version": PII_SERVER.code_version(MODULE_PATH),
+                    },
                 ),
             )
             status, payload = request_json(
