@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import json
 import os
+import socketserver
 import sys
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -30,6 +31,16 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from pii_hook import HookError, Policy, answer  # noqa: E402
+
+
+class NoLookupHTTPServer(ThreadingHTTPServer):
+    """The real server's bind, without socket.getfqdn: 35 s on a macos-15 runner."""
+
+    def server_bind(self) -> None:
+        socketserver.TCPServer.server_bind(self)
+        host, port = self.server_address[:2]
+        self.server_name = str(host)
+        self.server_port = int(port)
 
 
 class FakeDetectorHandler(BaseHTTPRequestHandler):
@@ -131,7 +142,7 @@ def main() -> int:
     if start_delay:
         time.sleep(start_delay)
 
-    server = ThreadingHTTPServer(("127.0.0.1", port), FakeDetectorHandler)
+    server = NoLookupHTTPServer(("127.0.0.1", port), FakeDetectorHandler)
     server.serve_forever()
     return 0
 

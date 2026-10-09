@@ -21,13 +21,14 @@ import threading
 import time
 import unittest
 from collections.abc import Iterator
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from http.server import BaseHTTPRequestHandler
 from pathlib import Path
 from typing import Any, ClassVar
 
 TESTS_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(TESTS_DIR.parent))
 
+from fake_pii_server import NoLookupHTTPServer  # noqa: E402
 from pii_hook import HookError, Policy, answer  # noqa: E402
 
 HOOK_PATH = TESTS_DIR.parent / "pii-check.sh"
@@ -301,7 +302,7 @@ class HookHarness(HookRunner):
     def setUpClass(cls) -> None:
         if not tools_available():
             raise unittest.SkipTest("the shell hook requires curl and jq")
-        cls.server = ThreadingHTTPServer(("127.0.0.1", 0), FakePiiHandler)
+        cls.server = NoLookupHTTPServer(("127.0.0.1", 0), FakePiiHandler)
         cls.detector_port = cls.server.server_address[1]
         cls.server_thread = threading.Thread(
             target=cls.server.serve_forever, daemon=True
