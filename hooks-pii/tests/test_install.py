@@ -29,7 +29,9 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import pty
 import re
+import select
 import shutil
 import subprocess
 import sys
@@ -95,6 +97,45 @@ def digest(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
+def run_on_terminal(
+    command: list[str], environment: dict[str, str], answer: str
+) -> subprocess.CompletedProcess[str]:
+    """Run `command` on a fresh pseudo-terminal and type `answer` at the risk prompt.
+
+    The installer reads its answer from /dev/tty, not stdin, so a pipe cannot
+    answer it. pty.fork makes the child a session leader whose controlling
+    terminal is the pty, which is what /dev/tty opens. stdout and stderr both
+    land on the terminal, so the output comes back as one stream in stdout.
+    """
+    pid, terminal = pty.fork()
+    if pid == 0:
+        os.execve(command[0], command, environment)
+    output = b""
+    answered = False
+    deadline = time.monotonic() + 120
+    try:
+        while time.monotonic() < deadline:
+            ready, _, _ = select.select([terminal], [], [], 1)
+            if not ready:
+                continue
+            try:
+                chunk = os.read(terminal, 4096)
+            except OSError:  # EIO once the child closes the terminal
+                break
+            if not chunk:
+                break
+            output += chunk
+            if not answered and b"Proceed? [Y/n]" in output:
+                os.write(terminal, answer.encode())
+                answered = True
+    finally:
+        os.close(terminal)
+    _, status = os.waitpid(pid, 0)
+    return subprocess.CompletedProcess(
+        command, os.waitstatus_to_exitcode(status), output.decode(errors="replace"), ""
+    )
+
+
 class InstallerHarness(unittest.TestCase):
     """Runs install.sh in an isolated HOME. Holds no tests."""
 
@@ -127,6 +168,7 @@ class InstallerHarness(unittest.TestCase):
         piped: bool = False,
         platform: tuple[str, str] = ("Linux", "x86_64"),
         confirm: bool = False,
+        terminal_input: str | None = None,
     ) -> subprocess.CompletedProcess[str]:
         """Run the real installer against the temporary HOME.
 
@@ -138,7 +180,9 @@ class InstallerHarness(unittest.TestCase):
         `platform` is what uname reports, as (-s, -m). `confirm` leaves out --yes,
         so the run reaches the risk prompt. It also starts a new session, which
         drops the controlling terminal, so the prompt finds no /dev/tty to ask
-        on even when the suite runs from a shell.
+        on even when the suite runs from a shell. `terminal_input` runs the
+        installer on a pseudo-terminal instead and types that answer at the
+        prompt; it implies `confirm`.
         """
         environment = os.environ.copy()
         # Cleared first so an inherited one cannot decide the test.
@@ -166,11 +210,13 @@ class InstallerHarness(unittest.TestCase):
         if extra_env:
             environment.update(extra_env)
         command = [BASH, "-s", "--"] if piped else [BASH, str(INSTALL)]
-        if not confirm:
+        if not confirm and terminal_input is None:
             command.append("--yes")
         if not pilot:
             command.append("--no-pilot")
         command.extend(args)
+        if terminal_input is not None:
+            return run_on_terminal(command, environment, terminal_input)
         return subprocess.run(
             command,
             env=environment,
@@ -690,6 +736,28 @@ class RefusalTests(InstallerHarness):
         self.assertEqual(result.returncode, 1)
         self.assertIn("is required but not on PATH", result.stderr)
         self.assertEqual(self.files_under_home(), set())
+
+
+class RiskPromptTests(InstallerHarness):
+    """The answer typed at the risk prompt decides whether anything is written."""
+
+    def test_answering_no_aborts_before_writing(self) -> None:
+        self.add_agent("claude")
+        result = self.run_installer("--no-codex", terminal_input="n\n")
+
+        self.assertEqual(result.returncode, 1, result.stdout)
+        self.assertIn("Proceed? [Y/n]", result.stdout)
+        self.assertIn("install.sh: aborted", result.stdout)
+        self.assertEqual(self.files_under_home(), set())
+
+    def test_pressing_enter_installs(self) -> None:
+        """Yes is the default, so an empty answer proceeds."""
+        self.add_agent("claude")
+        result = self.run_installer("--no-codex", terminal_input="\n")
+
+        self.assertEqual(result.returncode, 0, result.stdout)
+        self.assertIn("Proceed? [Y/n]", result.stdout)
+        self.assertTrue((self.home / ".claude/hooks/pii-check.sh").exists())
 
 
 class PilotTests(InstallerHarness):
