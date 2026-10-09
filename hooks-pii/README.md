@@ -51,6 +51,8 @@ Scripts always land in `~/.claude/hooks/`. Both agents reference the same script
 curl -fsSL https://raw.githubusercontent.com/CJHwong/agent-seatbelt/main/hooks-pii/install.sh | bash
 ```
 
+The installer first warns that a piped script runs as you and asks `[Y/n]` on the terminal. An agent or CI job has no terminal, so it passes `-s -- -y`.
+
 Flags:
 
 ```bash
