@@ -15,6 +15,7 @@ import os
 import re
 import socket
 import subprocess
+import sys
 import tempfile
 import threading
 import time
@@ -903,6 +904,141 @@ class ColdStartChecksTests(AutostartHarness):
 
         self.assertIn(
             "server mode is redact, requested rules", hook_output["systemMessage"]
+        )
+
+
+class StaleServerTests(AutostartHarness):
+    """A server that started before the hook files changed still runs the old code.
+
+    Its /health answers ok, so only the failed request shows the problem. The hook
+    then compares the version /health reports with a hash of the installed files.
+    """
+
+    def launch(self, script: Path, **overrides: str) -> subprocess.Popen[bytes]:
+        environment = {**os.environ, **self.start_env(), **overrides}
+        server = subprocess.Popen(
+            [sys.executable, str(script), "--port", str(self.detector_port)]
+            + ["--mode", self.server_mode],
+            env=environment,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        self.addCleanup(server.wait, 5)
+        self.addCleanup(server.terminate)
+        for _ in range(100):
+            with contextlib.suppress(OSError):
+                socket.create_connection(("127.0.0.1", self.detector_port), 0.1).close()
+                return server
+            time.sleep(0.05)
+        self.fail("the stand-in server did not start")
+
+    def run_secret_prompt(self) -> dict[str, Any]:
+        return self.run_hook(
+            "prompt",
+            {"prompt": "send this secret"},
+            action_mode="block",
+            extra_env=self.start_env(),
+        )
+
+    def test_a_stale_server_is_replaced_and_the_request_is_asked_again(self) -> None:
+        stale = self.launch(
+            FAKE_SERVER_PATH,
+            FAKE_PII_HEALTH_VERSION="old",
+            FAKE_PII_RESPONSE_STATUS="400",
+        )
+
+        hook_output = self.run_secret_prompt()
+
+        self.assertEqual(hook_output["decision"], "block")
+        self.assertIn("secret(critical)", hook_output["reason"])
+        self.assertIsNotNone(stale.poll(), "the stale server is still running")
+
+    def test_a_current_server_that_fails_is_left_running(self) -> None:
+        current = self.launch(FAKE_SERVER_PATH, FAKE_PII_RESPONSE_STATUS="400")
+
+        hook_output = self.run_secret_prompt()
+
+        self.assertIn("HTTP status '400'", hook_output["reason"])
+        self.assertIsNone(current.poll(), "the hook stopped a current server")
+
+    def test_the_hash_matches_whatever_the_locale_sorts(self) -> None:
+        """A UTF-8 locale sorts pii_tagger_rules.py before pii_tagger.py. Python does not.
+
+        Both names ship together, so a hash in the locale's order would call every
+        current server stale.
+        """
+        with tempfile.TemporaryDirectory() as directory:
+            folder = Path(directory)
+            script = folder / "pii-server.py"
+            script.symlink_to(FAKE_SERVER_PATH)
+            (folder / "pii_tagger.py").write_text("tagger")
+            (folder / "pii_tagger_rules.py").write_text("tagger rules")
+            current = self.launch(script, FAKE_PII_RESPONSE_STATUS="400")
+
+            hook_output = self.run_hook(
+                "prompt",
+                {"prompt": "send this secret"},
+                action_mode="block",
+                extra_env={
+                    **self.start_env(PII_SERVER_SCRIPT=str(script)),
+                    "LC_ALL": "en_US.UTF-8",
+                },
+            )
+
+        self.assertIn("HTTP status '400'", hook_output["reason"])
+        self.assertIsNone(current.poll(), "the hook stopped a current server")
+
+    def test_a_server_that_is_not_a_pii_server_is_left_running(self) -> None:
+        """Only a pii-server process on this port is stopped. Its own status stands."""
+        with tempfile.TemporaryDirectory() as directory:
+            other = Path(directory) / "other_detector.py"
+            other.symlink_to(FAKE_SERVER_PATH)
+            stranger = self.launch(
+                other, FAKE_PII_HEALTH_VERSION="old", FAKE_PII_RESPONSE_STATUS="400"
+            )
+
+            hook_output = self.run_secret_prompt()
+
+        self.assertIn("HTTP status '400'", hook_output["reason"])
+        self.assertIsNone(stranger.poll(), "the hook stopped a process it did not own")
+
+    def run_with_shim(self, body: str) -> dict[str, Any]:
+        with tempfile.TemporaryDirectory() as directory:
+            shim = Path(directory) / "shim.sh"
+            shim.write_text(f'. "{COV_ENV_PATH}"\n{body}\n')
+            return self.run_hook(
+                "prompt",
+                {"prompt": "send this secret"},
+                action_mode="block",
+                extra_env={**self.start_env(), "BASH_ENV": str(shim)},
+            )
+
+    def test_a_stale_server_that_does_not_stop_is_reported(self) -> None:
+        """The wait for the stop runs 20 times at 0.1s, so this test takes 2 seconds."""
+        stale = self.launch(
+            FAKE_SERVER_PATH,
+            FAKE_PII_HEALTH_VERSION="old",
+            FAKE_PII_RESPONSE_STATUS="400",
+        )
+
+        hook_output = self.run_with_shim("kill() { :; }")
+
+        self.assertIn("did not stop", hook_output["reason"])
+        self.assertIsNone(stale.poll())
+
+    def test_no_hash_tool_leaves_the_server_alone(self) -> None:
+        """Without a hash every server would look stale, and each failure would restart it."""
+        stale = self.launch(
+            FAKE_SERVER_PATH,
+            FAKE_PII_HEALTH_VERSION="old",
+            FAKE_PII_RESPONSE_STATUS="400",
+        )
+
+        hook_output = self.run_with_shim("shasum() { return 127; }")
+
+        self.assertIn("HTTP status '400'", hook_output["reason"])
+        self.assertIsNone(
+            stale.poll(), "the hook stopped a server it could not compare"
         )
 
 

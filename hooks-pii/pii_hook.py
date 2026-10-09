@@ -15,9 +15,11 @@ Standard library only: rules mode runs the server on the system python3.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Callable
 
 CRITICAL = ("secret", "account_number")
@@ -42,6 +44,19 @@ HINTS = {
 # reads both from jq, which escapes every control character in JSON, and a masked
 # value keeps at most four characters of a span.
 SEPARATOR = "\x1e"
+
+
+def code_version(script: Path) -> str:
+    """A hash of the server code: the script, then each pii_*.py beside it by name.
+
+    A running server keeps the code it started with. pii-check.sh hashes the
+    installed files the same way, and a different hash means the server started
+    before those files changed.
+    """
+    digest = hashlib.sha256(script.read_bytes())
+    for module in sorted(script.parent.glob("pii_*.py")):
+        digest.update(module.read_bytes())
+    return digest.hexdigest()
 
 
 class HookError(Exception):
