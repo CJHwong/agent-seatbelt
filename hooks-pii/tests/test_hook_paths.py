@@ -12,6 +12,7 @@ from __future__ import annotations
 import contextlib
 import json
 import os
+import re
 import socket
 import subprocess
 import tempfile
@@ -915,11 +916,29 @@ class ClosedConnectionTests(AutostartHarness):
         self.addCleanup(listener.close)
         self.detector_port = listener.getsockname()[1]
 
+        def read_request(connection: socket.socket) -> None:
+            # bash on Linux writes the request one line at a time. A close before the
+            # last write resets the connection, and the hook then fails the write
+            # instead of the read this test is for.
+            request = b""
+            while b"\r\n\r\n" not in request:
+                chunk = connection.recv(65536)
+                if not chunk:
+                    return
+                request += chunk
+            head, _, body = request.partition(b"\r\n\r\n")
+            length = int(re.search(rb"Content-Length: (\d+)", head)[1])
+            while len(body) < length:
+                chunk = connection.recv(65536)
+                if not chunk:
+                    return
+                body += chunk
+
         def close_each_connection() -> None:
             with contextlib.suppress(OSError):
                 while True:
                     connection, _ = listener.accept()
-                    connection.recv(65536)
+                    read_request(connection)
                     connection.close()
 
         threading.Thread(target=close_each_connection, daemon=True).start()
