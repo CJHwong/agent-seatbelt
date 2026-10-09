@@ -380,8 +380,10 @@ curl -sS http://127.0.0.1:9123/health
 The health response identifies the active mode and device:
 
 ```json
-{"status":"ok","mode":"redact","device":"cpu"}
+{"status":"ok","mode":"redact","device":"cpu","busy":false,"version":"<sha256>"}
 ```
+
+`version` is a SHA-256 hash of the server script and the `pii_*.py` files beside it, taken when the server starts. A running server keeps the code it started with, so a copy of new hook files, from a sync or a manual copy, leaves it on the old code. When a request fails and the version differs from a hash of the installed files, the hook stops that server and starts the installed code. It stops only a `pii-server.py` process on its own port.
 
 Select OpenAI as the secondary mode. Stop the existing server before changing modes on the same port:
 

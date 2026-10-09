@@ -358,6 +358,38 @@ start_server() {
     health_ok || detector_failure "server did not become healthy"
 }
 
+# The hash code_version in pii_hook.py takes: the script, then each pii_*.py beside
+# it by name. LC_ALL=C sorts the glob by byte, as Python sorts the paths. A glob with
+# no match fails cat, and the hash of the script alone is still the right answer.
+installed_version() {
+    local LC_ALL=C
+    cat "$SERVER_SCRIPT" "${SERVER_SCRIPT%/*}"/pii_*.py 2>/dev/null | shasum -a 256 2>/dev/null | cut -d' ' -f1 || true
+}
+
+# A server keeps the code it started with. When the hook files change under it, as a
+# copy synced from another machine does, /health still answers ok while the old code
+# fails each request. Stop such a server so start_server brings up the installed code.
+# Returns 1 when the server is current, when no version can be compared, or when the
+# process is not a pii-server on this port, the installer's pattern. The status the
+# caller holds then stands.
+SERVER_PATTERN="pii[-_]server\.py .*--port $PORT( |\$)"
+stop_stale_server() {
+    local current_health running expected pids
+    current_health=$(health_json) || return 1
+    running=$(jq -er 'select(.status == "ok") | .version // ""' <<<"$current_health" 2>/dev/null) || return 1
+    expected=$(installed_version)
+    [ -n "$expected" ] && [ "$running" != "$expected" ] || return 1
+    pids=$(pgrep -f "$SERVER_PATTERN" | tr '\n' ' ' || true)
+    [ -n "$pids" ] || return 1
+    # shellcheck disable=SC2086 # one pid per word
+    kill $pids 2>/dev/null || true
+    for _ in $(seq 1 20); do
+        health_json >/dev/null || return 0
+        sleep 0.1
+    done
+    detector_failure "the server on $HOST:$PORT runs older code than $SERVER_SCRIPT and did not stop; restart the server"
+}
+
 # One request does the whole check. The server extracts the text, runs the detector,
 # and returns the exact stdout and stderr this script used to build with jq, about
 # fifteen processes per call. The policy goes in headers, because each agent's
@@ -443,6 +475,13 @@ fi
 # queued on its single inference lock.
 if [ "$curl_exit" -eq 28 ]; then
     detector_failure "the detector request timed out after ${request_timeout_seconds}s; the server is up but did not answer in time, usually because the input is large or other checks are queued ahead of it"
+fi
+
+# A status the server has no reason to send can come from a server that runs older
+# code. Replace that server once and ask again.
+if ! [[ "$http_status" =~ ^(200|409|413|422|502)$ ]] && stop_stale_server; then
+    start_server
+    post_hook
 fi
 
 # The answer is stdout, a record separator, stderr, and a closing separator. The
