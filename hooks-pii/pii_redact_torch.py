@@ -17,6 +17,7 @@ import argparse
 import json
 import os
 import signal
+import socketserver
 import sys
 import threading
 import time
@@ -60,6 +61,21 @@ def max_body_bytes() -> int:
     except ValueError:
         return DEFAULT_MAX_BODY_BYTES
     return configured if configured > 0 else DEFAULT_MAX_BODY_BYTES
+
+
+class NoLookupHTTPServer(ThreadingHTTPServer):
+    """ThreadingHTTPServer without the reverse lookup of its own address.
+
+    HTTPServer.server_bind names the server with socket.getfqdn(host). That lookup
+    took 35 s on a macos-15 runner, and the hook waits about 10 s for a cold start.
+    Nothing reads server_name, so the host serves as the name.
+    """
+
+    def server_bind(self) -> None:
+        socketserver.TCPServer.server_bind(self)
+        host, port = self.server_address[:2]
+        self.server_name = str(host)
+        self.server_port = int(port)
 
 
 def request_shutdown(server: ThreadingHTTPServer) -> None:
@@ -720,7 +736,7 @@ def main() -> None:
         flush=True,
     )
 
-    server = ThreadingHTTPServer((args.host, args.port), Handler)
+    server = NoLookupHTTPServer((args.host, args.port), Handler)
     for sig in (signal.SIGINT, signal.SIGTERM):
         signal.signal(sig, lambda *_: request_shutdown(server))
     try:
