@@ -58,8 +58,9 @@ INVISIBLE_PATTERN = re.compile(
 # A card is written either as one run of digits or as digit groups held by a
 # space or a hyphen. Both forms must start and end on a digit: a run that ends
 # on a separator swallows the character after it, and a run that continues past
-# a separator merges the card with the next digit it happens to precede.
-CARD_PATTERN = re.compile(r"(?<!\d)(?:\d{13,19}|\d{1,6}(?:[ -]\d{2,6}){1,5})(?!\d)")
+# a separator merges the card with the next digit it happens to precede. A run
+# right after a decimal point is the fraction of a float, not a card.
+CARD_PATTERN = re.compile(r"(?<![\d.])(?:\d{13,19}|\d{1,6}(?:[ -]\d{2,6}){1,5})(?!\d)")
 
 # A phone is one of: a country code marked by + or 00, a parenthesised area
 # code, a dotted NANP number, a bare run of ten digits, or digit groups held by
@@ -1022,10 +1023,19 @@ def _is_secret_column(header_value: str) -> bool:
     return normalized in SECRET_COLUMN_NAMES
 
 
+# The first digit of every major card network. Ids and timestamps of 16 digits
+# often start with 1, and a tenth of them pass the Luhn check by chance.
+CARD_FIRST_DIGITS = "234568"
+
+
 def _append_card_matches(found: Matches, spans: list[dict[str, object]]) -> None:
     for match in found.get(CARD_PATTERN, ()):
         digits = re.sub(r"[ -]", "", match.group())
-        if 13 <= len(digits) <= 19 and luhn_valid(digits):
+        if (
+            13 <= len(digits) <= 19
+            and digits[0] in CARD_FIRST_DIGITS
+            and luhn_valid(digits)
+        ):
             spans.append(
                 {"start": match.start(), "end": match.end(), "label": "account_number"}
             )
