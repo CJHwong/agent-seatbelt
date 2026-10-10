@@ -27,8 +27,8 @@ import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-# answer.py sits one level up in the checkout, and next to this file once the
-# install tests copy it in as pii-server.py.
+# answer.py sits in server/ beside the tests folder in the checkout, and next to this
+# file once the install tests copy it in as server.py.
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "server"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 

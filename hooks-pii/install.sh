@@ -47,7 +47,7 @@ SERVER_FILES=(
 LEGACY_FILES=(
     pii-server.py pii_hook.py pii_redact_lite.py pii_redact_torch.py pii_opf.py
     pii_tagger.py pii_rules.py pii_tagger_rules.py pii_secret_patterns.py
-    cl100k_base.tokens.gz pii_rules_native.abi3.so pii-check.sh pii-hook
+    cl100k_base.tokens.gz pii_rules_native.abi3.so
 )
 LEGACY_CHECK="$HOOKS_DIR/pii-check.sh"
 LEGACY_CLIENT="$HOOKS_DIR/pii-hook"
@@ -359,13 +359,17 @@ start_pilot_server() {
 # server running — it's the same 127.0.0.1:$PORT singleton the hooks reuse.
 # Sets PILOT_OK on success. Fail-soft: a miss here just means the first real
 # prompt pays the cold start, same as before this step existed.
+# The hash code_version in answer.py takes, as check.sh computes it: every .py file
+# below the server's folder, in the byte order of its relative path.
+installed_version() {
+    (cd "$PII_DIR" && find . -name '*.py' | LC_ALL=C sort | tr '\n' '\0' | xargs -0 cat) 2>/dev/null |
+        shasum -a 256 2>/dev/null | cut -d' ' -f1 || true
+}
+
+# $1 is how many times a server that runs other code may be replaced.
 pilot_run() {
+    local replacements="${1:-1}"
     local health="http://127.0.0.1:$PORT/health"
-    if curl -sSf --max-time 1 "$health" >/dev/null 2>&1; then
-        echo "  a server the installer cannot find still answers on 127.0.0.1:$PORT;" >&2
-        echo "  stop it and rerun the installer" >&2
-        return
-    fi
     # The lock check.sh takes before it starts a server. A hook that fires during the
     # install then waits for this server instead of starting a second one, and a hook
     # that got there first keeps its own start.
@@ -374,22 +378,47 @@ pilot_run() {
     if [ -d "$lock" ] && [ -n "$(find "$lock" -maxdepth 0 -mmin +1 2>/dev/null)" ]; then
         rmdir "$lock" 2>/dev/null || true
     fi
-    if mkdir "$lock" 2>/dev/null; then
-        owned=1
-        start_pilot_server
+    if ! curl -sSf --max-time 1 "$health" >/dev/null 2>&1; then
+        if mkdir "$lock" 2>/dev/null; then
+            owned=1
+            start_pilot_server
+        else
+            echo "  a hook is already starting the server; waiting for it..."
+        fi
+    elif pgrep -f "$SERVER_PATTERN" >/dev/null; then
+        # A hook started it after the old one stopped. The version check below
+        # decides whether it runs these files.
+        echo "  a hook already started the server; checking it..."
     else
-        echo "  a hook is already starting the server; waiting for it..."
+        echo "  a server the installer cannot find still answers on 127.0.0.1:$PORT;" >&2
+        echo "  stop it and rerun the installer" >&2
+        return
     fi
     for _ in $(seq 1 120); do   # up to ~60s for a cold download
-        curl -sSf --max-time 1 "$health" | jq -e --arg mode "$SERVER_MODE" \
+        curl -sSf --max-time 1 "$health" 2>/dev/null | jq -e --arg mode "$SERVER_MODE" \
             '.status == "ok" and .mode == $mode' >/dev/null 2>&1 && break
         sleep 0.5
     done
     [ "$owned" = 0 ] || rmdir "$lock" 2>/dev/null || true
-    if ! curl -sSf --max-time 1 "$health" | jq -e --arg mode "$SERVER_MODE" \
+    if ! curl -sSf --max-time 1 "$health" 2>/dev/null | jq -e --arg mode "$SERVER_MODE" \
         '.status == "ok" and .mode == $mode' >/dev/null 2>&1; then
         echo "  server not up after ~60s; model may still be downloading in the" >&2
         echo "  background. It will finish on first agent use. Log: $SERVER_LOG" >&2
+        return
+    fi
+    # A hook that was already running when the old server stopped can start a server
+    # from the files it read, before this one binds the port.
+    # Without shasum there is no version to compare, as in check.sh.
+    local running expected
+    running=$(curl -sS --max-time 1 "$health" 2>/dev/null | jq -r '.version // empty' 2>/dev/null || true)
+    expected=$(installed_version)
+    if [ -n "$expected" ] && [ "$running" != "$expected" ]; then
+        echo "  the server that answered runs other code than these files" >&2
+        if [ "$replacements" -gt 0 ] && stop_running_server; then
+            pilot_run $((replacements - 1))
+            return
+        fi
+        echo "  stop it; the next hook call starts the installed server" >&2
         return
     fi
     local resp spans
@@ -410,6 +439,16 @@ pilot_run() {
 # started by hand from the hooks directory shows only "pii/server.py", and one from an
 # install before that folder shows "pii-server.py".
 SERVER_PATTERN="pii([-_]|/)server\.py .*--port $PORT( |\$)"
+# Whether any of these pids still runs the server. pgrep, unlike kill -0, does not
+# count a stopped server whose parent has not collected it yet.
+still_serving() {
+    local running pid
+    running=" $(pgrep -f "$SERVER_PATTERN" | tr '\n' ' ' || true) "
+    for pid in "$@"; do
+        [[ "$running" == *" $pid "* ]] && return 0
+    done
+    return 1
+}
 stop_running_server() {
     local pids
     pids=$(pgrep -f "$SERVER_PATTERN" | tr '\n' ' ' || true)
@@ -417,14 +456,32 @@ stop_running_server() {
     echo "  stopping the running server on 127.0.0.1:$PORT (pid ${pids% })"
     # shellcheck disable=SC2086 # one pid per word
     kill $pids 2>/dev/null || true
+    # Wait for these pids only. A hook may start the new server in the meantime, and
+    # that one is not the server being stopped.
     for _ in $(seq 1 20); do
-        pgrep -f "$SERVER_PATTERN" >/dev/null || return 0
+        # shellcheck disable=SC2086 # one pid per word
+        still_serving $pids || return 0
         sleep 0.5
     done
-    pids=$(pgrep -f "$SERVER_PATTERN" | tr '\n' ' ' || true)
     echo "  server pid ${pids% } did not stop; stop it and rerun the installer" >&2
     return 1
 }
+
+# An agent session keeps the hook command it started with: Codex reads its hooks once
+# per session. A session from before $PII_DIR still runs these two paths, so each one
+# that exists becomes a script that runs the current command. Written before the server
+# stops, so such a session can only start the new server.
+write_legacy_entry() {
+    local path="$1"
+    [ -e "$path" ] || return 0
+    printf '#!/bin/sh\n# Written by the hooks-pii installer for an agent session from before %s.\nexec "%s" "$@"\n' \
+        "$PII_DIR" "$HOOK_COMMAND" >"$path.part"
+    chmod +x "$path.part"
+    mv "$path.part" "$path"
+    echo "Pointed $path at $HOOK_COMMAND"
+}
+write_legacy_entry "$LEGACY_CHECK"
+write_legacy_entry "$LEGACY_CLIENT"
 
 echo
 echo "Restarting the server..."
