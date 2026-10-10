@@ -25,7 +25,7 @@ Everything goes in `~/.claude/hooks/pii/`:
 - `detectors/` — one file per model backend: `redact.py`, `redact_torch.py`, `privacy_filter.py`, and `tagger.py`. See [Tagger mode](docs/detectors.md#tagger-mode)
 - `rules/` — the deterministic rules: `engine.py`, `secrets.py`, `tagger_rules.py`, and `pii_rules_native.abi3.so`, the native rules engine on macOS arm64 and Linux x86_64 only. See [Native rules engine](docs/detectors.md#native-rules-engine)
 
-An install from before this folder put the same files directly in `~/.claude/hooks/` under `pii_*` names. The installer moves its hook entries to the new paths and removes those files.
+An install from before this folder put the same files directly in `~/.claude/hooks/` under `pii_*` names. The installer moves its hook entries to the new paths and removes those files. It keeps `pii-check.sh` and `pii-hook` there as two-line scripts that run the current hook command, because an agent session that started before the upgrade still calls them. Codex reads its hooks once per session.
 
 - For each detected agent, two entries in its hooks config:
   - `UserPromptSubmit` → blocks or warns on prompts containing PII before they reach the model provider
@@ -217,7 +217,7 @@ All env vars override defaults; set them in your shell or the hook's env:
 
 ## Uninstall
 
-1. Delete the `~/.claude/hooks/pii/` folder.
+1. Delete the `~/.claude/hooks/pii/` folder, and `~/.claude/hooks/pii-check.sh` and `~/.claude/hooks/pii-hook` if an upgrade left them.
 2. Edit `~/.claude/settings.json` and `~/.codex/hooks.json` and remove the entries that run it.
 
 Runtime files live under `~/.cache/pii/` (the server log and the skip events).

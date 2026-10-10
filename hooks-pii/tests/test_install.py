@@ -527,15 +527,15 @@ class MigrationTests(InstallerHarness):
         "pii_secret_patterns.py",
         "cl100k_base.tokens.gz",
         "pii_rules_native.abi3.so",
-        "pii-check.sh",
-        "pii-hook",
     )
+    # The paths an agent session from before the move may still run.
+    LEGACY_ENTRIES = ("pii-check.sh", "pii-hook")
 
     def legacy_install(self, command: str) -> None:
         """The files and the entries an older installer left, wired to `command`."""
         hooks = self.home / ".claude" / "hooks"
         hooks.mkdir(parents=True)
-        for name in self.LEGACY_FILES:
+        for name in self.LEGACY_FILES + self.LEGACY_ENTRIES:
             (hooks / name).write_text("old")
         legacy = str(hooks / command)
         document = {
@@ -589,7 +589,56 @@ class MigrationTests(InstallerHarness):
             [name for name in self.LEGACY_FILES if (hooks / name).exists()], []
         )
         self.assertEqual(foreign.read_text(), "not ours")
-        self.assertIn(f"Removed the old {hooks / 'pii-check.sh'}", result.stdout)
+        self.assertIn(f"Removed the old {hooks / 'pii_hook.py'}", result.stdout)
+
+    def test_an_old_entry_point_runs_the_current_command(self) -> None:
+        """A session that started before the move keeps calling the old path."""
+        self.add_agent("claude")
+        self.legacy_install("pii-check.sh")
+
+        result = self.run_installer("--no-codex")
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        hooks = self.home / ".claude" / "hooks"
+        script = self.installed_dir() / "check.sh"
+        for name in self.LEGACY_ENTRIES:
+            self.assertIn(f"Pointed {hooks / name} at {script}", result.stdout)
+        called = subprocess.run(
+            [str(hooks / "pii-check.sh"), "--mode", "prompt"],
+            input="",
+            text=True,
+            capture_output=True,
+            env={
+                **os.environ,
+                "HOME": str(self.home),
+                "PII_SERVER_MODE": "handoff-probe",
+                "PII_SKIP_EVENT_PATH": os.devnull,
+            },
+            check=False,
+        )
+        self.assertEqual(called.returncode, 0, called.stderr)
+        self.assertIn("PII scanner skipped", called.stdout)
+
+    def test_an_old_entry_point_follows_the_build(self) -> None:
+        self.add_agent("claude")
+        self.legacy_install("pii-hook")
+        (self.release / "pii-hook-linux-x86_64").write_text(RUNNABLE_CLIENT)
+
+        self.run_installer("--no-codex")
+
+        client = self.installed_dir() / CLIENT_FILE
+        entry = self.home / ".claude" / "hooks" / "pii-hook"
+        self.assertIn(f'exec "{client}" "$@"', entry.read_text())
+        self.assertTrue(os.access(entry, os.X_OK))
+
+    def test_a_fresh_install_writes_no_old_entry_point(self) -> None:
+        self.add_agent("claude")
+        self.run_installer("--no-codex")
+
+        hooks = self.home / ".claude" / "hooks"
+        self.assertEqual(
+            [name for name in self.LEGACY_ENTRIES if (hooks / name).exists()], []
+        )
 
     def test_the_old_bytecode_goes_and_another_hooks_stays(self) -> None:
         """Python wrote bytecode for the old modules beside them, in a shared folder."""
@@ -1288,6 +1337,159 @@ class PilotTests(InstallerHarness):
 
         self.assertIn("server warm", result.stdout)
         self.assertFalse(lock.exists())
+
+    # Reports code older than the installed files on its first start only, as a server
+    # that an old hook started before the pilot's would.
+    OLDER_FIRST = """import os
+import runpy
+from pathlib import Path
+
+from answer import code_version
+
+marker = Path(os.environ["FAKE_FIRST_START_MARKER"])
+if marker.exists():
+    os.environ["FAKE_PII_HEALTH_VERSION"] = code_version(Path(__file__))
+else:
+    marker.write_text("started")
+    os.environ["FAKE_PII_HEALTH_VERSION"] = "older-code"
+runpy.run_path(os.environ["FAKE_SERVER_PATH"], run_name="__main__")
+"""
+
+    def install_with_server(self, port: int, server: Path, **environment: str):
+        return self.run_installer(
+            "--no-codex",
+            pilot=True,
+            source=self.fake_source(server_script=server),
+            extra_env={
+                "PII_PORT": str(port),
+                "PII_SERVER_MODE": "rules",
+                "FAKE_PII_RESPONSE": self.SPAN_RESPONSE,
+                **environment,
+            },
+        )
+
+    def test_pilot_replaces_a_server_that_runs_other_code(self) -> None:
+        self.add_agent("claude")
+        port = free_port()
+        self.addCleanup(self.reap, port)
+        server = self.home / "older_first.py"
+        server.write_text(self.OLDER_FIRST)
+
+        result = self.install_with_server(
+            port,
+            server,
+            FAKE_FIRST_START_MARKER=str(self.home / "first-start"),
+            FAKE_SERVER_PATH=str(FAKE_SERVER),
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("runs other code than these files", result.stderr)
+        self.assertIn("server warm, smoke test flagged 1 span(s)", result.stdout)
+
+    def test_pilot_reports_a_server_that_keeps_running_other_code(self) -> None:
+        self.add_agent("claude")
+        port = free_port()
+        self.addCleanup(self.reap, port)
+
+        result = self.install_with_server(
+            port, FAKE_SERVER, FAKE_PII_HEALTH_VERSION="older-code"
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stderr.count("runs other code than these files"), 2)
+        self.assertIn("the next hook call starts the installed server", result.stderr)
+        self.assertNotIn("server warm", result.stdout)
+
+    def test_pilot_skips_the_version_check_without_shasum(self) -> None:
+        """check.sh skips its own check then; the two agree on what they can see."""
+        self.add_agent("claude")
+        port = free_port()
+        self.addCleanup(self.reap, port)
+        stub_dir = self.home / "stubs"
+        stub_dir.mkdir()
+        (stub_dir / "shasum").write_text("#!/bin/sh\nexit 1\n")
+        (stub_dir / "shasum").chmod(0o755)
+
+        result = self.install_with_server(
+            port,
+            FAKE_SERVER,
+            FAKE_PII_HEALTH_VERSION="older-code",
+            PATH=f"{stub_dir}{os.pathsep}{os.environ['PATH']}",
+        )
+
+        self.assertNotIn("runs other code", result.stderr)
+        self.assertIn("server warm", result.stdout)
+
+    # On its first SIGTERM it hands the port to a copy of itself and exits, as a server
+    # replaced by a hook between the installer's stop and its pilot would look.
+    HANDS_OVER = """import importlib.util
+import os
+import signal
+import subprocess
+import sys
+import time
+import urllib.request
+from pathlib import Path
+
+from answer import code_version
+
+os.environ["FAKE_PII_HEALTH_VERSION"] = code_version(Path(__file__))
+spec = importlib.util.spec_from_file_location("fake", os.environ["FAKE_SERVER_PATH"])
+fake = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(fake)
+bound = []
+original_bind = fake.NoLookupHTTPServer.server_bind
+
+
+def recording_bind(server):
+    bound.append(server)
+    original_bind(server)
+
+
+def hand_over(*_):
+    marker = Path(os.environ["FAKE_REPLACED_MARKER"])
+    if marker.exists():
+        os._exit(0)
+    marker.write_text("replaced")
+    bound[0].socket.close()
+    subprocess.Popen([sys.executable, *sys.argv], start_new_session=True)
+    port = sys.argv[sys.argv.index("--port") + 1]
+    for _ in range(100):
+        try:
+            urllib.request.urlopen(f"http://127.0.0.1:{port}/health", timeout=1)
+            break
+        except OSError:
+            time.sleep(0.05)
+    os._exit(0)
+
+
+fake.NoLookupHTTPServer.server_bind = recording_bind
+signal.signal(signal.SIGTERM, hand_over)
+sys.exit(fake.main())
+"""
+
+    def test_pilot_checks_a_server_a_hook_started_after_the_stop(self) -> None:
+        """An older session's hook runs the new files once the stop frees the port."""
+        self.add_agent("claude")
+        port = free_port()
+        self.addCleanup(self.reap, port)
+        wrapper = self.home / "hands_over.py"
+        wrapper.write_text(self.HANDS_OVER)
+        environment = {
+            "FAKE_REPLACED_MARKER": str(self.home / "replaced"),
+            "FAKE_SERVER_PATH": str(FAKE_SERVER),
+        }
+        # The first install's pilot starts the wrapper from the installed folder.
+        first = self.install_with_server(port, wrapper, **environment)
+        self.assertIn("server warm", first.stdout)
+
+        result = self.install_with_server(port, wrapper, **environment)
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn(f"stopping the running server on 127.0.0.1:{port}", result.stdout)
+        self.assertNotIn("did not stop", result.stderr)
+        self.assertIn("a hook already started the server; checking it", result.stdout)
+        self.assertIn("server warm, smoke test flagged 1 span(s)", result.stdout)
 
     def test_pilot_starts_a_cold_server_with_uv_for_a_model_mode(self) -> None:
         """The non-rules branch resolves dependencies through uv before starting."""
