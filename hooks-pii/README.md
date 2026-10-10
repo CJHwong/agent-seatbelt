@@ -2,9 +2,9 @@
 
 Userland PII detector for AI coding agents. Catches secrets and personal data flowing **into** the agent's prompt or **out of** its tool responses, before the LLM ever sees the bytes.
 
-The default mode uses [Desert Ant Redact](https://desertant.com) on the local GPU. It adds deterministic rules for secrets and private data. OpenAI Privacy Filter remains available as a CPU-only secondary mode.
+The default mode runs [seatbelt-pii-tagger](https://huggingface.co/cjhwong/seatbelt-pii-tagger), a token tagger for English, Simplified Chinese and Traditional Chinese, on the Apple Neural Engine or the CPU. It adds deterministic rules for secrets and account numbers. [Desert Ant Redact](https://desertant.com), OpenAI Privacy Filter and a rules-only mode remain available.
 
-Both modes run locally. The OpenAI mode downloads its model from Hugging Face on first use. The Redact mode requires a compatible PyTorch cache because the public Redact release does not publish the `redact.pt` checkpoint used by this server.
+Every mode runs locally. A model mode downloads its files from Hugging Face on first use.
 
 This is the content-level companion to `agent-seatbelt`'s file-level sandbox. The sandbox stops the agent from reading your secrets; if a secret enters the process anyway (env var, fetched via credential helper, pasted into a prompt), this hook catches it on the way to the LLM.
 
@@ -71,7 +71,7 @@ Flags:
 ... | bash -s -- --no-pilot      # skip the pilot warm-up run
 ```
 
-The installer stops a server already running on the port, because a running server keeps the code it started with. Then, before wiring, it does a pilot run: it starts the selected server once, smoke-tests it, and leaves it warm. The OpenAI model downloads to `~/.cache/opf/`. The Redact cache must already exist. Pass `--no-pilot` to skip the pilot. The next hook call then starts the server.
+The installer stops a server already running on the port, because a running server keeps the code it started with. Then, before wiring, it does a pilot run: it starts the selected server once, smoke-tests it, and leaves it warm. The tagger downloads to `~/.cache/pii-tagger/`, the Redact graph to `~/.cache/redact/` and the OpenAI model to `~/.cache/opf/`. `redact-torch` needs its checkpoint already in the cache. Pass `--no-pilot` to skip the pilot. The next hook call then starts the server.
 
 The installer is idempotent. Running it again does not duplicate hook entries. It updates matching entries in place.
 
@@ -200,7 +200,7 @@ All env vars override defaults; set them in your shell or the hook's env:
 | `PII_ALLOW_LABELS` | empty | comma-separated labels to allow within the selected tier |
 | `PII_ALLOW_BYPASS` | `1` | `1` enables the `pii:off` prompt prefix; `0` disables it, for deployments where more than one person can reach the agent |
 | `PII_ACTION_MODE` | `warn` | `warn` to allow input with agent context or `block` to reject input |
-| `PII_SERVER_MODE` | `redact` | `redact` (LiteRT graph), `redact-torch` (checkpoint), `openai`, `rules`, or `tagger` |
+| `PII_SERVER_MODE` | `tagger` | `tagger`, `redact` (LiteRT graph), `redact-torch` (checkpoint), `openai`, or `rules` |
 | `PII_PORT` | `9123` | local server port |
 | `PII_SERVER_SCRIPT` | `~/.claude/hooks/pii/server.py` | server script path |
 | `PII_SERVER_LOG` | `~/.cache/pii/server.log` | server log path |

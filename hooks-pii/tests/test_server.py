@@ -34,9 +34,9 @@ MODULE_SPEC.loader.exec_module(PII_SERVER)
 
 
 class PiiServerModeTests(TestCase):
-    def test_default_mode_is_redact(self) -> None:
+    def test_default_mode_is_tagger(self) -> None:
         with patch.dict(os.environ, {}, clear=True):
-            self.assertEqual(PII_SERVER.resolve_mode(), "redact")
+            self.assertEqual(PII_SERVER.resolve_mode(), "tagger")
 
     def test_environment_selects_openai_mode(self) -> None:
         with patch.dict(os.environ, {"PII_SERVER_MODE": "openai"}, clear=True):
