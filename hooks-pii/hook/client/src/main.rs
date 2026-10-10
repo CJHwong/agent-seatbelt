@@ -42,7 +42,7 @@ fn main() {
 /// The HTTP request check.sh sends, or None for a call the script must judge.
 fn request(arguments: &[String], payload: &[u8]) -> Option<Vec<u8>> {
     let mode = mode(arguments)?;
-    let server_mode = setting("PII_SERVER_MODE", "redact");
+    let server_mode = setting("PII_SERVER_MODE", "tagger");
     let action_mode = setting("PII_ACTION_MODE", "warn");
     let allow_bypass = setting("PII_ALLOW_BYPASS", "1");
     let settled = SERVER_MODES.contains(&server_mode.as_str())

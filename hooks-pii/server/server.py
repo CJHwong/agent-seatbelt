@@ -40,7 +40,7 @@ from typing import Any
 from answer import HookError, Policy, answer, code_version
 
 SUPPORTED_MODES = ("redact", "redact-torch", "openai", "rules", "tagger")
-DEFAULT_MODE = "redact"
+DEFAULT_MODE = "tagger"
 DEFAULT_MAX_BODY_BYTES = 2 * 1024 * 1024
 HANDLER_TIMEOUT_SECONDS = 30
 # A hook payload wraps the text in JSON with the tool's other fields, so it may run

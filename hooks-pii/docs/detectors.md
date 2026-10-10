@@ -2,13 +2,12 @@
 
 ## Redact modes
 
-Redact is the default detector and it has two backends, which differ in where the
-weights come from and in what they need to run.
+Redact has two backends, which differ in where the weights come from and in what they
+need to run.
 
 `redact` runs the published LiteRT graph. It downloads `redact.tflite`,
 `config.json` and `tokenizer.json` from the Redact release at v0.4.0 on first use,
-needs no accelerator, and runs on a machine with nothing prepared. It is what a
-fresh install gets.
+needs no accelerator, and runs on a machine with nothing prepared.
 
 `redact-torch` runs the PyTorch checkpoint instead. It needs `redact.pt` already
 in the cache, which the public release no longer publishes, so it is for a host
@@ -20,7 +19,7 @@ The two agree: on the repo's own 440-case corpora they produce identical spans,
 and on six long documents they agree on five exactly and differ by one span on the
 sixth.
 
-Select the default:
+Select it:
 
 ```bash
 PII_SERVER_MODE=redact uv run hooks-pii/server/server.py --port 9123
@@ -68,7 +67,7 @@ In `redact-torch` the neural model runs on the selected accelerator. Tokenizatio
 
 ### Tagger mode
 
-`tagger` runs a 35M-parameter token tagger trained for English, Simplified Chinese and
+`tagger` is the default. It runs a 35M-parameter token tagger trained for English, Simplified Chinese and
 Traditional Chinese, including developer text: tool output, logs, configuration and chat.
 It finds 18 kinds of personal data, which map onto the labels above. Every identity
 number becomes `account_number`, and a person's handle becomes `private_username`.
@@ -203,7 +202,7 @@ The OpenAI Privacy Filter checkpoint declares 131,072 position embeddings. This 
 
 OpenAI mode does not chunk, so an oversized request returns HTTP 413 before any inference. The hook then names the size as the cause rather than blaming the detector, and tells the agent to raise the limit. In warn mode the content is allowed through unscanned, which is stated in the message; in block mode it is blocked, because a value that cannot be scanned cannot be cleared.
 
-Review the [Redact release](https://huggingface.co/desert-ant-labs/redact/resolve/v0.4.0/README.md) and its [source-available license](https://license.desertant.com/1.0) before distribution. The release publishes `redact.tflite` and a compiled Core ML model. It does not publish `redact.pt`: every published revision is missing it, and the one commit that still lists it answers 403 from the storage layer. So `redact-torch` needs a checkpoint that was prepared separately, which is why `redact` is the default.
+Review the [Redact release](https://huggingface.co/desert-ant-labs/redact/resolve/v0.4.0/README.md) and its [source-available license](https://license.desertant.com/1.0) before distribution. The release publishes `redact.tflite` and a compiled Core ML model. It does not publish `redact.pt`: every published revision is missing it, and the one commit that still lists it answers 403 from the storage layer. So `redact-torch` needs a checkpoint that was prepared separately, and `redact` is the Redact backend a fresh host can run.
 
 Measure resource use on the final holdout corpus:
 

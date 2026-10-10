@@ -55,7 +55,7 @@ CLAUDE_SETTINGS="$HOME/.claude/settings.json"
 CODEX_HOOKS="$HOME/.codex/hooks.json"
 PORT="${PII_PORT:-9123}"
 SERVER_LOG="${PII_SERVER_LOG:-$HOME/.cache/pii/server.log}"
-SERVER_MODE="${PII_SERVER_MODE:-redact}"
+SERVER_MODE="${PII_SERVER_MODE:-tagger}"
 ACTION_MODE="${PII_ACTION_MODE:-warn}"
 
 # Tools whose output can carry external PII. Edit/Write/Glob/LS/Todo etc. only
@@ -482,7 +482,8 @@ if [ "$CODEX_PRESENT" -eq 1 ]; then
 fi
 echo
 echo "Tuning:"
-echo "  PII_SERVER_MODE=redact        use the published Redact graph on CPU (default; downloads)"
+echo "  PII_SERVER_MODE=tagger        use the seatbelt PII tagger (default; downloads)"
+echo "  PII_SERVER_MODE=redact        use the published Redact graph on CPU (downloads)"
 echo "  PII_SERVER_MODE=redact-torch  use the Redact checkpoint instead; needs a compatible local cache"
 echo "  PII_SERVER_MODE=openai        use the OpenAI Privacy Filter on CPU"
 echo "  PII_SERVER_MODE=rules         use the deterministic rules only; no model, no accelerator"

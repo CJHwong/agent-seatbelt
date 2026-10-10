@@ -40,7 +40,7 @@ done
 PORT="${PII_PORT:-9123}"
 HOST="127.0.0.1"
 SERVER_SCRIPT="${PII_SERVER_SCRIPT:-$HOME/.claude/hooks/pii/server.py}"
-SERVER_MODE="${PII_SERVER_MODE:-redact}"
+SERVER_MODE="${PII_SERVER_MODE:-tagger}"
 HEALTH="http://$HOST:$PORT/health"
 HOOK="http://$HOST:$PORT/hook"
 # Per user and per port. The old fixed /tmp/pii-server.starting was shared by every
