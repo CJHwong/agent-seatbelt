@@ -313,6 +313,7 @@ class TextExtractionTests(HookHarness):
             PII_PORT=str(self.detector_port),
             PII_SERVER_MODE=self.server_mode,
             PII_ACTION_MODE="block",
+            PII_SKIP_EVENT_PATH=os.devnull,
         )
         ours, theirs = socket.socketpair()
         with ours, theirs:
