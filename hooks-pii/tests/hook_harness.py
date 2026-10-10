@@ -241,6 +241,10 @@ class HookRunner(unittest.TestCase):
             environment.setdefault(
                 "PII_SERVER_LOG", str(Path(temporary_directory) / "server.log")
             )
+            # The default is the user's own log, which a daemon may read.
+            environment.setdefault(
+                "PII_SKIP_EVENT_PATH", str(Path(temporary_directory) / "pii-skips.log")
+            )
             hook_input = payload if isinstance(payload, str) else json.dumps(payload)
             if HOOK_CLIENT and hook_path is None:
                 command = [str(client_beside_script()), "--mode", mode]

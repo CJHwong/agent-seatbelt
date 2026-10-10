@@ -108,6 +108,7 @@ class CanaryHarness(unittest.TestCase):
             f"PII_PORT={self.detector_port} PII_SERVER_MODE=redact "
             f"PII_ACTION_MODE={action_mode} PII_LEVEL=strict "
             f"PII_SERVER_LOG={self.project}/server.log "
+            f"PII_SKIP_EVENT_PATH={self.project}/pii-skips.log "
             f"{hook} --mode {hook_mode}"
         )
         settings.write_text(
