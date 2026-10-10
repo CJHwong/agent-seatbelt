@@ -88,6 +88,16 @@ class ContactAndIdentifierTests(unittest.TestCase):
     def test_card_number_that_fails_luhn_is_not_reported(self) -> None:
         self.assertEqual(span_texts("card 4111111111111112, on file"), set())
 
+    def test_fraction_digits_of_a_float_are_not_a_card_number(self) -> None:
+        # Python prints a float with 16 to 18 fraction digits, and about 1 in 10
+        # such runs passes the Luhn check by chance.
+        self.assertEqual(span_texts("loss 0.4111111111111111 at step 9"), set())
+
+    def test_digit_run_that_starts_with_1_is_not_a_card_number(self) -> None:
+        # No major card network issues numbers that start with 0, 1, 7 or 9.
+        # Ids and timestamps of 16 digits often start with 1.
+        self.assertEqual(span_texts("trace 1234567890123452 done"), set())
+
     def test_ipv4_inside_the_octet_range_is_labeled_private_url(self) -> None:
         self.assertEqual(
             span_tuples("host 10.0.0.7 replied"),
@@ -172,7 +182,7 @@ class GuardContextMatrixTests(unittest.TestCase):
             "",
             "4111111111111111",
             "account_number",
-            ("value", "value", "none", "value"),
+            ("value", "value", "none", "none"),
         ),
         (
             "secret",
