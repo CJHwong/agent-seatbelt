@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import functools
 import gzip
+import importlib
 import itertools
 import math
 import re
@@ -17,7 +18,7 @@ from collections import Counter
 from pathlib import Path
 from typing import Protocol, cast
 
-from pii_secret_patterns import PORTED_RULES, SHARED_ALLOWLIST, TOKEN_RATIO_CEILINGS
+from rules.secrets import PORTED_RULES, SHARED_ALLOWLIST, TOKEN_RATIO_CEILINGS
 
 
 SPAN_PRIORITY = {
@@ -412,7 +413,7 @@ NATIVE_ENGINE_VERSION = 2
 
 
 class NativeEngine(Protocol):
-    """What pii_rules calls on pii_rules_native.Engine."""
+    """What engine.py calls on pii_rules_native.Engine."""
 
     def scan(
         self, text: str
@@ -454,8 +455,10 @@ class _NativeMatch:
 
 def _load_native_engine() -> tuple[NativeEngine | None, str]:
     """Return the native engine, or None and the reason it is not in use."""
+    # import_module reads sys.modules first, as a top-level import does. A from-import
+    # would read the attribute on the rules package, which outlives a removed module.
     try:
-        import pii_rules_native  # ty: ignore[unresolved-import]
+        pii_rules_native = importlib.import_module("rules.pii_rules_native")
     except ImportError as error:
         return None, f"python ({error})"
     version = getattr(pii_rules_native, "ENGINE_VERSION", None)

@@ -102,7 +102,7 @@ class CanaryHarness(unittest.TestCase):
         hook = (
             str(client_beside_script())
             if HOOK_CLIENT
-            else f"bash {HOOKS_DIR}/pii-check.sh"
+            else f"bash {HOOKS_DIR}/hook/check.sh"
         )
         command = (
             f"PII_PORT={self.detector_port} PII_SERVER_MODE=redact "

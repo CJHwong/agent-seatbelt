@@ -17,13 +17,13 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "server"))
 
 import numpy as np  # ty: ignore[unresolved-import]
 
-import pii_tagger
-from pii_rules import SPAN_PRIORITY
-from pii_tagger import (
+from detectors import tagger
+from rules.engine import SPAN_PRIORITY
+from detectors.tagger import (
     COREML_FILES,
     LABEL_MAP,
     REQUIRED_FILES,
@@ -128,8 +128,8 @@ class AssetDirTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as folder:
             with (
                 patch.dict(os.environ, {"PII_TAGGER_DIR": "", "PII_TAGGER_FP32": ""}),
-                patch.object(pii_tagger, "CACHE_DIR", Path(folder)),
-                patch.object(pii_tagger, "neural_engine_available", return_value=False),
+                patch.object(tagger, "CACHE_DIR", Path(folder)),
+                patch.object(tagger, "neural_engine_available", return_value=False),
                 patch("huggingface_hub.hf_hub_download", download),
             ):
                 self.assertEqual(asset_dir(), Path(folder))
@@ -138,8 +138,8 @@ class AssetDirTests(unittest.TestCase):
         )
         self.assertTrue(
             all(
-                call["repo_id"] == pii_tagger.TAGGER_REPO
-                and call["revision"] == pii_tagger.TAGGER_REVISION
+                call["repo_id"] == tagger.TAGGER_REPO
+                and call["revision"] == tagger.TAGGER_REVISION
                 for call in calls
             )
         )
@@ -157,8 +157,8 @@ class AssetDirTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as folder:
             with (
                 patch.dict(os.environ, {"PII_TAGGER_DIR": "", "PII_TAGGER_FP32": ""}),
-                patch.object(pii_tagger, "CACHE_DIR", Path(folder)),
-                patch.object(pii_tagger, "neural_engine_available", return_value=True),
+                patch.object(tagger, "CACHE_DIR", Path(folder)),
+                patch.object(tagger, "neural_engine_available", return_value=True),
                 patch("huggingface_hub.hf_hub_download", download),
             ):
                 asset_dir()
@@ -188,16 +188,16 @@ class AssetDirTests(unittest.TestCase):
 class NeuralEngineAvailableTests(unittest.TestCase):
     def check(self, system: str, machine: str, fp32: str, installed: bool) -> bool:
         with (
-            patch.object(pii_tagger.platform, "system", return_value=system),
-            patch.object(pii_tagger.platform, "machine", return_value=machine),
+            patch.object(tagger.platform, "system", return_value=system),
+            patch.object(tagger.platform, "machine", return_value=machine),
             patch.object(
-                pii_tagger.importlib.util,
+                tagger.importlib.util,
                 "find_spec",
                 return_value=object() if installed else None,
             ),
             patch.dict(os.environ, {"PII_TAGGER_FP32": fp32}),
         ):
-            return pii_tagger.neural_engine_available()
+            return tagger.neural_engine_available()
 
     def test_apple_silicon_with_coremltools_takes_it(self) -> None:
         self.assertTrue(self.check("Darwin", "arm64", "", True))
@@ -282,8 +282,8 @@ class NeuralEngineLoadTests(unittest.TestCase):
 
 
 class WindowShortcutTests(unittest.TestCase):
-    def model(self, logits: np.ndarray) -> tuple[pii_tagger.TaggerModel, MagicMock]:
-        model = object.__new__(pii_tagger.TaggerModel)
+    def model(self, logits: np.ndarray) -> tuple[tagger.TaggerModel, MagicMock]:
+        model = object.__new__(tagger.TaggerModel)
         model.forward = SimpleNamespace(logits=lambda ids: logits)
         model.outside = 0
         decode = MagicMock(return_value=["decoded"])
@@ -305,26 +305,26 @@ class LoadForwardTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as folder:
             (Path(folder) / "model.mlpackage").mkdir()
             with (
-                patch.object(pii_tagger, "neural_engine_available", return_value=True),
+                patch.object(tagger, "neural_engine_available", return_value=True),
                 patch.object(
-                    pii_tagger.NeuralEngineForward,
+                    tagger.NeuralEngineForward,
                     "load",
                     side_effect=RuntimeError("no Neural Engine"),
                 ),
-                patch.object(pii_tagger, "OnnxForward", return_value="cpu forward"),
+                patch.object(tagger, "OnnxForward", return_value="cpu forward"),
                 patch("sys.stderr", new_callable=io.StringIO) as stderr,
             ):
-                forward = pii_tagger.load_forward(Path(folder), "model.int8.onnx")
+                forward = tagger.load_forward(Path(folder), "model.int8.onnx")
         self.assertEqual(forward, "cpu forward")
         self.assertIn("no Neural Engine", stderr.getvalue())
 
     def test_a_folder_without_the_package_uses_the_cpu(self) -> None:
         with tempfile.TemporaryDirectory() as folder:
             with (
-                patch.object(pii_tagger, "neural_engine_available", return_value=True),
-                patch.object(pii_tagger, "OnnxForward", return_value="cpu forward"),
+                patch.object(tagger, "neural_engine_available", return_value=True),
+                patch.object(tagger, "OnnxForward", return_value="cpu forward"),
             ):
-                forward = pii_tagger.load_forward(Path(folder), "model.int8.onnx")
+                forward = tagger.load_forward(Path(folder), "model.int8.onnx")
         self.assertEqual(forward, "cpu forward")
 
 
@@ -334,7 +334,7 @@ class LoadForwardTests(unittest.TestCase):
 class ExportedTaggerTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
-        cls.model = pii_tagger.TaggerModel(asset_dir())
+        cls.model = tagger.TaggerModel(asset_dir())
 
     def test_a_handle_and_a_key_are_found_and_a_docs_url_is_not(self) -> None:
         key = "AKIA" + "Q3EGRZ7MXN2PLW4T"

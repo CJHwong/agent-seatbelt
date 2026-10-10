@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Cover the pii-check.sh paths the mode and level tests do not reach.
+"""Cover the check.sh paths the mode and level tests do not reach.
 
 test_hook_modes.py covers the happy paths: a span arrives, warn or block comes
 back. This file covers the edges. Argument handling, the dependency guards, the
@@ -148,7 +148,7 @@ class ArgumentTests(HookHarness):
 class MissingDependencyTests(HookHarness):
     """A missing dependency is announced, not swallowed.
 
-    pii-check.sh:29 prepends /opt/homebrew/bin to PATH, so `command -v jq` can never
+    check.sh:29 prepends /opt/homebrew/bin to PATH, so `command -v jq` can never
     fail on a machine that has jq. cov_env.sh shadows the name instead.
     """
 
@@ -447,12 +447,12 @@ class DetectorFailureTests(HookHarness):
     """Every way the detector can fail, in both action modes."""
 
     # A failing health check sends the hook down its autostart path. Left alone
-    # it launches the real ~/.claude/hooks/pii-server.py, which loads torch and
+    # it launches the real ~/.claude/hooks/pii/server.py, which loads torch and
     # then loses a bind race with the in-process fake, so every one of these
     # tests would burn the full ten second health poll on a process it does not
     # need. Pointing the script at a missing path fails fast instead, and the
     # warn and block shapes these tests assert on are unchanged.
-    NO_AUTOSTART = {"PII_SERVER_SCRIPT": "/nonexistent/pii-server.py"}
+    NO_AUTOSTART = {"PII_SERVER_SCRIPT": "/nonexistent/server.py"}
 
     def test_health_failure_warns_and_names_the_prompt(self) -> None:
         with FakePiiHandler.unhealthy():
@@ -790,7 +790,7 @@ class AutostartTests(AutostartHarness):
             "prompt",
             {"prompt": "send this secret"},
             action_mode="warn",
-            extra_env=self.start_env(PII_SERVER_SCRIPT="/nonexistent/pii-server.py"),
+            extra_env=self.start_env(PII_SERVER_SCRIPT="/nonexistent/server.py"),
         )
 
         context = hook_output["hookSpecificOutput"]["additionalContext"]
@@ -962,17 +962,18 @@ class StaleServerTests(AutostartHarness):
         self.assertIsNone(current.poll(), "the hook stopped a current server")
 
     def test_the_hash_matches_whatever_the_locale_sorts(self) -> None:
-        """A UTF-8 locale sorts pii_tagger_rules.py before pii_tagger.py. Python does not.
+        """A UTF-8 locale can sort redact_torch.py before redact.py. Python does not.
 
         Both names ship together, so a hash in the locale's order would call every
         current server stale.
         """
         with tempfile.TemporaryDirectory() as directory:
             folder = Path(directory)
-            script = folder / "pii-server.py"
+            script = folder / "server.py"
             script.symlink_to(FAKE_SERVER_PATH)
-            (folder / "pii_tagger.py").write_text("tagger")
-            (folder / "pii_tagger_rules.py").write_text("tagger rules")
+            (folder / "detectors").mkdir()
+            (folder / "detectors" / "redact.py").write_text("redact")
+            (folder / "detectors" / "redact_torch.py").write_text("redact torch")
             current = self.launch(script, FAKE_PII_RESPONSE_STATUS="400")
 
             hook_output = self.run_hook(
@@ -989,7 +990,7 @@ class StaleServerTests(AutostartHarness):
         self.assertIsNone(current.poll(), "the hook stopped a current server")
 
     def test_a_server_that_is_not_a_pii_server_is_left_running(self) -> None:
-        """Only a pii-server process on this port is stopped. Its own status stands."""
+        """Only a pii server process on this port is stopped. Its own status stands."""
         with tempfile.TemporaryDirectory() as directory:
             other = Path(directory) / "other_detector.py"
             other.symlink_to(FAKE_SERVER_PATH)

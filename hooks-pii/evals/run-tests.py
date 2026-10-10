@@ -69,9 +69,9 @@ def run(fixture: Path, server: str) -> int:
 
 
 def main() -> int:
-    here = Path(__file__).resolve().parent
+    tests_dir = Path(__file__).resolve().parents[1] / "tests"
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--fixture", type=Path, default=here / "test-cases.jsonl")
+    parser.add_argument("--fixture", type=Path, default=tests_dir / "test-cases.jsonl")
     parser.add_argument("--server", default="http://127.0.0.1:9123")
     args = parser.parse_args()
     return run(args.fixture, args.server)

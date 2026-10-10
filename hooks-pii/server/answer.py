@@ -1,4 +1,4 @@
-"""The answer pii-check.sh prints, computed in the server instead of in jq.
+"""The answer check.sh prints, computed in the server instead of in jq.
 
 The hook script used to extract the text, call the detector, and build its output
 with about fifteen jq processes per call. Each process costs about 3 ms, which made
@@ -47,14 +47,18 @@ SEPARATOR = "\x1e"
 
 
 def code_version(script: Path) -> str:
-    """A hash of the server code: the script, then each pii_*.py beside it by name.
+    """A hash of the server code: every .py file in the script's folder and below.
 
-    A running server keeps the code it started with. pii-check.sh hashes the
-    installed files the same way, and a different hash means the server started
-    before those files changed.
+    The files go in the byte order of their path relative to that folder. A running
+    server keeps the code it started with. check.sh hashes the installed files the
+    same way, and a different hash means the server started before those files
+    changed.
     """
-    digest = hashlib.sha256(script.read_bytes())
-    for module in sorted(script.parent.glob("pii_*.py")):
+    folder = script.parent
+    digest = hashlib.sha256()
+    for module in sorted(
+        folder.rglob("*.py"), key=lambda path: path.relative_to(folder).as_posix()
+    ):
         digest.update(module.read_bytes())
     return digest.hexdigest()
 
@@ -80,7 +84,7 @@ class Policy:
 
     @classmethod
     def from_headers(cls, headers: Any, serving_mode: str) -> Policy:
-        """The policy pii-check.sh sends in X-Pii-* headers. A missing one takes the default."""
+        """The policy check.sh sends in X-Pii-* headers. A missing one takes the default."""
         return cls(
             mode=headers.get("X-Pii-Mode", "auto"),
             level=headers.get("X-Pii-Level", "standard"),

@@ -44,9 +44,9 @@ from transformers import (  # ty: ignore[unresolved-import]
     BertForTokenClassification,
 )
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "server"))
 
-from pii_redact_torch import (
+from detectors.redact_torch import (
     build_transition_tables,
     choose_device,
     chunk_token_ranges,
@@ -71,7 +71,7 @@ from pii_redact_torch import (
     WINDOW_OVERLAP,
     WINDOW_STEP,
 )
-from pii_redact_torch import _trim_span_whitespace, _window_ranges
+from detectors.redact_torch import _trim_span_whitespace, _window_ranges
 
 # The fixture cache holds a real, locally built checkpoint: a two-layer-free BERT
 # with a tiny hidden size and a WordLevel tokenizer. Nothing is downloaded. The
@@ -222,51 +222,51 @@ def tearDownModule() -> None:
 
 
 class DeviceSelectionTests(unittest.TestCase):
-    @patch("pii_redact_torch.torch.backends.mps.is_available", return_value=True)
-    @patch("pii_redact_torch.torch.cuda.is_available", return_value=False)
+    @patch("detectors.redact_torch.torch.backends.mps.is_available", return_value=True)
+    @patch("detectors.redact_torch.torch.cuda.is_available", return_value=False)
     def test_auto_selects_mps_on_apple_gpu(self, cuda_available, mps_available):
         self.assertEqual(choose_device("auto").type, "mps")
 
-    @patch("pii_redact_torch.torch.backends.mps.is_available", return_value=False)
-    @patch("pii_redact_torch.torch.cuda.is_available", return_value=True)
+    @patch("detectors.redact_torch.torch.backends.mps.is_available", return_value=False)
+    @patch("detectors.redact_torch.torch.cuda.is_available", return_value=True)
     def test_auto_selects_cuda_before_mps(self, cuda_available, mps_available):
         self.assertEqual(choose_device("auto").type, "cuda")
 
     def test_cpu_requires_explicit_selection(self):
         self.assertEqual(choose_device("cpu").type, "cpu")
 
-    @patch("pii_redact_torch.torch.backends.mps.is_available", return_value=False)
-    @patch("pii_redact_torch.torch.cuda.is_available", return_value=False)
+    @patch("detectors.redact_torch.torch.backends.mps.is_available", return_value=False)
+    @patch("detectors.redact_torch.torch.cuda.is_available", return_value=False)
     def test_auto_rejects_missing_accelerator(self, cuda_available, mps_available):
         with self.assertRaisesRegex(RuntimeError, "accelerator"):
             choose_device("auto")
 
-    @patch("pii_redact_torch.torch.cuda.is_available", return_value=False)
+    @patch("detectors.redact_torch.torch.cuda.is_available", return_value=False)
     def test_requested_cuda_that_is_missing_is_an_error(self, cuda_available):
         with self.assertRaisesRegex(RuntimeError, "cuda is not available"):
             choose_device("cuda")
 
-    @patch("pii_redact_torch.torch.cuda.is_available", return_value=True)
+    @patch("detectors.redact_torch.torch.cuda.is_available", return_value=True)
     def test_requested_cuda_is_used_when_present(self, cuda_available):
         self.assertEqual(choose_device("cuda").type, "cuda")
 
-    @patch("pii_redact_torch.torch.backends.mps.is_available", return_value=False)
+    @patch("detectors.redact_torch.torch.backends.mps.is_available", return_value=False)
     def test_requested_mps_that_is_missing_is_an_error(self, mps_available):
         with self.assertRaisesRegex(RuntimeError, "mps is not available"):
             choose_device("mps")
 
-    @patch("pii_redact_torch.torch.backends.mps.is_available", return_value=True)
+    @patch("detectors.redact_torch.torch.backends.mps.is_available", return_value=True)
     def test_requested_mps_is_used_when_present(self, mps_available):
         self.assertEqual(choose_device("mps").type, "mps")
 
-    @patch("pii_redact_torch.torch.backends.mps.is_available", return_value=True)
+    @patch("detectors.redact_torch.torch.backends.mps.is_available", return_value=True)
     def test_mps_fallback_environment_variable_is_rejected(self, mps_available):
         with patch.dict(os.environ, {"PYTORCH_ENABLE_MPS_FALLBACK": "1"}):
             with self.assertRaisesRegex(RuntimeError, "PYTORCH_ENABLE_MPS_FALLBACK=1"):
                 choose_device("mps")
 
-    @patch("pii_redact_torch.torch.backends.mps.is_available", return_value=True)
-    @patch("pii_redact_torch.torch.cuda.is_available", return_value=False)
+    @patch("detectors.redact_torch.torch.backends.mps.is_available", return_value=True)
+    @patch("detectors.redact_torch.torch.cuda.is_available", return_value=False)
     def test_auto_also_rejects_the_mps_fallback_variable(
         self, cuda_available, mps_available
     ):
@@ -293,7 +293,9 @@ class DeviceSelectionTests(unittest.TestCase):
 
     def test_auto_falls_through_to_the_plain_error_without_an_mps_backend(self):
         with patch.object(cast(Any, torch), "backends", SimpleNamespace()):
-            with patch("pii_redact_torch.torch.cuda.is_available", return_value=False):
+            with patch(
+                "detectors.redact_torch.torch.cuda.is_available", return_value=False
+            ):
                 with self.assertRaisesRegex(RuntimeError, "no GPU accelerator"):
                     choose_device("auto")
 
@@ -301,7 +303,7 @@ class DeviceSelectionTests(unittest.TestCase):
 class AssetValidationTests(unittest.TestCase):
     def test_missing_pytorch_cache_fails_with_setup_message(self):
         with tempfile.TemporaryDirectory() as temporary_directory:
-            with patch("pii_redact_torch.CACHE_DIR", Path(temporary_directory)):
+            with patch("detectors.redact_torch.CACHE_DIR", Path(temporary_directory)):
                 with self.assertRaisesRegex(FileNotFoundError, "redact.pt"):
                     ensure_assets()
 
@@ -309,7 +311,7 @@ class AssetValidationTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary_directory:
             cache_dir = Path(temporary_directory)
             (cache_dir / "config.json").write_text("{}")
-            with patch("pii_redact_torch.CACHE_DIR", cache_dir):
+            with patch("detectors.redact_torch.CACHE_DIR", cache_dir):
                 with self.assertRaises(FileNotFoundError) as raised:
                     ensure_assets()
 
@@ -317,9 +319,9 @@ class AssetValidationTests(unittest.TestCase):
 
     def test_error_names_the_configured_repository_and_revision(self):
         with tempfile.TemporaryDirectory() as temporary_directory:
-            with patch("pii_redact_torch.CACHE_DIR", Path(temporary_directory)):
-                with patch("pii_redact_torch.REDACT_REPO", "example/redact"):
-                    with patch("pii_redact_torch.REDACT_REVISION", "v9.9.9"):
+            with patch("detectors.redact_torch.CACHE_DIR", Path(temporary_directory)):
+                with patch("detectors.redact_torch.REDACT_REPO", "example/redact"):
+                    with patch("detectors.redact_torch.REDACT_REVISION", "v9.9.9"):
                         with self.assertRaises(FileNotFoundError) as raised:
                             ensure_assets()
 
@@ -329,13 +331,13 @@ class AssetValidationTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary_directory:
             cache_dir = Path(temporary_directory) / "nested" / "redact"
             write_fixture_cache(cache_dir)
-            with patch("pii_redact_torch.CACHE_DIR", cache_dir):
+            with patch("detectors.redact_torch.CACHE_DIR", cache_dir):
                 self.assertEqual(ensure_assets(), cache_dir)
 
     def test_absent_cache_directory_is_created(self):
         with tempfile.TemporaryDirectory() as temporary_directory:
             cache_dir = Path(temporary_directory) / "nested" / "redact"
-            with patch("pii_redact_torch.CACHE_DIR", cache_dir):
+            with patch("detectors.redact_torch.CACHE_DIR", cache_dir):
                 with self.assertRaises(FileNotFoundError):
                     ensure_assets()
             self.assertTrue(cache_dir.is_dir())
@@ -790,7 +792,7 @@ class ChunkingTests(unittest.TestCase):
         deterministic = [{"start": 2, "end": 3, "label": "secret"}]
         model = StubRedactModel()
         with patch(
-            "pii_redact_torch.deterministic_spans", return_value=deterministic
+            "detectors.redact_torch.deterministic_spans", return_value=deterministic
         ) as scan:
             spans = model.predict(text)
 
@@ -825,7 +827,7 @@ class ChunkingTests(unittest.TestCase):
                 return []
 
         model = StubRedactModel()
-        with patch("pii_redact_torch.deterministic_spans") as scan:
+        with patch("detectors.redact_torch.deterministic_spans") as scan:
             with self.assertRaisesRegex(InputTooLargeError, "exceeds max 4"):
                 model.predict("a " * 8)
 
@@ -851,7 +853,7 @@ class ChunkingTests(unittest.TestCase):
                 return []
 
         model = StubRedactModel()
-        with patch("pii_redact_torch.deterministic_spans", return_value=[]):
+        with patch("detectors.redact_torch.deterministic_spans", return_value=[]):
             spans = model.predict("zero width tokens")
 
         self.assertEqual(model.chunk_sizes, [])
@@ -872,7 +874,9 @@ class ChunkingTests(unittest.TestCase):
         )
         model.max_input_tokens = 16
         rule_spans = [{"start": 0, "end": 3, "label": "secret", "text": "abc"}]
-        with patch("pii_redact_torch.deterministic_spans", return_value=rule_spans):
+        with patch(
+            "detectors.redact_torch.deterministic_spans", return_value=rule_spans
+        ):
             self.assertEqual(model.predict("   "), rule_spans)
 
 
@@ -906,7 +910,7 @@ class WindowRangeTests(unittest.TestCase):
         self.assertEqual(WINDOW_STEP, CONTENT_WINDOW_LENGTH - WINDOW_OVERLAP)
 
     def test_overlap_at_the_window_length_is_rejected(self):
-        with patch("pii_redact_torch.WINDOW_OVERLAP", CONTENT_WINDOW_LENGTH):
+        with patch("detectors.redact_torch.WINDOW_OVERLAP", CONTENT_WINDOW_LENGTH):
             with self.assertRaisesRegex(RuntimeError, "WINDOW_OVERLAP"):
                 _window_ranges(10)
 
@@ -1605,8 +1609,8 @@ class CheckpointLoadingTests(unittest.TestCase):
 
     def test_device_synchronize_is_a_no_op_on_cpu(self):
         model = build_model()
-        with patch("pii_redact_torch.torch.cuda.synchronize") as cuda_sync:
-            with patch("pii_redact_torch.torch.mps.synchronize") as mps_sync:
+        with patch("detectors.redact_torch.torch.cuda.synchronize") as cuda_sync:
+            with patch("detectors.redact_torch.torch.mps.synchronize") as mps_sync:
                 model._synchronize()
 
         cuda_sync.assert_not_called()
@@ -1616,7 +1620,7 @@ class CheckpointLoadingTests(unittest.TestCase):
         model = build_model()
         cuda_device = SimpleNamespace(type="cuda")
         with patch.object(model, "device", cuda_device):
-            with patch("pii_redact_torch.torch.cuda.synchronize") as cuda_sync:
+            with patch("detectors.redact_torch.torch.cuda.synchronize") as cuda_sync:
                 model._synchronize()
 
         cuda_sync.assert_called_once_with(cuda_device)
@@ -1624,7 +1628,7 @@ class CheckpointLoadingTests(unittest.TestCase):
     def test_device_synchronize_waits_on_mps(self):
         model = build_model()
         with patch.object(model, "device", SimpleNamespace(type="mps")):
-            with patch("pii_redact_torch.torch.mps.synchronize") as mps_sync:
+            with patch("detectors.redact_torch.torch.mps.synchronize") as mps_sync:
                 model._synchronize()
 
         mps_sync.assert_called_once_with()
@@ -2370,17 +2374,18 @@ class MainWiringTests(unittest.TestCase):
         stderr = io.StringIO()
         with (
             patch(
-                "pii_redact_torch.ensure_assets", return_value=Path("/fixture/cache")
+                "detectors.redact_torch.ensure_assets",
+                return_value=Path("/fixture/cache"),
             ),
-            patch("pii_redact_torch.RedactModel", RecordingModel),
-            patch("pii_redact_torch.NoLookupHTTPServer", RecordingServer),
+            patch("detectors.redact_torch.RedactModel", RecordingModel),
+            patch("detectors.redact_torch.NoLookupHTTPServer", RecordingServer),
             patch(
-                "pii_redact_torch.signal.signal",
+                "detectors.redact_torch.signal.signal",
                 side_effect=lambda number, function: signals.__setitem__(
                     number, function
                 ),
             ),
-            patch.object(sys, "argv", ["pii_redact_torch.py", *argv]),
+            patch.object(sys, "argv", ["redact_torch.py", *argv]),
             redirect_stderr(stderr),
         ):
             main()
@@ -2476,9 +2481,7 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, {hooks_dir!r})
-import pii_redact_torch
-
-
+from detectors import redact_torch
 class StubModel:
     device = "cpu"
 
@@ -2486,9 +2489,9 @@ class StubModel:
         pass
 
 
-pii_redact_torch.ensure_assets = lambda: Path("/fixture/cache")
-pii_redact_torch.RedactModel = StubModel
-pii_redact_torch.main()
+redact_torch.ensure_assets = lambda: Path("/fixture/cache")
+redact_torch.RedactModel = StubModel
+redact_torch.main()
 """
 
 
@@ -2513,7 +2516,9 @@ class ScriptEntryPointTests(unittest.TestCase):
     """
 
     def start_server(self, port: int, device: str = "cpu") -> subprocess.Popen[str]:
-        code = SIGTERM_CHILD.format(hooks_dir=str(Path(__file__).resolve().parents[1]))
+        code = SIGTERM_CHILD.format(
+            hooks_dir=str(Path(__file__).resolve().parents[1] / "server")
+        )
         return subprocess.Popen(
             [
                 sys.executable,

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""Stand-in for pii-server.py, launched by the hook during the autostart tests.
+"""Stand-in for server.py, launched by the hook during the autostart tests.
 
-pii-check.sh starts the detector itself when the port is cold, so the test cannot
+check.sh starts the detector itself when the port is cold, so the test cannot
 use the in-process fake. This script takes the same `--port` and `--mode` flags
 and answers the same two endpoints, with the response controlled by environment
 variables the test sets before running the hook.
@@ -9,7 +9,7 @@ variables the test sets before running the hook.
     FAKE_PII_HEALTH_STATUS   200 (default). Anything else fails /health.
     FAKE_PII_HEALTH_MODE     mode reported by /health. Defaults to --mode.
     FAKE_PII_HEALTH_VERSION  version reported by /health. Defaults to the hash of
-                             this script, the version pii-check.sh expects of it.
+                             this script, the version check.sh expects of it.
     FAKE_PII_RESPONSE        JSON body for POST /, and the spans POST /hook answers on.
                              Defaults to no spans.
     FAKE_PII_RESPONSE_STATUS HTTP status for POST / and POST /hook. Defaults to 200.
@@ -27,12 +27,12 @@ import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-# pii_hook.py sits one level up in the checkout, and next to this file once the
+# answer.py sits one level up in the checkout, and next to this file once the
 # install tests copy it in as pii-server.py.
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "server"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from pii_hook import HookError, Policy, answer, code_version  # noqa: E402
+from answer import HookError, Policy, answer, code_version  # noqa: E402
 
 
 class NoLookupHTTPServer(ThreadingHTTPServer):

@@ -35,9 +35,9 @@ from detect_secrets.settings import default_settings  # ty: ignore[unresolved-im
 import numpy as np  # ty: ignore[unresolved-import]
 
 
-TEST_DIR = Path(__file__).resolve().parent
-sys.path.insert(0, str(TEST_DIR))
-sys.path.insert(0, str(TEST_DIR.parent))
+HOOKS_DIR = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(HOOKS_DIR / "tests"))
+sys.path.insert(0, str(HOOKS_DIR / "server"))
 
 from challenge_cases import CASES, validate_cases  # noqa: E402  # ty: ignore[unresolved-import]
 from final_holdout_cases import (  # noqa: E402  # ty: ignore[unresolved-import]
@@ -45,7 +45,7 @@ from final_holdout_cases import (  # noqa: E402  # ty: ignore[unresolved-import]
     validate_final_holdout_cases,
 )
 from holdout_cases import HOLDOUT_CASES, validate_holdout_cases  # noqa: E402  # ty: ignore[unresolved-import]
-from pii_redact_torch import (  # noqa: E402  # ty: ignore[unresolved-import]
+from detectors.redact_torch import (  # noqa: E402  # ty: ignore[unresolved-import]
     RedactModel,
     deterministic_spans,
     merge_spans,
@@ -59,7 +59,7 @@ Labels = set[str]
 
 
 def load_openai_model():
-    module_path = TEST_DIR.parent / "pii-server.py"
+    module_path = HOOKS_DIR / "server" / "server.py"
     module_spec = importlib.util.spec_from_file_location(
         "openai_filter_server", module_path
     )

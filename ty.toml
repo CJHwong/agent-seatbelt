@@ -1,0 +1,3 @@
+[environment]
+# The server modules import each other from hooks-pii/server, which the tests put on sys.path.
+extra-paths = ["hooks-pii/server"]

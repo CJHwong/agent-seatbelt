@@ -20,7 +20,7 @@
 that already has one.
 
 POST / {"text": "..."} -> {"spans": [{"start": int, "end": int, "label": str, "text": str}, ...]}
-POST /hook <raw hook payload>, policy in X-Pii-* headers -> what pii-check.sh prints (pii_hook.py)
+POST /hook <raw hook payload>, policy in X-Pii-* headers -> what check.sh prints (answer.py)
 """
 
 from __future__ import annotations
@@ -37,7 +37,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
 
-from pii_hook import HookError, Policy, answer, code_version
+from answer import HookError, Policy, answer, code_version
 
 SUPPORTED_MODES = ("redact", "redact-torch", "openai", "rules", "tagger")
 DEFAULT_MODE = "redact"
@@ -114,7 +114,7 @@ class RulesModel:
     def __init__(self) -> None:
         # Imported here, not on the first request: the native engine compiles
         # every pattern on import, and that cost belongs to start-up.
-        from pii_rules import deterministic_spans
+        from rules.engine import deterministic_spans
 
         self.deterministic_spans = deterministic_spans
 
@@ -132,23 +132,26 @@ def load_selected_model(mode: str) -> object:
     if mode == "rules":
         return RulesModel()
     if mode == "openai":
-        from pii_opf import Model, ensure_assets
+        from detectors.privacy_filter import Model, ensure_assets
 
         return Model(ensure_assets())
     if mode == "tagger":
         # The bilingual tagger and its rules, from the release or PII_TAGGER_DIR.
-        from pii_tagger import TaggerModel, asset_dir
+        from detectors.tagger import TaggerModel, asset_dir
 
         return TaggerModel(asset_dir())
     if mode == "redact-torch":
         # The checkpoint backend, kept for a host that already has redact.pt.
-        from pii_redact_torch import RedactModel, ensure_assets as ensure_torch_assets
+        from detectors.redact_torch import (
+            RedactModel,
+            ensure_assets as ensure_torch_assets,
+        )
 
         requested_device = os.environ.get("REDACT_DEVICE", "auto")
         return RedactModel(ensure_torch_assets(), requested_device)
 
     # The default. Downloads its own assets, so a fresh install can provision it.
-    from pii_redact_lite import LitertRedactModel, ensure_assets as ensure_graph_assets
+    from detectors.redact import LitertRedactModel, ensure_assets as ensure_graph_assets
 
     return LitertRedactModel(ensure_graph_assets())
 
@@ -301,10 +304,10 @@ def main() -> None:
     Handler.mode = mode
     # Only the modes that run the rules have loaded them. The line says which
     # engine matches the rules, so a missing native module shows in the log.
-    rules = sys.modules.get("pii_rules")
-    if rules is not None:
+    engine = sys.modules.get("rules.engine")
+    if engine is not None:
         print(
-            f"[{mode}] rules engine: {rules.RULES_ENGINE}", file=sys.stderr, flush=True
+            f"[{mode}] rules engine: {engine.RULES_ENGINE}", file=sys.stderr, flush=True
         )
     print(
         f"[{mode}] ready on http://{args.host}:{args.port}",

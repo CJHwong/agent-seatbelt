@@ -11,7 +11,7 @@
 #                          where the shell that will use it is the one reading it.
 #   PII_COV_HIDE_COMMANDS  colon-separated names for which `command -v` must fail.
 #
-# The second job exists because pii-check.sh:29 prepends /opt/homebrew/bin to
+# The second job exists because check.sh:29 prepends /opt/homebrew/bin to
 # PATH before the dependency checks, so `command -v jq` can never fail on a
 # machine that has jq. Hiding the name is the only way to reach the four
 # missing-dependency branches. The shadow defers anything it is not asked to

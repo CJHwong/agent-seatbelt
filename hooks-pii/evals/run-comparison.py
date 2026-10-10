@@ -13,7 +13,9 @@ import urllib.request
 from pathlib import Path
 from typing import cast
 
-DEFAULT_FIXTURE = Path(__file__).with_name("false-positive-cases.jsonl")
+DEFAULT_FIXTURE = (
+    Path(__file__).resolve().parents[1] / "tests" / "false-positive-cases.jsonl"
+)
 
 
 def load_cases(fixture_path: Path) -> list[dict[str, object]]:

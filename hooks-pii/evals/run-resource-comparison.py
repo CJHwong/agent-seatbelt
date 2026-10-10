@@ -25,9 +25,9 @@ from pathlib import Path
 from typing import Callable
 
 
-TEST_DIR = Path(__file__).resolve().parent
-sys.path.insert(0, str(TEST_DIR))
-sys.path.insert(0, str(TEST_DIR.parent))
+HOOKS_DIR = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(HOOKS_DIR / "tests"))
+sys.path.insert(0, str(HOOKS_DIR / "server"))
 
 from final_holdout_cases import (  # noqa: E402  # ty: ignore[unresolved-import]
     FINAL_HOLDOUT_CASES,
@@ -39,7 +39,7 @@ Predict = Callable[[str], object]
 
 
 def load_server_module():
-    module_path = TEST_DIR.parent / "pii-server.py"
+    module_path = HOOKS_DIR / "server" / "server.py"
     module_spec = importlib.util.spec_from_file_location(
         "privacy_filter_server",
         module_path,

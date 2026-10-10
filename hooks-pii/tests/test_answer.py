@@ -1,6 +1,6 @@
-"""Unit tests for pii_hook.py, the answer POST /hook returns.
+"""Unit tests for answer.py, the answer POST /hook returns.
 
-The hook suites run pii-check.sh against a fake detector that calls this module, so
+The hook suites run check.sh against a fake detector that calls this module, so
 they cover the whole path. These tests pin the edge cases the script inherited from
 jq, which the hook suites do not reach.
 """
@@ -14,9 +14,9 @@ import tempfile
 import unittest
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "server"))
 
-from pii_hook import (
+from answer import (
     SEPARATOR,
     HookError,
     Policy,
@@ -67,29 +67,47 @@ def run(payload: object, spans: list, **overrides: str) -> tuple[str, str]:
 
 
 class CodeVersionTests(unittest.TestCase):
-    """pii-check.sh hashes the installed files the same way, so the order is a contract."""
+    """check.sh hashes the installed files the same way, so the order is a contract."""
 
-    def test_the_script_comes_first_then_each_module_by_name(self) -> None:
+    def test_every_module_below_the_folder_in_relative_path_order(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             folder = Path(directory)
-            (folder / "pii-server.py").write_bytes(b"server")
-            (folder / "pii_b.py").write_bytes(b"b")
-            (folder / "pii_a.py").write_bytes(b"a")
-            (folder / "other.py").write_bytes(b"ignored")
+            (folder / "rules").mkdir()
+            (folder / "server.py").write_bytes(b"server")
+            (folder / "rules" / "engine.py").write_bytes(b"engine")
+            (folder / "answer.py").write_bytes(b"answer")
+            (folder / "notes.txt").write_bytes(b"ignored")
 
-            version = code_version(folder / "pii-server.py")
+            version = code_version(folder / "server.py")
 
-        self.assertEqual(version, hashlib.sha256(b"serverab").hexdigest())
+        self.assertEqual(
+            version, hashlib.sha256(b"answer" + b"engine" + b"server").hexdigest()
+        )
+
+    def test_a_dot_sorts_before_an_underscore(self) -> None:
+        """Byte order, as LC_ALL=C sort gives. A UTF-8 locale can sort them the other way."""
+        with tempfile.TemporaryDirectory() as directory:
+            folder = Path(directory)
+            (folder / "server.py").write_bytes(b"server")
+            (folder / "redact_torch.py").write_bytes(b"torch")
+            (folder / "redact.py").write_bytes(b"redact")
+
+            version = code_version(folder / "server.py")
+
+        self.assertEqual(
+            version, hashlib.sha256(b"redact" + b"torch" + b"server").hexdigest()
+        )
 
     def test_a_changed_module_changes_the_version(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             folder = Path(directory)
-            (folder / "pii-server.py").write_bytes(b"server")
-            (folder / "pii_hook.py").write_bytes(b"old")
-            before = code_version(folder / "pii-server.py")
-            (folder / "pii_hook.py").write_bytes(b"new")
+            (folder / "detectors").mkdir()
+            (folder / "server.py").write_bytes(b"server")
+            (folder / "detectors" / "tagger.py").write_bytes(b"old")
+            before = code_version(folder / "server.py")
+            (folder / "detectors" / "tagger.py").write_bytes(b"new")
 
-            self.assertNotEqual(code_version(folder / "pii-server.py"), before)
+            self.assertNotEqual(code_version(folder / "server.py"), before)
 
 
 class TextTests(unittest.TestCase):

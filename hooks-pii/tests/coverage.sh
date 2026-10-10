@@ -29,8 +29,7 @@
 # skips wherever the CLI it drives is absent, which is every CI runner by default.
 #
 # What this does NOT measure:
-#   - the Python side (pii-server.py, pii_rules.py, pii_opf.py, pii_redact_torch.py,
-#     pii_redact_lite.py).
+#   - the Python side (server/).
 #     Use `uv run --with coverage python -m coverage run --branch` for those.
 #   - branch coverage. A two-arm check counts as one covered line. Use the Python
 #     command above with --branch where it matters; a bash guard whose false arm no
@@ -41,17 +40,17 @@ ROOT="$(cd "$DIR/../.." && pwd)"
 
 # The bash this project ships. Both are driven by the offline tests, so one trace
 # run covers them.
-TARGETS=("hooks-pii/pii-check.sh" "hooks-pii/install.sh")
+TARGETS=("hooks-pii/hook/check.sh" "hooks-pii/install.sh")
 # The suites that need no model, which is also the set CI runs on a pull request.
-# Deliberately not test_*.py: test_pii_opf and test_pii_redact_torch need torch and
+# Deliberately not test_*.py: test_privacy_filter and test_redact_torch need torch and
 # onnxruntime, so they would either crawl or fail on a runner without them.
 TEST_PATTERNS=(
     "test_hook_*.py"
     "test_install.py"
-    "test_pii_hook.py"
-    "test_pii_rules.py"
-    "test_pii_server.py"
-    "test_pii_tagger_rules.py"
+    "test_answer.py"
+    "test_rules_engine.py"
+    "test_server.py"
+    "test_tagger_rules.py"
 )
 
 TRACE=$(mktemp "${TMPDIR:-/tmp}/pii_cov.XXXXXX")
@@ -76,7 +75,7 @@ for pattern in "${TEST_PATTERNS[@]}"; do
     one_log=$(mktemp "${TMPDIR:-/tmp}/pii_one.XXXXXX")
     if ! python3 -m unittest discover -s "$DIR" -p "$pattern" >"$one_log" 2>&1; then
         suite_status=1
-        echo "pii-check coverage: the suite matching '$pattern' failed" >&2
+        echo "check.sh coverage: the suite matching '$pattern' failed" >&2
     fi
     cat "$one_log" >>"$SUITE_LOG"
     # One row per suite, always printed. The summary line carries the skip count, and
@@ -101,8 +100,8 @@ echo
 grep -ao 'COV:[^:]*:[0-9]*:' "$TRACE" 2>/dev/null \
   | sed -e 's/^COV://' -e 's/:$//' \
         -e 's|^.*/hooks-pii/||' \
-  | grep -E '^(pii-check\.sh|install\.sh):' \
-  | sed -e 's|^pii-check\.sh:|hooks-pii/pii-check.sh:|' \
+  | grep -E '^(hook/check\.sh|install\.sh):' \
+  | sed -e 's|^hook/check\.sh:|hooks-pii/hook/check.sh:|' \
         -e 's|^install\.sh:|hooks-pii/install.sh:|' \
   | sort -u > "$HITS_GOT"
 

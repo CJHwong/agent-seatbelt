@@ -33,7 +33,7 @@ from transformers import (  # ty: ignore[unresolved-import]
     BertForTokenClassification,
 )
 
-from pii_rules import deterministic_spans, merge_spans
+from rules.engine import deterministic_spans, merge_spans
 
 REDACT_REPO = os.environ.get("REDACT_REPO", "desert-ant-labs/redact")
 REDACT_REVISION = os.environ.get("REDACT_REVISION", "v0.4.0")

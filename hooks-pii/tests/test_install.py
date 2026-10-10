@@ -55,21 +55,27 @@ FAKE_SERVER = TESTS_DIR / "fake_pii_server.py"
 # the stderr the test is asserting on.
 BASH = shutil.which("bash") or "/bin/bash"
 
-# The scripts the installer copies, and the only files it should ever create under
-# a HOME apart from the two agent configuration files.
-HOOK_FILES = (
-    "pii-server.py",
-    "pii_redact_torch.py",
-    "pii_redact_lite.py",
-    "pii_rules.py",
-    "pii_secret_patterns.py",
-    "cl100k_base.tokens.gz",
-    "pii_opf.py",
-    "pii_tagger.py",
-    "pii_tagger_rules.py",
-    "pii_hook.py",
-    "pii-check.sh",
+# The files the installer copies, by their path under ~/.claude/hooks/pii, then their
+# path in the checkout. They are the only files it should ever create under a HOME
+# apart from the two agent configuration files.
+SERVER_FILES = (
+    "server.py",
+    "answer.py",
+    "detectors/__init__.py",
+    "detectors/redact.py",
+    "detectors/redact_torch.py",
+    "detectors/privacy_filter.py",
+    "detectors/tagger.py",
+    "rules/__init__.py",
+    "rules/engine.py",
+    "rules/tagger_rules.py",
+    "rules/secrets.py",
+    "rules/cl100k_base.tokens.gz",
 )
+HOOK_FILES = {
+    **{name: f"server/{name}" for name in SERVER_FILES},
+    "check.sh": "hook/check.sh",
+}
 
 
 # The platforms the release carries a native build for, by uname -s and -m.
@@ -77,10 +83,21 @@ NATIVE_ASSETS = {
     ("Linux", "x86_64"): "pii_rules_native-linux-x86_64.abi3.so",
     ("Darwin", "arm64"): "pii_rules_native-darwin-arm64.abi3.so",
 }
-NATIVE_FILE = "pii_rules_native.abi3.so"
-CLIENT_FILE = "pii-hook"
+NATIVE_FILE = "rules/pii_rules_native.abi3.so"
+CLIENT_FILE = "hook"
 # Stands in for the native hook command. It runs, which is all the installer checks.
-RUNNABLE_CLIENT = "#!/bin/sh\ncat >/dev/null\n"
+# Hands every call to check.sh in its own folder, as the real build does with a
+# call it cannot settle.
+RUNNABLE_CLIENT = '#!/bin/sh\nexec "$(dirname "$0")/check.sh" "$@"\n'
+# A release from before the hook folder, with a server up: it answers a call it can
+# settle, and hands any other to pii-check.sh, which an install of these files no
+# longer has.
+OLDER_RELEASE_CLIENT = """#!/bin/sh
+case "${PII_SERVER_MODE:-redact}" in
+    redact|redact-torch|openai|rules|tagger) cat >/dev/null; exit 0 ;;
+esac
+exec "$(dirname "$0")/pii-check.sh" "$@"
+"""
 
 # Answers -s and -m from the environment and defers everything else. The shell
 # only reads these two, so the stand-in needs nothing more.
@@ -228,18 +245,17 @@ class InstallerHarness(unittest.TestCase):
         )
 
     def fake_source(self, server_script: Path | None = None) -> Path:
-        """A copy of this checkout whose pii-server.py is a stand-in.
+        """A copy of this checkout whose server.py is a stand-in.
 
         The installer downloads whatever the base URL serves and then runs it as
         the server, so pointing the base URL here lets the pilot start something
         that answers /health in milliseconds instead of loading a model.
         """
         source = self.home / "source"
-        source.mkdir()
-        for name in HOOK_FILES:
-            if name != "pii-server.py":
-                shutil.copy2(HOOKS_DIR / name, source / name)
-        shutil.copy2(server_script or FAKE_SERVER, source / "pii-server.py")
+        for checkout_path in HOOK_FILES.values():
+            (source / checkout_path).parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(HOOKS_DIR / checkout_path, source / checkout_path)
+        shutil.copy2(server_script or FAKE_SERVER, source / "server" / "server.py")
         return source
 
     def reap(self, port: int) -> None:
@@ -253,7 +269,7 @@ class InstallerHarness(unittest.TestCase):
                     os.kill(int(pid), 15)
 
     def installed_dir(self) -> Path:
-        return self.home / ".claude" / "hooks"
+        return self.home / ".claude" / "hooks" / "pii"
 
     def settings(self) -> dict:
         return json.loads((self.home / ".claude" / "settings.json").read_text())
@@ -279,7 +295,7 @@ class InstallerHarness(unittest.TestCase):
 class InstalledFileTests(InstallerHarness):
     """The scripts land where both agents look for them."""
 
-    def test_all_five_scripts_are_installed(self) -> None:
+    def test_every_file_is_installed(self) -> None:
         self.add_agent("claude")
         result = self.run_installer("--no-codex")
 
@@ -291,17 +307,17 @@ class InstalledFileTests(InstallerHarness):
         self.add_agent("claude")
         self.run_installer("--no-codex")
 
-        self.assertTrue(os.access(self.installed_dir() / "pii-check.sh", os.X_OK))
+        self.assertTrue(os.access(self.installed_dir() / "check.sh", os.X_OK))
 
     def test_the_installed_files_are_this_checkout(self) -> None:
         """A copy that silently differs from the source is the failure to catch."""
         self.add_agent("claude")
         self.run_installer("--no-codex")
 
-        for name in HOOK_FILES:
+        for name, checkout_path in HOOK_FILES.items():
             self.assertEqual(
                 digest(self.installed_dir() / name),
-                digest(HOOKS_DIR / name),
+                digest(HOOKS_DIR / checkout_path),
                 f"{name} was installed with different content",
             )
 
@@ -327,7 +343,7 @@ class NativeEngineTests(InstallerHarness):
     def test_another_platform_keeps_the_python_engine(self) -> None:
         self.add_agent("claude")
         # A build left from an earlier install must not outlive this one.
-        self.installed_dir().mkdir(parents=True)
+        (self.installed_dir() / NATIVE_FILE).parent.mkdir(parents=True)
         (self.installed_dir() / NATIVE_FILE).write_text("stale")
         result = self.run_installer("--no-codex", platform=("Linux", "aarch64"))
 
@@ -339,7 +355,7 @@ class NativeEngineTests(InstallerHarness):
 
     def test_a_failed_download_keeps_the_python_engine(self) -> None:
         self.add_agent("claude")
-        self.installed_dir().mkdir(parents=True)
+        (self.installed_dir() / NATIVE_FILE).parent.mkdir(parents=True)
         (self.installed_dir() / NATIVE_FILE).write_text("stale")
         for asset in NATIVE_ASSETS.values():
             (self.release / asset).unlink()
@@ -369,7 +385,7 @@ class NativeHookCommandTests(InstallerHarness):
     def codex_hooks(self) -> dict:
         return json.loads((self.home / ".codex" / "hooks.json").read_text())
 
-    def test_a_build_that_runs_becomes_the_claude_command(self) -> None:
+    def test_a_build_that_runs_becomes_the_command_of_both_agents(self) -> None:
         self.add_agent("claude")
         self.add_agent("codex")
         self.release_client()
@@ -387,16 +403,62 @@ class NativeHookCommandTests(InstallerHarness):
                 f"{client} --mode claude-posttool",
             ],
         )
-        # Codex binds trust to the command string, so it keeps the script.
-        script = self.installed_dir() / "pii-check.sh"
         self.assertEqual(
             self.wired(self.codex_hooks()),
             [
-                f"{script} --mode prompt",
-                f"{script} --mode codex-pretool",
-                f"{script} --mode codex-posttool",
+                f"{client} --mode prompt",
+                f"{client} --mode codex-pretool",
+                f"{client} --mode codex-posttool",
             ],
         )
+
+    def test_a_new_codex_command_warns_that_codex_scans_nothing_until_trusted(
+        self,
+    ) -> None:
+        """Codex binds trust to the command string, so the move stops its scan."""
+        self.add_agent("codex")
+        self.run_installer()
+        self.release_client()
+
+        result = self.run_installer()
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("Codex scans nothing until you trust", result.stdout)
+
+    def test_the_same_codex_command_does_not_warn(self) -> None:
+        self.add_agent("codex")
+        self.release_client()
+        self.run_installer()
+
+        result = self.run_installer()
+
+        self.assertNotIn("Codex scans nothing until you trust", result.stdout)
+
+    def test_a_build_that_hands_off_to_another_script_leaves_the_script(
+        self,
+    ) -> None:
+        """Until a release is cut from these files, the latest one is older than them."""
+        self.add_agent("claude")
+        self.release_client(OLDER_RELEASE_CLIENT)
+        result = self.run_installer("--no-codex")
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertFalse((self.installed_dir() / CLIENT_FILE).exists())
+        self.assertIn(
+            "Could not install the native hook command for linux-x86_64", result.stderr
+        )
+        script = self.installed_dir() / "check.sh"
+        self.assertEqual(
+            self.commands(self.settings(), "UserPromptSubmit"),
+            [f"{script} --mode prompt"],
+        )
+
+    def test_the_probe_of_a_build_leaves_no_skip_event(self) -> None:
+        self.add_agent("claude")
+        self.release_client()
+        self.run_installer("--no-codex")
+
+        self.assertFalse((self.home / ".cache" / "pii" / "pii-skips.log").exists())
 
     def test_a_build_that_cannot_run_leaves_the_script(self) -> None:
         self.add_agent("claude")
@@ -409,7 +471,7 @@ class NativeHookCommandTests(InstallerHarness):
         self.assertIn(
             "Could not install the native hook command for linux-x86_64", result.stderr
         )
-        script = self.installed_dir() / "pii-check.sh"
+        script = self.installed_dir() / "check.sh"
         self.assertEqual(
             self.commands(self.settings(), "UserPromptSubmit"),
             [f"{script} --mode prompt"],
@@ -432,7 +494,7 @@ class NativeHookCommandTests(InstallerHarness):
     ) -> None:
         self.add_agent("claude")
         client = self.installed_dir() / CLIENT_FILE
-        script = self.installed_dir() / "pii-check.sh"
+        script = self.installed_dir() / "check.sh"
 
         self.run_installer("--no-codex")
         self.release_client()
@@ -450,6 +512,153 @@ class NativeHookCommandTests(InstallerHarness):
         )
 
 
+class MigrationTests(InstallerHarness):
+    """An install from before ~/.claude/hooks/pii moves into it and leaves nothing behind."""
+
+    LEGACY_FILES = (
+        "pii-server.py",
+        "pii_hook.py",
+        "pii_redact_lite.py",
+        "pii_redact_torch.py",
+        "pii_opf.py",
+        "pii_tagger.py",
+        "pii_rules.py",
+        "pii_tagger_rules.py",
+        "pii_secret_patterns.py",
+        "cl100k_base.tokens.gz",
+        "pii_rules_native.abi3.so",
+        "pii-check.sh",
+        "pii-hook",
+    )
+
+    def legacy_install(self, command: str) -> None:
+        """The files and the entries an older installer left, wired to `command`."""
+        hooks = self.home / ".claude" / "hooks"
+        hooks.mkdir(parents=True)
+        for name in self.LEGACY_FILES:
+            (hooks / name).write_text("old")
+        legacy = str(hooks / command)
+        document = {
+            "hooks": {
+                "UserPromptSubmit": [
+                    {
+                        "hooks": [
+                            {"type": "command", "command": f"{legacy} --mode prompt"}
+                        ]
+                    }
+                ],
+                "PreToolUse": [
+                    {
+                        "matcher": "Bash",
+                        "hooks": [
+                            {
+                                "type": "command",
+                                "command": f"{legacy} --mode claude-pretool",
+                            }
+                        ],
+                    }
+                ],
+            }
+        }
+        (self.home / ".claude" / "settings.json").write_text(json.dumps(document))
+        codex = {
+            "hooks": {
+                "UserPromptSubmit": [
+                    {
+                        "hooks": [
+                            {"type": "command", "command": f"{legacy} --mode prompt"}
+                        ]
+                    }
+                ]
+            }
+        }
+        (self.home / ".codex").mkdir(exist_ok=True)
+        (self.home / ".codex" / "hooks.json").write_text(json.dumps(codex))
+
+    def test_the_old_files_are_removed_and_others_are_kept(self) -> None:
+        self.add_agent("claude")
+        self.legacy_install("pii-check.sh")
+        foreign = self.home / ".claude" / "hooks" / "another-tool.sh"
+        foreign.write_text("not ours")
+
+        result = self.run_installer("--no-codex")
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        hooks = self.home / ".claude" / "hooks"
+        self.assertEqual(
+            [name for name in self.LEGACY_FILES if (hooks / name).exists()], []
+        )
+        self.assertEqual(foreign.read_text(), "not ours")
+        self.assertIn(f"Removed the old {hooks / 'pii-check.sh'}", result.stdout)
+
+    def test_the_old_bytecode_goes_and_another_hooks_stays(self) -> None:
+        """Python wrote bytecode for the old modules beside them, in a shared folder."""
+        self.add_agent("claude")
+        self.legacy_install("pii-check.sh")
+        cache = self.home / ".claude" / "hooks" / "__pycache__"
+        cache.mkdir()
+        (cache / "pii_rules.cpython-311.pyc").write_text("old")
+        (cache / "another_tool.cpython-311.pyc").write_text("not ours")
+
+        result = self.run_installer("--no-codex")
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(
+            sorted(path.name for path in cache.iterdir()),
+            ["another_tool.cpython-311.pyc"],
+        )
+
+    def test_a_bytecode_folder_left_empty_is_removed(self) -> None:
+        self.add_agent("claude")
+        self.legacy_install("pii-check.sh")
+        cache = self.home / ".claude" / "hooks" / "__pycache__"
+        cache.mkdir()
+        (cache / "pii_hook.cpython-311.pyc").write_text("old")
+
+        self.run_installer("--no-codex")
+
+        self.assertFalse(cache.exists())
+
+    def test_entries_through_the_old_script_move_to_the_new_command(self) -> None:
+        self.add_agent("claude")
+        self.add_agent("codex")
+        self.legacy_install("pii-check.sh")
+        (self.release / "pii-hook-linux-x86_64").write_text(RUNNABLE_CLIENT)
+
+        result = self.run_installer()
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        client = self.installed_dir() / CLIENT_FILE
+        self.assertEqual(
+            self.commands(self.settings(), "UserPromptSubmit"),
+            [f"{client} --mode prompt"],
+        )
+        self.assertEqual(
+            self.commands(self.settings(), "PreToolUse"),
+            [f"{client} --mode claude-pretool"],
+        )
+        codex = json.loads((self.home / ".codex" / "hooks.json").read_text())
+        self.assertEqual(
+            self.commands(codex, "UserPromptSubmit"), [f"{client} --mode prompt"]
+        )
+        self.assertIn("Codex scans nothing until you trust", result.stdout)
+
+    def test_entries_through_the_old_native_command_move_to_the_new_script(
+        self,
+    ) -> None:
+        self.add_agent("claude")
+        self.legacy_install("pii-hook")
+
+        result = self.run_installer("--no-codex", platform=("Linux", "aarch64"))
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        script = self.installed_dir() / "check.sh"
+        self.assertEqual(
+            self.commands(self.settings(), "UserPromptSubmit"),
+            [f"{script} --mode prompt"],
+        )
+
+
 class ClaudeWiringTests(InstallerHarness):
     """The entries Claude Code reads."""
 
@@ -458,7 +667,7 @@ class ClaudeWiringTests(InstallerHarness):
         self.run_installer("--no-codex")
 
         document = self.settings()
-        hook = str(self.installed_dir() / "pii-check.sh")
+        hook = str(self.installed_dir() / "check.sh")
         self.assertEqual(
             self.commands(document, "UserPromptSubmit"), [f"{hook} --mode prompt"]
         )
@@ -514,7 +723,7 @@ class ClaudeWiringTests(InstallerHarness):
         self.add_agent("claude")
         self.run_installer("--no-codex")
 
-        hook = str(self.installed_dir() / "pii-check.sh")
+        hook = str(self.installed_dir() / "check.sh")
         self.assertEqual(
             self.commands(self.settings(), "PreToolUse"),
             [f"{hook} --mode claude-pretool"],
@@ -567,7 +776,7 @@ class CodexWiringTests(InstallerHarness):
         self.run_installer()
 
         document = self.codex_settings()
-        hook = str(self.installed_dir() / "pii-check.sh")
+        hook = str(self.installed_dir() / "check.sh")
         self.assertEqual(
             self.commands(document, "UserPromptSubmit"), [f"{hook} --mode prompt"]
         )
@@ -598,7 +807,7 @@ class CodexWiringTests(InstallerHarness):
         self.add_agent("codex")
         self.run_installer()
 
-        hook = str(self.installed_dir() / "pii-check.sh")
+        hook = str(self.installed_dir() / "check.sh")
         self.assertEqual(
             self.commands(self.codex_settings(), "PreToolUse"),
             [f"{hook} --mode codex-pretool"],
@@ -612,7 +821,7 @@ class CodexWiringTests(InstallerHarness):
         self.add_agent("codex")
         self.run_installer()
 
-        codex_hook = str(self.installed_dir() / "pii-check.sh")
+        codex_hook = str(self.installed_dir() / "check.sh")
         self.assertIn(
             f"{codex_hook} --mode prompt",
             self.commands(self.codex_settings(), "UserPromptSubmit"),
@@ -757,7 +966,7 @@ class RiskPromptTests(InstallerHarness):
 
         self.assertEqual(result.returncode, 0, result.stdout)
         self.assertIn("Proceed? [Y/n]", result.stdout)
-        self.assertTrue((self.home / ".claude/hooks/pii-check.sh").exists())
+        self.assertTrue((self.home / ".claude/hooks/pii/check.sh").exists())
 
 
 class PilotTests(InstallerHarness):
@@ -899,6 +1108,31 @@ class PilotTests(InstallerHarness):
         self.assertIsNotNone(old.wait(timeout=5), "the old server is still running")
         self.assertEqual(self.health_mode(port), "", "a server still answers")
 
+    def test_a_server_from_the_pii_folder_is_stopped(self) -> None:
+        """The folder layout shows pii/server.py, not pii-server.py, in the command."""
+        self.add_agent("claude")
+        port = free_port()
+        folder = self.home / "elsewhere" / "pii"
+        folder.mkdir(parents=True)
+        (folder / "server.py").symlink_to(FAKE_SERVER)
+        old = subprocess.Popen(
+            [sys.executable, str(folder / "server.py"), "--port", str(port)]
+            + ["--mode", "rules"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        self.addCleanup(self.stop, old)
+        for _ in range(200):
+            if self.health_mode(port):
+                break
+            time.sleep(0.05)
+
+        result = self.install_over(port, "--no-pilot")
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("stopping the running server", result.stdout)
+        old.wait(5)
+
     def test_a_server_on_another_port_is_left_alone(self) -> None:
         self.add_agent("claude")
         other = self.start_fake(free_port())
@@ -914,7 +1148,7 @@ class PilotTests(InstallerHarness):
         port = free_port()
         other = self.home / "detector.py"
         shutil.copy2(FAKE_SERVER, other)
-        shutil.copy2(HOOKS_DIR / "pii_hook.py", self.home / "pii_hook.py")
+        shutil.copy2(HOOKS_DIR / "server" / "answer.py", self.home / "answer.py")
         server = subprocess.Popen(
             [sys.executable, str(other), "--port", str(port), "--mode", "rules"],
             stdout=subprocess.DEVNULL,
@@ -991,6 +1225,69 @@ class PilotTests(InstallerHarness):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("server warm, smoke test flagged 1 span(s)", result.stdout)
         self.assertIn("Model is warm", result.stdout)
+
+    def start_lock(self, port: int) -> Path:
+        """The lock check.sh takes for this port, under a TMPDIR of the test's own."""
+        return self.home / "tmp" / f"pii-server.{os.geteuid()}.{port}.starting"
+
+    def install_cold(self, port: int, *, sleep_stub: bool = False):
+        (self.home / "tmp").mkdir(exist_ok=True)
+        environment = {
+            "PII_PORT": str(port),
+            "PII_SERVER_MODE": "rules",
+            "FAKE_PII_RESPONSE": self.SPAN_RESPONSE,
+            "TMPDIR": str(self.home / "tmp"),
+        }
+        if sleep_stub:
+            stub_dir = self.home / "stubs"
+            stub_dir.mkdir()
+            (stub_dir / "sleep").write_text("#!/bin/sh\nexit 0\n")
+            (stub_dir / "sleep").chmod(0o755)
+            environment["PATH"] = f"{stub_dir}{os.pathsep}{os.environ['PATH']}"
+        return self.run_installer(
+            "--no-codex", pilot=True, source=self.fake_source(), extra_env=environment
+        )
+
+    def test_pilot_releases_the_start_lock_it_took(self) -> None:
+        self.add_agent("claude")
+        port = free_port()
+        self.addCleanup(self.reap, port)
+
+        result = self.install_cold(port)
+
+        self.assertIn("server warm", result.stdout)
+        self.assertFalse(self.start_lock(port).exists())
+
+    def test_pilot_leaves_the_start_to_a_hook_that_holds_the_lock(self) -> None:
+        """A hook that fired during the install starts the server; a second start
+        would only lose the port to the first."""
+        self.add_agent("claude")
+        port = free_port()
+        self.addCleanup(self.reap, port)
+        lock = self.start_lock(port)
+        lock.mkdir(parents=True)
+
+        result = self.install_cold(port, sleep_stub=True)
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("a hook is already starting the server", result.stdout)
+        self.assertNotIn("starting the rules server", result.stdout)
+        self.assertEqual(self.health_mode(port), "")
+        self.assertTrue(lock.exists())
+
+    def test_pilot_takes_over_a_start_lock_older_than_a_minute(self) -> None:
+        self.add_agent("claude")
+        port = free_port()
+        self.addCleanup(self.reap, port)
+        lock = self.start_lock(port)
+        lock.mkdir(parents=True)
+        stale = time.time() - 120
+        os.utime(lock, (stale, stale))
+
+        result = self.install_cold(port)
+
+        self.assertIn("server warm", result.stdout)
+        self.assertFalse(lock.exists())
 
     def test_pilot_starts_a_cold_server_with_uv_for_a_model_mode(self) -> None:
         """The non-rules branch resolves dependencies through uv before starting."""
@@ -1075,8 +1372,8 @@ class SideEffectTests(InstallerHarness):
             self.files_under_home(),
             {
                 ".claude/settings.json",
-                *{f".claude/hooks/{name}" for name in HOOK_FILES},
-                f".claude/hooks/{NATIVE_FILE}",
+                *{f".claude/hooks/pii/{name}" for name in HOOK_FILES},
+                f".claude/hooks/pii/{NATIVE_FILE}",
             },
         )
 
