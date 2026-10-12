@@ -25,8 +25,7 @@ fn main() {
     let arguments: Vec<String> = env::args().skip(1).collect();
     let mut payload = Vec::new();
     if let Err(error) = io::stdin().read_to_end(&mut payload) {
-        eprintln!("pii-hook: could not read the hook payload: {error}");
-        process::exit(1);
+        fail(&arguments, &format!("could not read the hook payload: {error}"));
     }
     let Some(request) = request(&arguments, &payload) else {
         hand_off(&arguments, &payload);
@@ -122,7 +121,7 @@ fn exchange(request: &[u8]) -> Option<Vec<u8>> {
 fn hand_off(arguments: &[String], payload: &[u8]) -> ! {
     let script = match env::current_exe() {
         Ok(path) => path.with_file_name("check.sh"),
-        Err(error) => fail(&format!("could not locate check.sh: {error}")),
+        Err(error) => fail(arguments, &format!("could not locate check.sh: {error}")),
     };
     let mut child = match Command::new(&script)
         .args(arguments)
@@ -130,7 +129,7 @@ fn hand_off(arguments: &[String], payload: &[u8]) -> ! {
         .spawn()
     {
         Ok(child) => child,
-        Err(error) => fail(&format!("could not run {}: {error}", display(&script))),
+        Err(error) => fail(arguments, &format!("could not run {}: {error}", display(&script))),
     };
     if let Some(mut stdin) = child.stdin.take() {
         // The script may exit before it reads everything, as it does for PII_LEVEL=off
@@ -139,7 +138,7 @@ fn hand_off(arguments: &[String], payload: &[u8]) -> ! {
     }
     match child.wait() {
         Ok(status) => process::exit(status.code().unwrap_or(1)),
-        Err(error) => fail(&format!("could not wait for {}: {error}", display(&script))),
+        Err(error) => fail(arguments, &format!("could not wait for {}: {error}", display(&script))),
     }
 }
 
@@ -147,8 +146,50 @@ fn display(path: &Path) -> String {
     path.display().to_string()
 }
 
-/// A broken install: the scan cannot run, and the runtime shows stderr to the user.
-fn fail(message: &str) -> ! {
+/// A broken install: the scan cannot run. Report it the way check.sh reports a skip.
+/// On exit 1 Codex showed only "hook exited with code 1", so the user never learned
+/// that scanning was off, or why.
+fn fail(arguments: &[String], message: &str) -> ! {
     eprintln!("pii-hook: {message}");
-    process::exit(1);
+    let summary = format!(
+        "PII scanner skipped: {message}. Reinstall hooks-pii. Nothing was checked, and the scanner stays off until this is fixed."
+    );
+    let context = format!(
+        "{summary} Nothing was checked, so continue the task as you would without the scanner and answer in full. Whoever relies on this check does not know it is off."
+    );
+    println!(
+        "{{\"continue\":true,\"systemMessage\":{},\"hookSpecificOutput\":{{\"hookEventName\":\"{}\",\"additionalContext\":{}}}}}",
+        quoted(&summary),
+        event(arguments),
+        quoted(&context)
+    );
+    process::exit(0);
+}
+
+/// The event the runtime called. Claude Code drops additionalContext that names
+/// another event.
+fn event(arguments: &[String]) -> &'static str {
+    match mode(arguments).as_deref() {
+        Some(mode) if mode.ends_with("-pretool") => "PreToolUse",
+        Some(mode) if mode.ends_with("-posttool") => "PostToolUse",
+        _ => "UserPromptSubmit",
+    }
+}
+
+/// A JSON string. A message carries a path, which can hold any character.
+fn quoted(text: &str) -> String {
+    let mut out = String::from("\"");
+    for character in text.chars() {
+        match character {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            character if (character as u32) < 0x20 => {
+                out.push_str(&format!("\\u{:04x}", character as u32))
+            }
+            character => out.push(character),
+        }
+    }
+    out.push('"');
+    out
 }
