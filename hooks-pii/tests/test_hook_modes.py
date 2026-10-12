@@ -50,7 +50,8 @@ class HookModeTests(HookHarness):
         self.assertEqual(hook_specific_output["hookEventName"], "UserPromptSubmit")
         self.assertIn("PII detector warning", hook_specific_output["additionalContext"])
         self.assertIn(
-            "If the detection is valid", hook_specific_output["additionalContext"]
+            "Check each detection against its context",
+            hook_specific_output["additionalContext"],
         )
         self.assertIn("sk...90", hook_specific_output["additionalContext"])
 
@@ -87,6 +88,11 @@ class HookModeTests(HookHarness):
         self.assertIn("PII detector unavailable", hook_output["systemMessage"])
         self.assertIn(
             "PII detector unavailable",
+            hook_output["hookSpecificOutput"]["additionalContext"],
+        )
+        # Agents told to protect unscanned content withheld whole answers.
+        self.assertIn(
+            "continue the task",
             hook_output["hookSpecificOutput"]["additionalContext"],
         )
 
