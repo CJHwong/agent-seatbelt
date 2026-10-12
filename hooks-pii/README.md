@@ -126,7 +126,7 @@ PII in prompt: secret(critical): sk...dc. Blocked at PII_LEVEL=strict.
 
 The default `PII_ACTION_MODE=warn` allows input and adds the masked detector summary to both `systemMessage` and `hookSpecificOutput.additionalContext`.
 
-Set `PII_ACTION_MODE=block` to reject input when a span matches the selected `PII_LEVEL`. Set `PII_ACTION_MODE=warn` to allow the input. The hook then adds a masked detector summary to the agent context. It also tells the agent to check whether each detection is valid. If valid, the agent must avoid repeating the value and use a redacted form. The warning recommends secret rotation or revocation when applicable.
+Set `PII_ACTION_MODE=block` to reject input when a span matches the selected `PII_LEVEL`. Set `PII_ACTION_MODE=warn` to allow the input. The hook then adds a masked detector summary to the agent context. It also tells the agent to check each detection against its context, because the detector errs toward flagging. On a false positive, the agent continues without mentioning the warning. On real sensitive data, the agent continues the task, uses only a redacted form, tells the user where the value is exposed, and recommends rotation or revocation for a secret. The warning tells the agent not to stop the task because of it. `evals/warning-behavior/` measures this behavior on Claude Code and Codex.
 
 A skipped scan says so. Each trigger is a standing condition, not a one-off: a missing `jq`
 or a misspelled `PII_ACTION_MODE` stays that way, so the next request is unscanned too. The

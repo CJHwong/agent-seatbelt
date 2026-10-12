@@ -260,6 +260,18 @@ def selected_labels(level: str, allow_labels: str) -> tuple[str, ...]:
     return tuple(label for label in labels if label not in allowed)
 
 
+# What the agent reads after a warning. The detector errs toward flagging, so the
+# agent is the one that tells a real leak from a false positive.
+WARN_GUIDANCE = (
+    "The detector often flags values that are not sensitive, such as commit hashes, run or build ids, "
+    "version strings, platform names, documented test values and example addresses. Check each detection "
+    "against its context. If a detection is not sensitive, ignore this warning and do not mention it. "
+    "If a detection is real sensitive data, continue the task, refer to the value only in a redacted form, "
+    "and tell the user where it is exposed. For a secret, tell the user to rotate or revoke it. "
+    "Keep personal data out of anything the user will share. Do not stop or refuse the task because of this warning."
+)
+
+
 def render(
     spans: list[dict], processing_ms: int, policy: Policy, emit_mode: str
 ) -> tuple[str, str]:
@@ -285,7 +297,7 @@ def render(
     event, location, subject = WORDING.get(emit_mode, WORDING[""])
     if policy.action_mode == "warn":
         found = f"PII detector warning: possible sensitive data was identified {location}: {listed}. {subject} was allowed because PII_ACTION_MODE=warn."
-        context = f"{found} Check whether each detection is valid. If the detection is valid, do not repeat or expose the value. Use a redacted form. Rotate or revoke a valid secret."
+        context = f"{found} {WARN_GUIDANCE}"
         stdout = jq_json(
             {
                 "continue": True,
