@@ -26,6 +26,7 @@ from typing import Any
 from hook_harness import (
     COV_ENV_PATH,
     FAKE_SERVER_PATH,
+    HOOK_CLIENT,
     HOOK_ENV_KEYS,
     HOOK_PATH,
     FakePiiHandler,
@@ -166,6 +167,27 @@ class MissingDependencyTests(HookHarness):
             "PII_COV_HIDE_COMMANDS": ":".join(names),
         }
 
+    def test_a_skip_names_the_event_the_runtime_called(self) -> None:
+        """Claude Code drops additionalContext that names another event."""
+        events = (
+            ("prompt", "UserPromptSubmit"),
+            ("claude-posttool", "PostToolUse"),
+            ("codex-pretool", "PreToolUse"),
+        )
+        for mode, event in events:
+            for hidden in ((), ("jq",)):
+                with self.subTest(mode=mode, hidden=hidden):
+                    result = self.run_hook_raw(
+                        mode,
+                        {"tool_response": {"stdout": "send this secret"}},
+                        action_mode="Block",
+                        extra_env=self.hide(*hidden),
+                    )
+
+                    output = json.loads(result.stdout)["hookSpecificOutput"]
+                    self.assertEqual(output["hookEventName"], event)
+                    self.assertIn("continue the task", output["additionalContext"])
+
     def test_missing_jq_is_reported(self) -> None:
         result = self.run_hook_raw(
             "prompt",
@@ -231,6 +253,41 @@ class MissingDependencyTests(HookHarness):
         parsed = json.loads(result.stdout)
         self.assertTrue(parsed["continue"])
         self.assertNotIn("decision", parsed)
+
+
+@unittest.skipUnless(HOOK_CLIENT, "needs the built client in PII_TEST_HOOK_CLIENT")
+class BrokenClientTests(unittest.TestCase):
+    """The client alone, with no check.sh beside it: an install that lost a file."""
+
+    def test_a_broken_install_is_reported_as_a_skip(self) -> None:
+        with tempfile.TemporaryDirectory() as folder:
+            client = Path(folder) / "hook"
+            client.write_bytes(Path(HOOK_CLIENT).read_bytes())
+            client.chmod(0o755)
+            for mode, event in (
+                ("prompt", "UserPromptSubmit"),
+                ("claude-posttool", "PostToolUse"),
+            ):
+                with self.subTest(mode=mode):
+                    result = subprocess.run(
+                        [str(client), "--mode", mode],
+                        input="{}",
+                        env={**os.environ, "PII_PORT": "1", "PII_ACTION_MODE": "block"},
+                        capture_output=True,
+                        text=True,
+                        timeout=30,
+                        check=False,
+                    )
+
+                    # Exit 1 showed in Codex as a bare exit status. The skip is
+                    # reported, and like every skip it does not block.
+                    self.assertEqual(result.returncode, 0)
+                    output = json.loads(result.stdout)
+                    self.assertIn("PII scanner skipped", output["systemMessage"])
+                    self.assertIn("check.sh", output["systemMessage"])
+                    specific = output["hookSpecificOutput"]
+                    self.assertEqual(specific["hookEventName"], event)
+                    self.assertIn("continue the task", specific["additionalContext"])
 
 
 class TextExtractionTests(HookHarness):
@@ -630,7 +687,7 @@ class BlockReasonTests(HookHarness):
 
         self.assertIn("Drop to PII_LEVEL=standard", hook_output["reason"])
 
-    def test_posttool_block_tells_the_agent_not_to_retry(self) -> None:
+    def test_posttool_block_tells_the_agent_not_to_work_around_it(self) -> None:
         with FakePiiHandler.responding_with(SECRET_SPAN):
             hook_output = self.run_hook(
                 "claude-posttool",
@@ -639,7 +696,9 @@ class BlockReasonTests(HookHarness):
             )
 
         self.assertIn("PII in tool output", hook_output["reason"])
-        self.assertIn("Do not retry the same command", hook_output["reason"])
+        self.assertIn(
+            "Do not get the blocked content another way", hook_output["reason"]
+        )
 
     def test_unknown_mode_blocks_with_generic_text(self) -> None:
         """An unrecognized --mode still scans. A loud fallback beats no scan."""

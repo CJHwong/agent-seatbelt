@@ -338,9 +338,9 @@ def block_reason(listed: str, selected: list, level: str, emit_mode: str) -> str
     if emit_mode == "prompt":
         return f"PII in prompt: {listed}. Blocked at PII_LEVEL={level}. {hint}"
     if emit_mode in ("claude-pretool", "codex-pretool"):
-        return f"PII in tool input: {listed}. Blocked at PII_LEVEL={level}. {hint} The tool did not run, so the value has not left this machine. Do not send it another way."
+        return f"PII in tool input: {listed}. Blocked at PII_LEVEL={level}. {hint} The tool did not run, so the value has not left this machine. The hooks-pii scanner blocked this. Do not get the blocked content another way: not through another command, tool or file, and not from the user. Tell the user what was blocked, and that unblocking it as described here is the way forward. Then finish the parts of the task that do not need the blocked content."
     if emit_mode in ("claude-posttool", "codex-posttool"):
-        return f"PII in tool output: {listed}. Blocked at PII_LEVEL={level}. {hint} Do not retry the same command. Treat every value in that output as already exposed: do not repeat it, and do not write it to a file or a message."
+        return f"PII in tool output: {listed}. Blocked at PII_LEVEL={level}. {hint} Treat every flagged value in that output as already exposed: do not repeat it, and do not write it to a file or a message. The hooks-pii scanner blocked this. Do not get the blocked content another way: not through another command, tool or file, and not from the user. Tell the user what was blocked, and that unblocking it as described here is the way forward. Then finish the parts of the task that do not need the blocked content."
     return f"PII detected: {listed}. Blocked at PII_LEVEL={level}. {hint}"
 
 
