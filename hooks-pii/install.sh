@@ -252,10 +252,17 @@ install_client() {
 install_client
 
 # Add or update an entry in a hooks-shaped JSON file.
-# Idempotent on command string: if an entry already references $cmd or one of $others,
-# replace it with $entry (this is how matcher changes propagate to existing installs,
-# and how an install moves between the script, the native command and an older
-# install's paths); otherwise append.
+# A jq filter: true when the command in . is $cmd or one of $others. A command also
+# matches behind a prefix such as `env PII_SERVER_MODE=tagger `, which a hand edit
+# adds. Left in place, such an entry runs beside the new one and fails once the
+# installer removes its file.
+# shellcheck disable=SC2016  # jq source
+IS_PII_COMMAND='def is_pii_command: . as $found | any(([$cmd] + $others)[]; . as $known | $found == $known or ($found | endswith(" " + $known)));'
+
+# Idempotent on command string: the first entry that references $cmd or one of $others
+# becomes $entry (this is how matcher changes propagate to existing installs, and how
+# an install moves between the script, the native command and an older install's
+# paths), and a later one is dropped, so the hook runs once; otherwise append.
 # Args: $1 = target file, $2 = event key, $3 = entry JSON, $4 = command string to match,
 # $5 = a JSON array of the same command through every other hook file.
 add_entry() {
@@ -273,13 +280,14 @@ add_entry() {
     # prediction can match both, so the construct is avoided rather than guessed at.
     local program
     # shellcheck disable=SC2016  # the single quotes are deliberate: this is jq source
-    program='
+    program="$IS_PII_COMMAND"'
         .hooks = (.hooks // {}) |
         .hooks[$event] = (
-          (.hooks[$event] // []) as $entries |
-          ($entries | map(if any(.hooks[]?; .command as $found | $found == $cmd or any($others[]; . == $found)) then $entry else . end)) as $mapped |
-          if any($mapped[]?; any(.hooks[]?; .command == $cmd)) then $mapped
-          else $mapped + [$entry] end
+          reduce (.hooks[$event] // [])[] as $existing ({kept: [], placed: false};
+            if any($existing.hooks[]?; .command | is_pii_command) then
+              if .placed then . else .kept += [$entry] | .placed = true end
+            else .kept += [$existing] end) |
+          if .placed then .kept else .kept + [$entry] end
         )
         '
     jq --arg event "$event" --arg cmd "$cmd" --argjson others "$others" --argjson entry "$entry" "$program" "$target" > "$tmp"
@@ -503,7 +511,12 @@ fi
 # Read before the wiring rewrites the file: Codex runs a command only once trusted.
 CODEX_NEEDS_TRUST=0
 if [ "$CODEX_PRESENT" -eq 1 ]; then
-    grep -qF "\"$HOOK_COMMAND --mode prompt\"" "$CODEX_HOOKS" 2>/dev/null || CODEX_NEEDS_TRUST=1
+    # Codex binds trust to an entry's place too, so a hook that moves needs a re-trust.
+    # It stays only when the one prompt hook is already the current command.
+    # shellcheck disable=SC2016  # jq source
+    jq -e --arg cmd "$HOOK_COMMAND --mode prompt" --argjson others "$(other_commands "$HOOK_COMMAND" prompt)" \
+        "$IS_PII_COMMAND"'[.hooks.UserPromptSubmit[]?.hooks[]?.command | select(is_pii_command)] == [$cmd]' \
+        "$CODEX_HOOKS" >/dev/null 2>&1 || CODEX_NEEDS_TRUST=1
     wire_agent "codex"  "$CODEX_HOOKS"     "codex-posttool" "codex-pretool" "$HOOK_COMMAND"
 fi
 
