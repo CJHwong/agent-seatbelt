@@ -531,13 +531,16 @@ class MigrationTests(InstallerHarness):
     # The paths an agent session from before the move may still run.
     LEGACY_ENTRIES = ("pii-check.sh", "pii-hook")
 
-    def legacy_install(self, command: str) -> None:
-        """The files and the entries an older installer left, wired to `command`."""
+    def legacy_install(self, command: str, prefix: str = "") -> None:
+        """The files and the entries an older installer left, wired to `command`.
+
+        `prefix` goes before the path in each entry, as a hand edit puts it there.
+        """
         hooks = self.home / ".claude" / "hooks"
         hooks.mkdir(parents=True)
         for name in self.LEGACY_FILES + self.LEGACY_ENTRIES:
             (hooks / name).write_text("old")
-        legacy = str(hooks / command)
+        legacy = prefix + str(hooks / command)
         document = {
             "hooks": {
                 "UserPromptSubmit": [
@@ -706,6 +709,69 @@ class MigrationTests(InstallerHarness):
             self.commands(self.settings(), "UserPromptSubmit"),
             [f"{script} --mode prompt"],
         )
+
+    def test_an_old_entry_with_a_command_prefix_moves_to_the_new_command(
+        self,
+    ) -> None:
+        """A hand edit can put `env PII_SERVER_MODE=tagger` before the old path.
+
+        The entry stayed beside the new one, so each call ran both, and the old one
+        failed with exit 127 once its file was gone.
+        """
+        self.add_agent("claude")
+        self.add_agent("codex")
+        self.legacy_install("pii-hook", prefix="env PII_SERVER_MODE=tagger ")
+        (self.release / "pii-hook-linux-x86_64").write_text(RUNNABLE_CLIENT)
+
+        result = self.run_installer()
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        client = self.installed_dir() / CLIENT_FILE
+        self.assertEqual(
+            self.commands(self.settings(), "UserPromptSubmit"),
+            [f"{client} --mode prompt"],
+        )
+        self.assertEqual(
+            self.commands(self.settings(), "PreToolUse"),
+            [f"{client} --mode claude-pretool"],
+        )
+        codex = json.loads((self.home / ".codex" / "hooks.json").read_text())
+        self.assertEqual(
+            self.commands(codex, "UserPromptSubmit"), [f"{client} --mode prompt"]
+        )
+
+    def test_an_old_entry_beside_the_new_one_leaves_one_entry(self) -> None:
+        """An upgrade that missed the old entry left it before the new one.
+
+        Replacing the old entry alone made two copies of the new one. Codex binds trust
+        to an entry's place, so the copy that remains has moved and needs a re-trust.
+        """
+        self.add_agent("claude")
+        self.add_agent("codex")
+        self.legacy_install("pii-hook", prefix="env PII_SERVER_MODE=tagger ")
+        (self.release / "pii-hook-linux-x86_64").write_text(RUNNABLE_CLIENT)
+        client = self.installed_dir() / CLIENT_FILE
+        current = {"hooks": [{"type": "command", "command": f"{client} --mode prompt"}]}
+        for path in (
+            self.home / ".claude" / "settings.json",
+            self.home / ".codex" / "hooks.json",
+        ):
+            document = json.loads(path.read_text())
+            document["hooks"]["UserPromptSubmit"].append(current)
+            path.write_text(json.dumps(document))
+
+        result = self.run_installer()
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(
+            self.commands(self.settings(), "UserPromptSubmit"),
+            [f"{client} --mode prompt"],
+        )
+        codex = json.loads((self.home / ".codex" / "hooks.json").read_text())
+        self.assertEqual(
+            self.commands(codex, "UserPromptSubmit"), [f"{client} --mode prompt"]
+        )
+        self.assertIn("Codex scans nothing until you trust", result.stdout)
 
 
 class ClaudeWiringTests(InstallerHarness):
