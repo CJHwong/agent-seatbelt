@@ -90,6 +90,11 @@ class HookModeTests(HookHarness):
             "PII detector unavailable",
             hook_output["hookSpecificOutput"]["additionalContext"],
         )
+        # Agents told to protect unscanned content withheld whole answers.
+        self.assertIn(
+            "continue the task",
+            hook_output["hookSpecificOutput"]["additionalContext"],
+        )
 
     def test_detector_error_blocks_in_block_mode(self) -> None:
         FakePiiHandler.response_status = 500

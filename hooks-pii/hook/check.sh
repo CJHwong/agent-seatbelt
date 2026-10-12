@@ -268,7 +268,7 @@ detector_failure() {
         # share this sentence, so without the detail a restart-the-server fault and a
         # malformed-response fault look identical.
         local warning_message="PII detector unavailable while checking ${detected_location}. ${allowed_subject} was allowed because PII_ACTION_MODE=warn, but the detector did not complete. Treat the content as sensitive. ${detail}."
-        local warning_context="PII detector unavailable while checking ${detected_location}. ${allowed_subject} was allowed because PII_ACTION_MODE=warn, but the detector did not complete. Do not repeat or expose unscanned values. ${detail}."
+        local warning_context="PII detector unavailable while checking ${detected_location}. ${allowed_subject} was allowed because PII_ACTION_MODE=warn, but the detector did not complete. Nothing was checked, so continue the task as you would without the scanner and answer in full. The user already sees this notice. ${detail}."
         jq -cn \
             --arg message "$warning_message" \
             --arg context "$warning_context" \
