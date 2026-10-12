@@ -646,6 +646,10 @@ SECRET_RULES: tuple[tuple[re.Pattern[str], str | None], ...] = (
 # The password rules keep no such list, because a passphrase is words.
 SECRET_ALLOWLISTS = {
     GENERIC_SECRET_CONTEXT_PATTERN: (re.compile(r"\A[a-z]+(?:[-_][a-z]+)*\Z"),),
+    # The keyword needs no "=" or ":" here, so prose matches it: "non-secret
+    # configuration/deployment" is words a slash joins, not a value. One run of
+    # letters stays a value.
+    SECRET_CONTEXT_PATTERN: (re.compile(r"\A[a-z]+(?:[-_/][a-z]+)+\Z"),),
 }
 
 # What each engine answers: the matches of every pattern that matched.
@@ -952,11 +956,18 @@ def _append_csv_secret_matches(
             for column_index, header_value in enumerate(header_values)
             if _is_secret_column(header_value)
         }
-        if not sensitive_columns:
+        # A sentence that wraps after "No implementation, credential" splits into
+        # columns too. A column name is a few words, and the row under a header has
+        # as many fields as the header.
+        row_line = lines[line_index + 1]
+        if (
+            not sensitive_columns
+            or any(len(value.split()) > CSV_HEADER_MAX_WORDS for value in header_values)
+            or len(row_line.rstrip("\r\n").split(delimiter)) != len(header_values)
+        ):
             line_offset += len(header_line)
             continue
 
-        row_line = lines[line_index + 1]
         _append_csv_row_matches(
             row_line,
             line_offset + len(header_line),
@@ -1016,6 +1027,7 @@ SECRET_COLUMN_NAMES = frozenset(
     }
 )
 SECRET_COLUMN_KEYWORDS = ("api", "credential", "pass", "secret", "token")
+CSV_HEADER_MAX_WORDS = 3
 
 
 def _is_secret_column(header_value: str) -> bool:

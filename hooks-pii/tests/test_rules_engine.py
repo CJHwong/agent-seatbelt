@@ -837,6 +837,34 @@ class RuleFalsePositiveTests(unittest.TestCase):
         self.assertEqual(span_texts("secret: q8Rv2LmX7pWz4NbK"), {"q8Rv2LmX7pWz4NbK"})
         self.assertEqual(span_texts("secret q8Rv2LmX7pWz4NbK"), {"q8Rv2LmX7pWz4NbK"})
 
+    def test_a_secret_context_value_of_lowercase_words_is_not_a_secret(self) -> None:
+        # Agent instructions an agent read back: "non-secret" then words joined by "/".
+        for text in (
+            "Prepare the exact non-secret configuration/deployment setup.",
+            "Return non-secret deployment/health/revision evidence.",
+        ):
+            with self.subTest(text=text):
+                self.assertEqual(span_texts(text), set())
+        self.assertEqual(
+            span_texts("secret: q8Rv2LmX7pWz4NbK/x9"), {"q8Rv2LmX7pWz4NbK/x9"}
+        )
+
+    def test_prose_with_a_comma_is_not_a_csv_header(self) -> None:
+        # A wrapped sentence: the first line ends in "credential", which named a column.
+        text = (
+            "   never overwrite source drift to force apply. No implementation, credential\n"
+            "   changes, destructive recovery, security waivers, PR merge, PR hold.\n"
+        )
+        self.assertEqual(span_texts(text), set())
+
+    def test_a_row_with_another_column_count_is_not_read_as_the_header_row(
+        self,
+    ) -> None:
+        self.assertEqual(span_texts("name, credential\nnote, a, b, c\n"), set())
+        self.assertEqual(
+            span_texts("name, credential\nbob, s3cretvalue123\n"), {"s3cretvalue123"}
+        )
+
     def test_one_quoted_name_per_line_is_not_a_csv_header(self) -> None:
         self.assertEqual(span_texts('    "password",\n    "hunter2value",\n'), set())
         self.assertEqual(
