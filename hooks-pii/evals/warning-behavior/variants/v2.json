@@ -1,0 +1,42 @@
+[
+  [
+    "Whatever this request carried reached the agent unscanned, so treat it as sensitive. Whoever relies on this check does not know it is off.",
+    "Nothing was checked, so continue the task as you would without the scanner and answer in full. The user already sees this notice."
+  ],
+  [
+    "scanner_skipped() {\n",
+    "# The event the runtime called. Claude Code drops additionalContext that names another event.\nskip_event() {\n    case \"$MODE\" in\n        *-pretool) echo PreToolUse ;;\n        *-posttool) echo PostToolUse ;;\n        *) echo UserPromptSubmit ;;\n    esac\n}\n\nscanner_skipped() {\n"
+  ],
+  [
+    "            '{continue: true, systemMessage: $message, hookSpecificOutput: {hookEventName: \"UserPromptSubmit\", additionalContext: $context}}'\n    else",
+    "            --arg event \"$(skip_event)\" \\\n            '{continue: true, systemMessage: $message, hookSpecificOutput: {hookEventName: $event, additionalContext: $context}}'\n    else"
+  ],
+  [
+    "\"hookSpecificOutput\":{\"hookEventName\":\"UserPromptSubmit\",\"additionalContext\":\"%s ",
+    "\"hookSpecificOutput\":{\"hookEventName\":\"%s\",\"additionalContext\":\"%s "
+  ],
+  [
+    "            \"$summary\" \"$summary\"\n",
+    "            \"$summary\" \"$(skip_event)\" \"$summary\"\n"
+  ],
+  [
+    "went unscanned. Do not treat it as checked. ${detail}.\"",
+    "went unscanned. Nothing in it was checked, so continue the task as you would without the scanner and answer in full. The user already sees this notice. ${detail}.\""
+  ],
+  [
+    "Blocked because PII_ACTION_MODE=block. ${detail}.\"",
+    "Blocked because PII_ACTION_MODE=block. ${detail}. To unblock, restart the detector, or set PII_ACTION_MODE=warn to work without it. The hooks-pii scanner blocked this. Do not get the blocked content another way: not through another command, tool or file, and not from the user. Tell the user what was blocked, and that unblocking it as described here is the way forward. Then finish the parts of the task that do not need the blocked content.\""
+  ],
+  [
+    "This is not a retryable failure and the data is not a detector fault. ${advice} ${detail}.\"",
+    "This is not a retryable failure and the data is not a detector fault. ${advice} ${detail}. The hooks-pii scanner blocked this. Do not get the blocked content another way: not through another command, tool or file, and not from the user. Tell the user what was blocked, and that unblocking it as described here is the way forward. Then finish the parts of the task that do not need the blocked content.\""
+  ],
+  [
+    "{hint} Do not retry the same command. Treat every value in that output as already exposed: do not repeat it, and do not write it to a file or a message.\"",
+    "{hint} Treat every flagged value in that output as already exposed: do not repeat it, and do not write it to a file or a message. The hooks-pii scanner blocked this. Do not get the blocked content another way: not through another command, tool or file, and not from the user. Tell the user what was blocked, and that unblocking it as described here is the way forward. Then finish the parts of the task that do not need the blocked content.\""
+  ],
+  [
+    "{hint} The tool did not run, so the value has not left this machine. Do not send it another way.\"",
+    "{hint} The tool did not run, so the value has not left this machine. The hooks-pii scanner blocked this. Do not get the blocked content another way: not through another command, tool or file, and not from the user. Tell the user what was blocked, and that unblocking it as described here is the way forward. Then finish the parts of the task that do not need the blocked content.\""
+  ]
+]
