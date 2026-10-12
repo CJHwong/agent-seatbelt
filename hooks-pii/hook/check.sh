@@ -80,6 +80,15 @@ signal_skip() {
 # decides for itself whether and how to pass that on.
 #
 # jq may itself be the thing that is missing, so that case writes the JSON literally.
+# The event the runtime called. Claude Code drops additionalContext that names another event.
+skip_event() {
+    case "$MODE" in
+        *-pretool) echo PreToolUse ;;
+        *-posttool) echo PostToolUse ;;
+        *) echo UserPromptSubmit ;;
+    esac
+}
+
 scanner_skipped() {
     local detail="$1"
     local remedy="$2"
@@ -87,11 +96,12 @@ scanner_skipped() {
     local summary="PII scanner skipped: ${detail}. ${remedy}. Nothing was checked, and the scanner stays off until this is fixed."
     if command -v jq >/dev/null 2>&1; then
         jq -cn --arg message "$summary" \
-            --arg context "${summary} Whatever this request carried reached the agent unscanned, so treat it as sensitive. Whoever relies on this check does not know it is off." \
-            '{continue: true, systemMessage: $message, hookSpecificOutput: {hookEventName: "UserPromptSubmit", additionalContext: $context}}'
+            --arg context "${summary} Nothing was checked, so continue the task as you would without the scanner and answer in full. Whoever relies on this check does not know it is off." \
+            --arg event "$(skip_event)" \
+            '{continue: true, systemMessage: $message, hookSpecificOutput: {hookEventName: $event, additionalContext: $context}}'
     else
-        printf '{"continue":true,"systemMessage":"%s","hookSpecificOutput":{"hookEventName":"UserPromptSubmit","additionalContext":"%s Whatever this request carried reached the agent unscanned, so treat it as sensitive. Whoever relies on this check does not know it is off."}}\n' \
-            "$summary" "$summary"
+        printf '{"continue":true,"systemMessage":"%s","hookSpecificOutput":{"hookEventName":"%s","additionalContext":"%s Nothing was checked, so continue the task as you would without the scanner and answer in full. Whoever relies on this check does not know it is off."}}\n' \
+            "$summary" "$(skip_event)" "$summary"
     fi
     exit 0
 }
@@ -275,7 +285,7 @@ detector_failure() {
             --arg event "$event_name" \
             '{continue: true, systemMessage: $message, hookSpecificOutput: {hookEventName: $event, additionalContext: $context}}'
     else
-        local reason="PII detector unavailable while checking ${detected_location}. Blocked because PII_ACTION_MODE=block. ${detail}."
+        local reason="PII detector unavailable while checking ${detected_location}. Blocked because PII_ACTION_MODE=block. ${detail}. To unblock, restart the detector, or set PII_ACTION_MODE=warn to work without it. The hooks-pii scanner blocked this. Do not get the blocked content another way: not through another command, tool or file, and not from the user. Tell the user what was blocked, and that unblocking it as described here is the way forward. Then finish the parts of the task that do not need the blocked content."
         block_response "$reason"
     fi
     exit 0
@@ -292,14 +302,14 @@ oversize_failure() {
 
     if [ "$ACTION_MODE" = "warn" ]; then
         local warning_message="The input was too large for the detector to scan while checking ${detected_location}, so ${allowed_subject} went unscanned. ${advice} ${detail}."
-        local warning_context="The input was too large for the detector to scan while checking ${detected_location}, so ${allowed_subject} went unscanned. Do not treat it as checked. ${detail}."
+        local warning_context="The input was too large for the detector to scan while checking ${detected_location}, so ${allowed_subject} went unscanned. Nothing in it was checked, so continue the task as you would without the scanner and answer in full. The user already sees this notice. ${detail}."
         jq -cn \
             --arg message "$warning_message" \
             --arg context "$warning_context" \
             --arg event "$event_name" \
             '{continue: true, systemMessage: $message, hookSpecificOutput: {hookEventName: $event, additionalContext: $context}}'
     else
-        local reason="The input is too large for the detector to scan, so ${detected_location} can never be checked. This is not a retryable failure and the data is not a detector fault. ${advice} ${detail}."
+        local reason="The input is too large for the detector to scan, so ${detected_location} can never be checked. This is not a retryable failure and the data is not a detector fault. ${advice} ${detail}. The hooks-pii scanner blocked this. Do not get the blocked content another way: not through another command, tool or file, and not from the user. Tell the user what was blocked, and that unblocking it as described here is the way forward. Then finish the parts of the task that do not need the blocked content."
         block_response "$reason"
     fi
     exit 0
