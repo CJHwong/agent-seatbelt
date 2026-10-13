@@ -309,6 +309,18 @@ class TextExtractionTests(HookHarness):
 
         self.assertIn("in tool output", hook_output["systemMessage"])
 
+    def test_posttool_skips_a_background_task_id(self) -> None:
+        result = self.run_hook_raw(
+            "claude-posttool",
+            {
+                "tool_name": "Bash",
+                "tool_response": {"stdout": "", "backgroundTaskId": "b8k2qx7mw"},
+            },
+            action_mode="block",
+        )
+
+        self.assertEqual(result.stdout.strip(), "")
+
     def test_posttool_ignores_a_non_string_non_object_response(self) -> None:
         result = self.run_hook_raw("claude-posttool", {"tool_response": 42})
 
@@ -932,6 +944,17 @@ class ColdStartChecksTests(AutostartHarness):
                 "tool_name": "spawn_agent",
                 "tool_input": {"message": "gAAAAA" + "fake_encrypted-payload" * 4},
             },
+            extra_env=self.start_env(),
+        )
+
+        self.assertEqual((result.stdout, result.stderr), ("", ""))
+        self.assertEqual(listening_pids(port), [])
+
+    def test_a_background_task_id_starts_no_server(self) -> None:
+        port = self.cold_port()
+        result = self.run_hook_raw(
+            "claude-posttool",
+            {"tool_name": "Bash", "tool_response": {"backgroundTaskId": "b8k2qx7mw"}},
             extra_env=self.start_env(),
         )
 
