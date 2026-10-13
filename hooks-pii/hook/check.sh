@@ -140,18 +140,25 @@ IFS= read -r -d '' payload || true
 # Rather than chase each shape, one recursion collects every leaf string under the
 # field that matters — the NER labels patterns, so incidental strings (paths, type
 # markers) are inert. The same recursion serves an input and a response.
-# Codex hands one agent's message to another as Fernet ciphertext that only the
-# OpenAI API can read, so the recursion drops it. The tool name may carry the
-# namespace in front, as in "collaborationsend_message".
+# The recursion drops the fields that hold no text a person wrote, as answer.py
+# does: a Codex agent's message to another agent, which is Fernet ciphertext that
+# only the OpenAI API can read, and the short random id Claude Code gives its own
+# background tasks.
 leaf_strings() {
     printf '%s' "$payload" | jq -r --arg field "$1" '
-        (if type == "object"
-            and (.tool_name | type) == "string"
-            and (.tool_name | test("(spawn_agent|send_message|followup_task)\\z"))
-            and (.tool_input | type) == "object"
-            and (.tool_input.message | type) == "string"
-            and (.tool_input.message | test("^gAAAAA[A-Za-z0-9_-]+=*\\z"))
-         then del(.tool_input.message) else . end) |
+        (if type == "object" and (.tool_name | type) == "string" then
+            reduce (
+                ["(spawn_agent|send_message|followup_task)\\z", ["message"], "^gAAAAA[A-Za-z0-9_-]+=*\\z"],
+                ["^(Bash|TaskStop|TaskOutput|Monitor|Workflow)\\z", ["backgroundTaskId", "taskId", "task_id"], "^[a-z0-9]{9,17}\\z"]
+            ) as [$tool, $names, $value] (.;
+                if (.tool_name | test($tool)) then
+                    reduce ("tool_input", "tool_response") as $part (.;
+                        if (.[$part] | type) == "object" then
+                            .[$part] |= with_entries(select(
+                                ((.key | IN($names[])) and (.value | type) == "string" and (.value | test($value))) | not))
+                        else . end)
+                else . end)
+         else . end) |
         (.[$field] // empty) |
         if type == "string" then .
         elif type == "object" then [.. | strings] | join("\n")

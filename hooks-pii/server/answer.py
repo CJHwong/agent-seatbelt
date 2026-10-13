@@ -155,10 +155,11 @@ def parse(payload: bytes) -> Any:
 
 def hook_text(document: Any, mode: str) -> str:
     """The text the script extracted, after bash dropped NULs and trailing newlines."""
+    document = readable(document)
     if mode == "prompt":
         text = prompt_text(document)
     elif mode in ("claude-pretool", "codex-pretool"):
-        text = leaf_strings(readable_input(document), "tool_input")
+        text = leaf_strings(document, "tool_input")
     elif mode in ("claude-posttool", "codex-posttool"):
         text = leaf_strings(document, "tool_response")
     elif isinstance(document, dict) and "prompt" in document:
@@ -166,32 +167,48 @@ def hook_text(document: Any, mode: str) -> str:
     elif isinstance(document, dict) and "tool_response" in document:
         text = leaf_strings(document, "tool_response")
     else:
-        text = leaf_strings(readable_input(document), "tool_input")
+        text = leaf_strings(document, "tool_input")
     return text.replace("\0", "").rstrip("\n")
 
 
-# Codex hands one agent's message to another as Fernet ciphertext that only the
-# OpenAI API can read, so no text in it can be scanned. The tool name may carry the
-# namespace in front, as in "collaborationsend_message".
-AGENT_MESSAGE_TOOL = re.compile(r"(spawn_agent|send_message|followup_task)\Z")
-ENCRYPTED_MESSAGE = re.compile(r"gAAAAA[A-Za-z0-9_-]+=*\Z")
+# Fields that hold no text a person wrote, as (tool name, field names, value).
+OPAQUE_FIELDS = (
+    # Codex hands one agent's message to another as Fernet ciphertext that only the
+    # OpenAI API can read. The tool name may carry the namespace in front, as in
+    # "collaborationsend_message".
+    (
+        re.compile(r"(spawn_agent|send_message|followup_task)\Z"),
+        ("message",),
+        re.compile(r"gAAAAA[A-Za-z0-9_-]+=*\Z"),
+    ),
+    # Claude Code names its own background tasks with a short random id, which the
+    # model reads as a secret.
+    (
+        re.compile(r"\A(Bash|TaskStop|TaskOutput|Monitor|Workflow)\Z"),
+        ("backgroundTaskId", "taskId", "task_id"),
+        re.compile(r"[a-z0-9]{9,17}\Z"),
+    ),
+)
 
 
-def readable_input(document: Any) -> Any:
-    """The payload without an encrypted agent message, which only the API can read."""
-    if not isinstance(document, dict):
+def readable(document: Any) -> Any:
+    """The payload without the opaque fields of its tool."""
+    if not isinstance(document, dict) or not isinstance(document.get("tool_name"), str):
         return document
-    tool_input = document.get("tool_input")
-    if not (
-        isinstance(tool_input, dict)
-        and isinstance(document.get("tool_name"), str)
-        and AGENT_MESSAGE_TOOL.search(document["tool_name"])
-        and isinstance(tool_input.get("message"), str)
-        and ENCRYPTED_MESSAGE.match(tool_input["message"])
-    ):
-        return document
-    readable = {key: value for key, value in tool_input.items() if key != "message"}
-    return {**document, "tool_input": readable}
+    kept = dict(document)
+    for tool, names, value in OPAQUE_FIELDS:
+        if not tool.search(document["tool_name"]):
+            continue
+        for part in ("tool_input", "tool_response"):
+            if isinstance(kept.get(part), dict):
+                kept[part] = {
+                    key: item
+                    for key, item in kept[part].items()
+                    if not (
+                        key in names and isinstance(item, str) and value.match(item)
+                    )
+                }
+    return kept
 
 
 def field(document: Any, name: str) -> Any:

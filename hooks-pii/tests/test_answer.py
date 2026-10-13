@@ -138,6 +138,34 @@ class TextTests(unittest.TestCase):
         self.assertEqual(hook_text(readable, "codex-pretool"), "call bob")
         self.assertEqual(hook_text(other_tool, "codex-pretool"), blob)
 
+    def test_a_claude_task_id_is_not_scanned(self) -> None:
+        cases = [
+            ("Bash", "tool_response", "backgroundTaskId", "claude-posttool"),
+            ("Monitor", "tool_response", "taskId", "claude-posttool"),
+            ("Workflow", "tool_response", "taskId", "claude-posttool"),
+            ("TaskStop", "tool_response", "task_id", "claude-posttool"),
+            ("TaskStop", "tool_input", "task_id", "claude-pretool"),
+        ]
+        for tool_name, field_name, key, mode in cases:
+            with self.subTest(tool_name=tool_name, key=key, mode=mode):
+                document = {
+                    "tool_name": tool_name,
+                    field_name: {"stdout": "built", key: "b8k2qx7mw"},
+                }
+                self.assertEqual(hook_text(document, mode), "built")
+
+    def test_a_task_id_field_of_another_tool_or_shape_is_still_scanned(self) -> None:
+        other_tool = {
+            "tool_name": "mcp__jira__get",
+            "tool_response": {"task_id": "b8k2qx7mw"},
+        }
+        not_an_id = {
+            "tool_name": "Bash",
+            "tool_response": {"backgroundTaskId": "call bob"},
+        }
+        self.assertEqual(hook_text(other_tool, "claude-posttool"), "b8k2qx7mw")
+        self.assertEqual(hook_text(not_an_id, "claude-posttool"), "call bob")
+
     def test_trailing_newlines_and_nuls_drop_as_bash_dropped_them(self) -> None:
         self.assertEqual(hook_text({"prompt": "a\0b\n\n"}, "prompt"), "ab")
 
