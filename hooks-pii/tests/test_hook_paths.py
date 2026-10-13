@@ -924,6 +924,20 @@ class ColdStartChecksTests(AutostartHarness):
                 self.assertEqual((result.stdout, result.stderr), ("", ""))
                 self.assertEqual(listening_pids(port), [])
 
+    def test_an_encrypted_codex_agent_message_starts_no_server(self) -> None:
+        port = self.cold_port()
+        result = self.run_hook_raw(
+            "codex-pretool",
+            {
+                "tool_name": "spawn_agent",
+                "tool_input": {"message": "gAAAAA" + "fake_encrypted-payload" * 4},
+            },
+            extra_env=self.start_env(),
+        )
+
+        self.assertEqual((result.stdout, result.stderr), ("", ""))
+        self.assertEqual(listening_pids(port), [])
+
     def test_an_unparsable_payload_starts_no_server(self) -> None:
         port = self.cold_port()
         result = self.run_hook_raw(
@@ -1233,6 +1247,18 @@ class PreToolUseTests(HookHarness):
         )
 
         self.assertTrue(self.is_blocked(hook_output))
+
+    def test_an_encrypted_codex_agent_message_is_silent(self) -> None:
+        result = self.run_hook_raw(
+            "codex-pretool",
+            {
+                "tool_name": "send_message",
+                "tool_input": {"message": "gAAAAA" + "fake_encrypted-payload" * 4},
+            },
+            action_mode="block",
+        )
+
+        self.assertEqual(result.stdout.strip(), "")
 
     def test_an_empty_tool_input_is_silent(self) -> None:
         result = self.run_hook_raw("claude-pretool", {"tool_input": {}})
