@@ -353,6 +353,16 @@ class CardBoundaryTests(unittest.TestCase):
         )
         self.assertEqual(span_tuples("3782 822463 10005"), [(0, 17, "account_number")])
 
+    def test_digit_groups_outside_a_card_layout_are_not_a_card_number(self) -> None:
+        # Three PR numbers in a shell loop. Joined, they pass the Luhn check.
+        self.assertTrue(engine.luhn_valid("201232045620784"))
+        self.assertEqual(
+            span_texts("for p in 20123 20456 20784; do gh pr view $p; done"), set()
+        )
+        self.assertEqual(
+            span_tuples("4111 1111 1111 1111 003"), [(0, 23, "account_number")]
+        )
+
 
 class PhoneRuleTests(unittest.TestCase):
     """The phone rule spans several national shapes, and leaves IPv4 alone."""
@@ -883,6 +893,30 @@ class RuleFalsePositiveTests(unittest.TestCase):
         ):
             with self.subTest(text=text):
                 self.assertEqual(span_texts(text), {"correct-horse-battery-staple"})
+
+    def test_a_generic_context_value_that_is_a_decimal_number_is_not_a_secret(
+        self,
+    ) -> None:
+        # Recall per label in a metrics file: the "secret" key names a label.
+        text = '{"recall_by_type": {"username": 0.7666666666666667, "secret": 0.6543210987654321}}'
+        self.assertEqual(span_texts(text), set())
+        self.assertEqual(
+            span_texts('"secret": "0.65x43210987654321"'), {"0.65x43210987654321"}
+        )
+
+    def test_a_context_value_that_a_call_follows_is_a_function_name(self) -> None:
+        for text in (
+            "auth_token = Context.get_current_company().notif_auth_token",
+            "db_password = secrets.get_db_password(name)",
+        ):
+            with self.subTest(text=text):
+                self.assertEqual(span_texts(text), set())
+        self.assertEqual(span_texts("auth_token = Kx82mzq0dlP4"), {"Kx82mzq0dlP4"})
+        # A token right before "(" stays a token.
+        self.assertEqual(
+            span_texts("api_token = Kx82mzq0dlP4Wq7(rotate after the demo)"),
+            {"Kx82mzq0dlP4Wq7"},
+        )
 
 
 class PortedRuleTests(unittest.TestCase):

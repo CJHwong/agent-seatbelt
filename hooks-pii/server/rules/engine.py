@@ -643,14 +643,24 @@ SECRET_RULES: tuple[tuple[re.Pattern[str], str | None], ...] = (
 # Values a rule matches that are not secrets. After an api-key or a token
 # keyword, lowercase words joined by hyphens are prose or a name, as in
 # "airtable-api-key: keyword-context rule". A token carries a digit or a capital.
+# A decimal number is a measure, as in a metrics file whose "secret" key names a
+# label. The value class takes the braces that close the JSON object after it.
 # The password rules keep no such list, because a passphrase is words.
 SECRET_ALLOWLISTS = {
-    GENERIC_SECRET_CONTEXT_PATTERN: (re.compile(r"\A[a-z]+(?:[-_][a-z]+)*\Z"),),
+    GENERIC_SECRET_CONTEXT_PATTERN: (
+        re.compile(r"\A[a-z]+(?:[-_][a-z]+)*\Z"),
+        re.compile(r"\A\d+\.\d+\}*\Z"),
+    ),
     # The keyword needs no "=" or ":" here, so prose matches it: "non-secret
     # configuration/deployment" is words a slash joins, not a value. One run of
     # letters stays a value.
     SECRET_CONTEXT_PATTERN: (re.compile(r"\A[a-z]+(?:[-_/][a-z]+)+\Z"),),
 }
+
+# A dotted name that ends in lowercase words, before "(", is a method call, as in
+# auth_token = settings.get_token(). The call returns the secret. A token right
+# before "(", as in "token=ghp_x(rotate it)", has no such last part.
+METHOD_NAME = re.compile(r"\A[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*\.[a-z]+(?:_[a-z]+)*\Z")
 
 # What each engine answers: the matches of every pattern that matched.
 Matches = dict[re.Pattern[str], list]
@@ -800,6 +810,8 @@ def _append_secret_matches(
         if token_ratio_ceiling and _token_ratio(secret) >= token_ratio_ceiling:
             continue
         if any(allowed.search(secret) for allowed in allowlist):
+            continue
+        if text.startswith("(", end) and METHOD_NAME.search(secret):
             continue
         end = _trim_secret_end(text, start, end)
         if start >= end:
@@ -1046,11 +1058,22 @@ def _append_card_matches(found: Matches, spans: list[dict[str, object]]) -> None
         if (
             13 <= len(digits) <= 19
             and digits[0] in CARD_FIRST_DIGITS
+            and card_layout(match.group())
             and luhn_valid(digits)
         ):
             spans.append(
                 {"start": match.start(), "end": match.end(), "label": "account_number"}
             )
+
+
+def card_layout(number: str) -> bool:
+    """A card printed in groups uses the groups its network prints: fours, as in
+    4-4-4-4 and 4-4-4-4-3, or 4-6-5 and 4-6-4. Any other grouping is a list of
+    numbers, such as three PR numbers in a shell loop."""
+    groups = [len(group) for group in re.split(r"[ -]", number)]
+    if len(groups) == 1 or groups in ([4, 6, 5], [4, 6, 4]):
+        return True
+    return all(size == 4 for size in groups[:-1]) and groups[-1] <= 4
 
 
 def _append_ip_matches(found: Matches, spans: list[dict[str, object]]) -> None:
