@@ -158,7 +158,7 @@ def hook_text(document: Any, mode: str) -> str:
     if mode == "prompt":
         text = prompt_text(document)
     elif mode in ("claude-pretool", "codex-pretool"):
-        text = leaf_strings(document, "tool_input")
+        text = leaf_strings(readable_input(document), "tool_input")
     elif mode in ("claude-posttool", "codex-posttool"):
         text = leaf_strings(document, "tool_response")
     elif isinstance(document, dict) and "prompt" in document:
@@ -166,8 +166,32 @@ def hook_text(document: Any, mode: str) -> str:
     elif isinstance(document, dict) and "tool_response" in document:
         text = leaf_strings(document, "tool_response")
     else:
-        text = leaf_strings(document, "tool_input")
+        text = leaf_strings(readable_input(document), "tool_input")
     return text.replace("\0", "").rstrip("\n")
+
+
+# Codex hands one agent's message to another as Fernet ciphertext that only the
+# OpenAI API can read, so no text in it can be scanned. The tool name may carry the
+# namespace in front, as in "collaborationsend_message".
+AGENT_MESSAGE_TOOL = re.compile(r"(spawn_agent|send_message|followup_task)\Z")
+ENCRYPTED_MESSAGE = re.compile(r"gAAAAA[A-Za-z0-9_-]+=*\Z")
+
+
+def readable_input(document: Any) -> Any:
+    """The payload without an encrypted agent message, which only the API can read."""
+    if not isinstance(document, dict):
+        return document
+    tool_input = document.get("tool_input")
+    if not (
+        isinstance(tool_input, dict)
+        and isinstance(document.get("tool_name"), str)
+        and AGENT_MESSAGE_TOOL.search(document["tool_name"])
+        and isinstance(tool_input.get("message"), str)
+        and ENCRYPTED_MESSAGE.match(tool_input["message"])
+    ):
+        return document
+    readable = {key: value for key, value in tool_input.items() if key != "message"}
+    return {**document, "tool_input": readable}
 
 
 def field(document: Any, name: str) -> Any:

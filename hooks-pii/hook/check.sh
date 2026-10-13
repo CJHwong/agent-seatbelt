@@ -140,8 +140,18 @@ IFS= read -r -d '' payload || true
 # Rather than chase each shape, one recursion collects every leaf string under the
 # field that matters — the NER labels patterns, so incidental strings (paths, type
 # markers) are inert. The same recursion serves an input and a response.
+# Codex hands one agent's message to another as Fernet ciphertext that only the
+# OpenAI API can read, so the recursion drops it. The tool name may carry the
+# namespace in front, as in "collaborationsend_message".
 leaf_strings() {
     printf '%s' "$payload" | jq -r --arg field "$1" '
+        (if type == "object"
+            and (.tool_name | type) == "string"
+            and (.tool_name | test("(spawn_agent|send_message|followup_task)\\z"))
+            and (.tool_input | type) == "object"
+            and (.tool_input.message | type) == "string"
+            and (.tool_input.message | test("^gAAAAA[A-Za-z0-9_-]+=*\\z"))
+         then del(.tool_input.message) else . end) |
         (.[$field] // empty) |
         if type == "string" then .
         elif type == "object" then [.. | strings] | join("\n")

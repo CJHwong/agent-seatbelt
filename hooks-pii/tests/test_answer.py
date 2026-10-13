@@ -121,6 +121,23 @@ class TextTests(unittest.TestCase):
         )
         self.assertEqual(hook_text({"tool_input": ["ls"]}, "claude-pretool"), "")
 
+    def test_an_encrypted_codex_agent_message_is_not_scanned(self) -> None:
+        blob = "gAAAAA" + "fake_encrypted-payload" * 4
+        for tool_name in ("spawn_agent", "send_message", "collaborationfollowup_task"):
+            with self.subTest(tool_name=tool_name):
+                document = {
+                    "tool_name": tool_name,
+                    "tool_input": {"task_name": "audit", "message": blob},
+                }
+                self.assertEqual(hook_text(document, "codex-pretool"), "audit")
+
+    def test_a_readable_agent_message_and_another_tool_are_still_scanned(self) -> None:
+        blob = "gAAAAA" + "fake_encrypted-payload" * 4
+        readable = {"tool_name": "send_message", "tool_input": {"message": "call bob"}}
+        other_tool = {"tool_name": "Bash", "tool_input": {"message": blob}}
+        self.assertEqual(hook_text(readable, "codex-pretool"), "call bob")
+        self.assertEqual(hook_text(other_tool, "codex-pretool"), blob)
+
     def test_trailing_newlines_and_nuls_drop_as_bash_dropped_them(self) -> None:
         self.assertEqual(hook_text({"prompt": "a\0b\n\n"}, "prompt"), "ab")
 
