@@ -188,6 +188,14 @@ OPAQUE_FIELDS = (
         ("backgroundTaskId", "taskId", "task_id"),
         re.compile(r"[a-z0-9]{9,17}\Z"),
     ),
+    # A Codex agent names the agents it starts, and addresses them by name or path,
+    # as in /root/task1/task_3. The model reads the name as a username. Codex allows
+    # only lowercase letters, digits and "_" in a name.
+    (
+        re.compile(r"(spawn_agent|send_message|followup_task|wait_agent)\Z"),
+        ("task_name", "target"),
+        re.compile(r"/?[a-z0-9_]+(/[a-z0-9_]+)*\Z"),
+    ),
 )
 
 

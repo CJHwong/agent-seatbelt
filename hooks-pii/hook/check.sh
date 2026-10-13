@@ -142,14 +142,15 @@ IFS= read -r -d '' payload || true
 # markers) are inert. The same recursion serves an input and a response.
 # The recursion drops the fields that hold no text a person wrote, as answer.py
 # does: a Codex agent's message to another agent, which is Fernet ciphertext that
-# only the OpenAI API can read, and the short random id Claude Code gives its own
-# background tasks.
+# only the OpenAI API can read, the name or path a Codex agent gives the agents it
+# starts, and the short random id Claude Code gives its own background tasks.
 leaf_strings() {
     printf '%s' "$payload" | jq -r --arg field "$1" '
         (if type == "object" and (.tool_name | type) == "string" then
             reduce (
                 ["(spawn_agent|send_message|followup_task)\\z", ["message"], "^gAAAAA[A-Za-z0-9_-]+=*\\z"],
-                ["^(Bash|TaskStop|TaskOutput|Monitor|Workflow)\\z", ["backgroundTaskId", "taskId", "task_id"], "^[a-z0-9]{9,17}\\z"]
+                ["^(Bash|TaskStop|TaskOutput|Monitor|Workflow)\\z", ["backgroundTaskId", "taskId", "task_id"], "^[a-z0-9]{9,17}\\z"],
+                ["(spawn_agent|send_message|followup_task|wait_agent)\\z", ["task_name", "target"], "^/?[a-z0-9_]+(/[a-z0-9_]+)*\\z"]
             ) as [$tool, $names, $value] (.;
                 if (.tool_name | test($tool)) then
                     reduce ("tool_input", "tool_response") as $part (.;

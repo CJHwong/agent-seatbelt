@@ -908,6 +908,9 @@ class RuleFalsePositiveTests(unittest.TestCase):
         for text in (
             "auth_token = Context.get_current_company().notif_auth_token",
             "db_password = secrets.get_db_password(name)",
+            # The password rule stops its value at the first ".".
+            "password = vault.read_password(path)",
+            "PASSWORD:\n    user.set_password(PASSWORD)",
         ):
             with self.subTest(text=text):
                 self.assertEqual(span_texts(text), set())
@@ -916,6 +919,10 @@ class RuleFalsePositiveTests(unittest.TestCase):
         self.assertEqual(
             span_texts("api_token = Kx82mzq0dlP4Wq7(rotate after the demo)"),
             {"Kx82mzq0dlP4Wq7"},
+        )
+        self.assertEqual(
+            span_texts("password is Kx82mzq0dlP4Wq7(rotate after the demo)"),
+            {"Kx82mzq0dlP4Wq7(rotate"},
         )
 
 

@@ -961,6 +961,17 @@ class ColdStartChecksTests(AutostartHarness):
         self.assertEqual((result.stdout, result.stderr), ("", ""))
         self.assertEqual(listening_pids(port), [])
 
+    def test_a_codex_agent_name_starts_no_server(self) -> None:
+        port = self.cold_port()
+        result = self.run_hook_raw(
+            "codex-pretool",
+            {"tool_name": "send_message", "tool_input": {"target": "/root/task_3"}},
+            extra_env=self.start_env(),
+        )
+
+        self.assertEqual((result.stdout, result.stderr), ("", ""))
+        self.assertEqual(listening_pids(port), [])
+
     def test_an_unparsable_payload_starts_no_server(self) -> None:
         port = self.cold_port()
         result = self.run_hook_raw(

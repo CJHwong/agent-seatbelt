@@ -659,7 +659,10 @@ SECRET_ALLOWLISTS = {
 
 # A dotted name that ends in lowercase words, before "(", is a method call, as in
 # auth_token = settings.get_token(). The call returns the secret. A token right
-# before "(", as in "token=ghp_x(rotate it)", has no such last part.
+# before "(", as in "token=ghp_x(rotate it)", has no such last part. The name is
+# read from the start of the value on, because the password rule ends its value at
+# the first ".", as in password = vault.read_password(path).
+DOTTED_NAME = re.compile(r"[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*")
 METHOD_NAME = re.compile(r"\A[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*\.[a-z]+(?:_[a-z]+)*\Z")
 
 # What each engine answers: the matches of every pattern that matched.
@@ -811,7 +814,7 @@ def _append_secret_matches(
             continue
         if any(allowed.search(secret) for allowed in allowlist):
             continue
-        if text.startswith("(", end) and METHOD_NAME.search(secret):
+        if _is_method_call(text, start):
             continue
         end = _trim_secret_end(text, start, end)
         if start >= end:
@@ -819,6 +822,13 @@ def _append_secret_matches(
         if skip_placeholders and _is_secret_placeholder(text[start:end]):
             continue
         spans.append({"start": start, "end": end, "label": "secret"})
+
+
+def _is_method_call(text: str, start: int) -> bool:
+    name = DOTTED_NAME.match(text, start)
+    return bool(
+        name and text.startswith("(", name.end()) and METHOD_NAME.search(name.group())
+    )
 
 
 def _shannon_entropy(value: str) -> float:

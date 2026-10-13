@@ -127,9 +127,9 @@ class TextTests(unittest.TestCase):
             with self.subTest(tool_name=tool_name):
                 document = {
                     "tool_name": tool_name,
-                    "tool_input": {"task_name": "audit", "message": blob},
+                    "tool_input": {"model": "gpt-5", "message": blob},
                 }
-                self.assertEqual(hook_text(document, "codex-pretool"), "audit")
+                self.assertEqual(hook_text(document, "codex-pretool"), "gpt-5")
 
     def test_a_readable_agent_message_and_another_tool_are_still_scanned(self) -> None:
         blob = "gAAAAA" + "fake_encrypted-payload" * 4
@@ -165,6 +165,30 @@ class TextTests(unittest.TestCase):
         }
         self.assertEqual(hook_text(other_tool, "claude-posttool"), "b8k2qx7mw")
         self.assertEqual(hook_text(not_an_id, "claude-posttool"), "call bob")
+
+    def test_a_codex_agent_name_or_path_is_not_scanned(self) -> None:
+        cases = [
+            ("spawn_agent", "task_name", "review_api_01_02"),
+            ("collaborationsend_message", "target", "/root/task1/task_3"),
+            ("followup_task", "target", "task_3"),
+            ("wait_agent", "target", "worker/task_3"),
+        ]
+        for tool_name, key, name in cases:
+            with self.subTest(tool_name=tool_name, key=key):
+                document = {
+                    "tool_name": tool_name,
+                    "tool_input": {"model": "gpt-5", key: name},
+                }
+                self.assertEqual(hook_text(document, "codex-pretool"), "gpt-5")
+
+    def test_an_agent_field_of_another_tool_or_shape_is_still_scanned(self) -> None:
+        other_tool = {"tool_name": "Bash", "tool_input": {"target": "task_3"}}
+        not_a_name = {
+            "tool_name": "send_message",
+            "tool_input": {"target": "Bob Smith"},
+        }
+        self.assertEqual(hook_text(other_tool, "codex-pretool"), "task_3")
+        self.assertEqual(hook_text(not_a_name, "codex-pretool"), "Bob Smith")
 
     def test_trailing_newlines_and_nuls_drop_as_bash_dropped_them(self) -> None:
         self.assertEqual(hook_text({"prompt": "a\0b\n\n"}, "prompt"), "ab")
