@@ -117,6 +117,24 @@ The same requests to a server on each runtime, p50 and p95 per request (lower is
 | M1 Pro | 1 client, 1,500 texts | 2.3 ms, 15.6 ms | 3.5 ms, 23.2 ms |
 | M1 Pro | 8 clients, 1,500 texts | 15.5 ms, 119.2 ms | 28.2 ms, 180.4 ms |
 
+Nothing raises the Neural Engine figure above one scan's worth. Measured on an M1
+Pro over 512 KB of code-like text, 1,359 windows:
+
+| Attempt | Result |
+|---|---|
+| 1, 2, 3, 4, 8 or 10 threads | flat, 128 to 154 KB/s. The pool of 3 is as good as any, and no better than one |
+| One `MLModel` per thread | 4 to 6 times slower. Separate objects contend for the one Neural Engine |
+| Two windows in one call | Refused. The package fixes each function's shape at (1 x length) |
+| Chunks ordered by length bucket | 13% slower |
+| `compute_units=ALL`, which may use the GPU | No change: 2.21 ms per window against 2.16 |
+| `compute_units=CPU_AND_GPU`, or `CPU_ONLY` | 2.4 to 2.8 times slower: 5.96 and 5.15 ms per window |
+| The model and the int8 graph side by side, half the windows each | Slower: 4.78 s against 3.28 s for the model alone. The model path needs those CPU cores to feed it |
+
+So a scan is bound by the Neural Engine, which one scan already saturates. The pool
+stays because it costs nothing here and it doubles the CPU fallback: the int8 graph
+runs 50 KB/s on one thread and 105 KB/s on six. A faster scan needs a smaller or
+distilled model, which is a scoring decision, not a threading one.
+
 On the CPU:
 
 Each window runs in its own session call, without padding. Several calls run at once,
