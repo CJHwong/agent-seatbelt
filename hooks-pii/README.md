@@ -137,8 +137,18 @@ evidence about the content, and blocking would take the agent down with no way f
 
 A detector failure reads the same way. The detector can be unreachable, stuck on the wrong
 mode, or answering with a shape the hook cannot use, and each one names itself in the message
-and writes one line to `~/.cache/pii/pii-skips.log`. An oversized input does too. Both leave
-the request unscanned, so both are recorded where a person can read them without the agent.
+and writes one line to `~/.cache/pii/pii-skips.log`. An input over the scan cap does too,
+unless the mode carries the deterministic rules: those rules cost about 0.04 s per MB, so they
+still cover the whole text, and the message names the layer that ran and the one that did not.
+Both cases leave part of the request unscanned, so both are recorded where a person can read
+them without the agent.
+
+One scan runs at a time, because the model saturates the machine on its own: three concurrent
+scans measured slower in total than one. A second request waits for the running scan, and a
+third is refused at once with HTTP 503, which the hook reports as busy. The advice differs from
+a broken detector, because the fix is to wait rather than to restart. A busy answer never makes
+the hook replace the server: no server older than the queue can send a 503, so a 503 proves the
+code on the port is current.
 
 Both action modes honour `PII_LEVEL`. Warn mode reports the same spans that block mode would reject. It does not expose the full value. A span below the level goes to stderr as `PII below level:`, and the agent never receives it. `PII_ALLOW_LABELS` removes a label in both modes.
 
@@ -204,7 +214,9 @@ All env vars override defaults; set them in your shell or the hook's env:
 | `PII_PORT` | `9123` | local server port |
 | `PII_SERVER_SCRIPT` | `~/.claude/hooks/pii/server.py` | server script path |
 | `PII_SERVER_LOG` | `~/.cache/pii/server.log` | server log path |
-| `PII_MAX_BODY_BYTES` | `2097152` | largest request body either server reads (2 MiB); a larger declared length is answered with HTTP 413 before the body is read. A client still streaming when the answer is sent can see a broken pipe instead of the 413 |
+| `PII_MAX_BODY_BYTES` | `2097152` | largest request body either server reads (2 MiB). It guards memory, not the scan. A larger declared length is answered with HTTP 413 before the body is read. A client still streaming when the answer is sent can see a broken pipe instead of the 413 |
+| `PII_SCAN_MAX_CHARS` | `262144` | largest text one scan covers (256 KiB), on `POST /hook` and `POST /` alike. A longer text never reaches the model. Warn mode still gets the rules over the whole text, and the message names both layers. Block mode refuses the text unless the rules found something to block on. The model runs at about 9 ms per KB and the hook waits 5 s for an answer, so this cap is what keeps a scan inside that budget |
+| `PII_START_WAIT_SECONDS` | `40` | how long a cold start may take before the hook calls the server dead. The tagger needs about 24 s on an M1 Pro: uv resolves its dependencies, then the model loads and Core ML compiles its shapes. Keep it under a minute, so a starting lock is not reaped while it is still held |
 | `OPF_CACHE_DIR` | `~/.cache/opf` | OpenAI Privacy Filter assets, this backend only |
 | `OPF_MAX_TOKENS` | `1024` | OpenAI Privacy Filter request limit; larger requests fail with HTTP 413 |
 | `REDACT_CACHE_DIR` | `~/.cache/redact` | converted Redact assets cache |

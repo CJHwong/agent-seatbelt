@@ -50,6 +50,8 @@ This is a high-recall filter, not a hard gate. Three failure modes worth knowing
 
 3. **Fail-open posture.** The hook returns success (exit 0, empty stdout) on any internal error — server down, jq parse failure, curl timeout. A probabilistic model with a hard fail-closed posture would brick your agent. The tradeoff: missed detections during transient failures are silent. If you need certainty, layer a deterministic regex or block the data source upstream.
 
+4. **The deep scan stops at the cap. The rules do not.** A text longer than `PII_SCAN_MAX_CHARS` never reaches the model, so names, emails, addresses and dates go unchecked. Warn mode still runs the deterministic rules over the whole text, and the message names both layers: what covered the text, and what did not. Block mode refuses that text outright unless a rule found something to block on, because a block needs the whole text. A mode with no rules layer at all, `redact` or `openai`, is refused in both modes. The alternative was a partial verdict with no rules pass, and a partial verdict reports text nobody looked at as clean. The model runs at about 9 ms per KB while the hook waits 5 s, so the cap is the largest text that fits that budget with one scan queued behind it. One scan runs at a time, and a caller past the wait slot is refused rather than queued: the model saturates the machine by itself, so a queue only moves the wait into the caller.
+
 ## Planned mask mode
 
 

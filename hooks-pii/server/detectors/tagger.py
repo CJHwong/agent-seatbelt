@@ -426,6 +426,17 @@ class TaggerModel:
         ]
         return merge_spans(text, rule_spans + model_spans)
 
+    def rules_only(self, text: str) -> list[dict[str, object]]:
+        """The deterministic spans alone, for a text too long for the model to scan.
+
+        The caller reaches this past the scan cap, where the model cannot finish inside
+        the hook's budget. These rules cost about 0.04 s per MB, so they cover a text of
+        any size, and they are the layer that carries secrets and card numbers.
+        """
+        return [
+            span for span in deterministic_spans(text) if span["label"] in RULE_LABELS
+        ]
+
     def tag(self, text: str) -> list[dict]:
         """The tagger's own spans over the whole text, with its labels and scores."""
         pieces = chunk_text(text, self.chunk_chars)

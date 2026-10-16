@@ -869,12 +869,14 @@ class AutostartTests(AutostartHarness):
         self.assertIn("was not found", context)
 
     def test_server_that_never_becomes_healthy_fails_closed(self) -> None:
-        """The poll runs 40 times at 0.25s, so this test takes about 10 seconds."""
+        """The default wait is 40 s, so this test shortens it to one."""
         hook_output = self.run_hook(
             "prompt",
             {"prompt": "send this secret"},
             action_mode="warn",
-            extra_env=self.start_env(FAKE_PII_HEALTH_STATUS="503"),
+            extra_env=self.start_env(
+                FAKE_PII_HEALTH_STATUS="503", PII_START_WAIT_SECONDS="1"
+            ),
         )
 
         context = hook_output["hookSpecificOutput"]["additionalContext"]
@@ -1068,6 +1070,22 @@ class StaleServerTests(AutostartHarness):
 
         self.assertIn("HTTP status '400'", hook_output["reason"])
         self.assertIsNone(current.poll(), "the hook stopped a current server")
+
+    def test_a_busy_answer_does_not_make_the_server_look_stale(self) -> None:
+        """No server older than the queue can send 503, so a 503 proves the code on the
+        port is current. Reading it as a stale server would kill a healthy one on every
+        busy moment, and the caller would wait out the whole restart for nothing.
+        """
+        busy = self.launch(
+            FAKE_SERVER_PATH,
+            FAKE_PII_HEALTH_VERSION="old",
+            FAKE_PII_RESPONSE_STATUS="503",
+        )
+
+        hook_output = self.run_secret_prompt()
+
+        self.assertIn("PII detector busy", hook_output["reason"])
+        self.assertIsNone(busy.poll(), "the hook stopped a busy server")
 
     def test_the_hash_matches_whatever_the_locale_sorts(self) -> None:
         """A UTF-8 locale can sort redact_torch.py before redact.py. Python does not.

@@ -256,6 +256,81 @@ class HookModeTests(HookHarness):
         self.assertNotIn("PII detector unavailable", hook_output["reason"])
 
 
+class BusyQueueTests(HookHarness):
+    """A full scan queue is a live server, and must not read as a broken one."""
+
+    def test_a_full_queue_is_reported_as_busy(self) -> None:
+        FakePiiHandler.response_status = 503
+        try:
+            hook_output = self.run_hook(
+                "codex-posttool",
+                {"tool_response": {"stdout": "send this secret"}},
+                action_mode="warn",
+            )
+        finally:
+            FakePiiHandler.response_status = 200
+
+        self.assertTrue(hook_output["continue"])
+        self.assertIn("PII detector busy", hook_output["systemMessage"])
+        self.assertIn("queue was full", hook_output["systemMessage"])
+        self.assertNotIn("PII detector unavailable", hook_output["systemMessage"])
+        # Unscanned is unscanned, whatever stopped the scan: the agent still has to
+        # keep working on the task rather than withhold the whole answer.
+        self.assertIn(
+            "continue the task",
+            hook_output["hookSpecificOutput"]["additionalContext"],
+        )
+
+    def test_a_full_queue_blocks_with_advice_to_wait(self) -> None:
+        """Restarting a busy server is the wrong advice: the wait is the fix."""
+        FakePiiHandler.response_status = 503
+        try:
+            hook_output = self.run_hook(
+                "codex-posttool",
+                {"tool_response": {"stdout": "send this secret"}},
+                action_mode="block",
+            )
+        finally:
+            FakePiiHandler.response_status = 200
+
+        self.assertEqual(hook_output["decision"], "block")
+        self.assertIn("PII detector busy", hook_output["reason"])
+        self.assertIn("wait for the running scan", hook_output["reason"])
+        self.assertNotIn("restart the detector", hook_output["reason"])
+
+    def test_a_busy_failure_is_recorded_on_the_host(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            skip_log = Path(temporary_directory) / "pii-skips.log"
+            FakePiiHandler.response_status = 503
+            try:
+                self.run_hook(
+                    "prompt",
+                    {"prompt": "send this secret"},
+                    action_mode="warn",
+                    extra_env={"PII_SKIP_EVENT_PATH": str(skip_log)},
+                )
+            finally:
+                FakePiiHandler.response_status = 200
+
+            self.assertTrue(skip_log.exists(), "no host-side line was written")
+            self.assertIn("queue was full", skip_log.read_text())
+
+    def test_the_oversize_advice_names_the_cap_not_the_level(self) -> None:
+        """A lower PII_LEVEL does not shorten a scan: the model runs the same text."""
+        FakePiiHandler.response_status = 413
+        try:
+            hook_output = self.run_hook(
+                "prompt",
+                {"prompt": "send this secret"},
+                action_mode="warn",
+            )
+        finally:
+            FakePiiHandler.response_status = 200
+
+        self.assertIn("PII_SCAN_MAX_CHARS", hook_output["systemMessage"])
+        self.assertNotIn("lower PII_LEVEL", hook_output["systemMessage"])
+
+
 class LevelSelectionTests(HookHarness):
     """The level decides what the agent sees, in both action modes."""
 
