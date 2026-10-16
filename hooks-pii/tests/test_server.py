@@ -131,6 +131,137 @@ class BodyCapTests(TestCase):
             self.assertEqual(PII_SERVER.max_body_bytes(), 2 * 1024 * 1024)
 
 
+class ScanCapTests(TestCase):
+    def test_default_cap_is_256_kibibytes(self) -> None:
+        """The model runs about 9 ms per KB and the hook waits 5 s, so the cap holds
+        a scan inside that budget with one scan queued behind it."""
+        with patch.dict(os.environ, {}, clear=True):
+            self.assertEqual(PII_SERVER.scan_max_chars(), 256 * 1024)
+
+    def test_environment_raises_the_cap(self) -> None:
+        with patch.dict(os.environ, {"PII_SCAN_MAX_CHARS": "4096"}):
+            self.assertEqual(PII_SERVER.scan_max_chars(), 4096)
+
+    def test_malformed_setting_falls_back_to_the_default(self) -> None:
+        with patch.dict(os.environ, {"PII_SCAN_MAX_CHARS": "not-a-number"}):
+            self.assertEqual(PII_SERVER.scan_max_chars(), 256 * 1024)
+
+    def test_non_positive_setting_falls_back_to_the_default(self) -> None:
+        with patch.dict(os.environ, {"PII_SCAN_MAX_CHARS": "0"}):
+            self.assertEqual(PII_SERVER.scan_max_chars(), 256 * 1024)
+
+    def test_the_cap_counts_the_text_not_the_json_around_it(self) -> None:
+        """A payload whose escaping inflates the body still scans when its text fits."""
+        text = 'x"' * 50  # 100 characters, and the escaping makes the body longer
+        payload = json.dumps({"prompt": text}).encode()
+        self.assertGreater(len(payload), 100)
+        with patch.dict(os.environ, {"PII_SCAN_MAX_CHARS": "100"}):
+            self.assertEqual(
+                PII_SERVER.answer(
+                    payload,
+                    PII_SERVER.Policy(
+                        mode="prompt",
+                        level="standard",
+                        allow_labels="",
+                        action_mode="warn",
+                        allow_bypass="1",
+                        server_mode="rules",
+                    ),
+                    "rules",
+                    PII_SERVER.scan_max_chars(),
+                    lambda text: ([], 1),
+                ),
+                "\x1e\x1e",
+            )
+
+    def test_one_character_past_the_cap_is_refused(self) -> None:
+        with patch.dict(os.environ, {"PII_SCAN_MAX_CHARS": "100"}):
+            with self.assertRaises(PII_SERVER.HookError) as raised:
+                PII_SERVER.answer(
+                    json.dumps({"prompt": "x" * 101}).encode(),
+                    PII_SERVER.Policy(
+                        mode="prompt",
+                        level="standard",
+                        allow_labels="",
+                        action_mode="warn",
+                        allow_bypass="1",
+                        server_mode="rules",
+                    ),
+                    "rules",
+                    PII_SERVER.scan_max_chars(),
+                    lambda text: ([], 1),
+                )
+        self.assertEqual(raised.exception.status, 413)
+
+
+class ScanQueueTests(TestCase):
+    """The queue's own contract, with no socket and no model in the way."""
+
+    def take(self, queue: Any, taken: list[str], name: str) -> None:
+        with queue.hold():
+            taken.append(name)
+
+    def test_a_free_queue_hands_the_slot_straight_over(self) -> None:
+        queue = PII_SERVER.ScanQueue()
+        self.assertFalse(queue.busy)
+        with queue.hold():
+            self.assertTrue(queue.busy)
+        self.assertFalse(queue.busy)
+
+    def test_one_caller_waits_for_the_running_scan(self) -> None:
+        queue = PII_SERVER.ScanQueue()
+        taken: list[str] = []
+        with queue.hold():
+            waiter = threading.Thread(target=self.take, args=(queue, taken, "second"))
+            waiter.start()
+            self.assertTrue(wait_until(lambda: queue.waiting == 1))
+            self.assertEqual(taken, [])
+        waiter.join(timeout=5)
+        self.assertEqual(taken, ["second"])
+        self.assertFalse(queue.busy)
+
+    def test_a_caller_past_the_depth_is_refused(self) -> None:
+        queue = PII_SERVER.ScanQueue()
+        taken: list[str] = []
+        with queue.hold():
+            waiter = threading.Thread(target=self.take, args=(queue, taken, "second"))
+            waiter.start()
+            self.assertTrue(wait_until(lambda: queue.waiting == 1))
+            with self.assertRaises(PII_SERVER.HookError) as raised, queue.hold():
+                taken.append("third")
+            self.assertEqual(raised.exception.status, 503)
+            self.assertIn("1 caller already waits", raised.exception.detail)
+            self.assertEqual(queue.waiting, 1)
+        waiter.join(timeout=5)
+        self.assertEqual(taken, ["second"])
+
+    def test_the_depth_is_the_only_knob_on_the_wait(self) -> None:
+        queue = PII_SERVER.ScanQueue(depth=2)
+        taken: list[str] = []
+        with queue.hold():
+            waiters = [
+                threading.Thread(target=self.take, args=(queue, taken, name))
+                for name in ("second", "third")
+            ]
+            for waiter in waiters:
+                waiter.start()
+            self.assertTrue(wait_until(lambda: queue.waiting == 2))
+            with self.assertRaises(PII_SERVER.HookError), queue.hold():
+                taken.append("fourth")
+        for waiter in waiters:
+            waiter.join(timeout=5)
+        self.assertEqual(sorted(taken), ["second", "third"])
+
+    def test_the_slot_survives_a_raising_body(self) -> None:
+        queue = PII_SERVER.ScanQueue()
+        with self.assertRaises(RuntimeError), queue.hold():
+            raise RuntimeError("the scan exploded")
+        self.assertFalse(queue.busy)
+        taken: list[str] = []
+        self.take(queue, taken, "after")
+        self.assertEqual(taken, ["after"])
+
+
 class RulesModelTests(TestCase):
     def test_empty_input_returns_no_spans(self) -> None:
         self.assertEqual(PII_SERVER.RulesModel().predict(""), [])
@@ -243,6 +374,27 @@ def stubbed_lite_module() -> Iterator[None]:
         yield
 
 
+class StubTaggerModel:
+    """Records the folder server.py hands the bilingual tagger."""
+
+    created: ClassVar[list[Path]] = []
+
+    def __init__(self, folder: Path) -> None:
+        self.folder = folder
+        StubTaggerModel.created.append(folder)
+
+
+@contextlib.contextmanager
+def stubbed_tagger_module() -> Iterator[None]:
+    """Swap in the tagger, so the test needs no 35M-parameter release."""
+    stub_module = types.ModuleType("detectors.tagger")
+    setattr(stub_module, "TaggerModel", StubTaggerModel)
+    setattr(stub_module, "asset_dir", lambda: ASSET_DIRECTORY)
+    StubTaggerModel.created = []
+    with patch.dict(sys.modules, {"detectors.tagger": stub_module}):
+        yield
+
+
 class ModelSelectionTests(TestCase):
     def test_openai_mode_builds_the_model_from_the_asset_directory(self) -> None:
         stub_module = types.ModuleType("detectors.privacy_filter")
@@ -268,6 +420,14 @@ class ModelSelectionTests(TestCase):
 
         self.assertIsInstance(model, StubLiteRedactModel)
         self.assertEqual(StubLiteRedactModel.created[0].cache_dir, ASSET_DIRECTORY)
+
+    def test_tagger_mode_builds_the_tagger_from_the_asset_directory(self) -> None:
+        """The default mode, and the only one that reads the release's asset folder."""
+        with stubbed_tagger_module():
+            model = PII_SERVER.load_selected_model("tagger")
+
+        self.assertIsInstance(model, StubTaggerModel)
+        self.assertEqual(StubTaggerModel.created, [ASSET_DIRECTORY])
 
     def test_redact_torch_mode_defaults_the_requested_device_to_auto(self) -> None:
         with stubbed_redact_module(), patch.dict(os.environ, {}, clear=True):
@@ -337,7 +497,9 @@ def request_json(
         connection.close()
 
 
-def declared_length_request(port: int, content_length: str) -> tuple[int, Any]:
+def declared_length_request(
+    port: int, content_length: str, path: str = "/"
+) -> tuple[int, Any]:
     """Declare a Content-Length, send no body, and read the answer.
 
     A handler that reads the declared body before it answers blocks here, so any
@@ -345,7 +507,7 @@ def declared_length_request(port: int, content_length: str) -> tuple[int, Any]:
     """
     connection = http.client.HTTPConnection("127.0.0.1", port, timeout=10)
     try:
-        connection.putrequest("POST", "/")
+        connection.putrequest("POST", path)
         connection.putheader("Content-Length", content_length)
         connection.endheaders()
         response = connection.getresponse()
@@ -462,6 +624,13 @@ class HandlerRequestTests(TestCase):
             (400, {"error": "invalid Content-Length"}),
         )
 
+    def test_hook_drops_the_request_when_the_length_is_unreadable(self) -> None:
+        """The status is the answer for both paths: /hook scans nothing and stops."""
+        self.assertEqual(
+            declared_length_request(self.port, "abc", "/hook"),
+            (400, {"error": "invalid Content-Length"}),
+        )
+
     def test_declared_body_above_the_cap_is_answered_before_the_read(self) -> None:
         with patch.dict(os.environ, {"PII_MAX_BODY_BYTES": "64"}):
             self.assertEqual(
@@ -551,8 +720,12 @@ class HandlerRequestTests(TestCase):
         self.assertEqual(status, 200)
         self.assertEqual(payload["spans"], [])
 
-    def test_concurrent_posts_get_their_own_answer(self) -> None:
-        class SlowModel:
+    def test_a_crowd_of_callers_shares_one_scan_slot(self) -> None:
+        """One scan runs, one waits, the rest are refused. The model never runs two."""
+        release = threading.Event()
+        entered = threading.Event()
+
+        class HeldModel:
             device = "cpu"
 
             def __init__(self) -> None:
@@ -564,30 +737,49 @@ class HandlerRequestTests(TestCase):
                 with self.guard:
                     self.active += 1
                     self.peak = max(self.peak, self.active)
-                time.sleep(0.1)
+                entered.set()
+                release.wait(timeout=5)
                 with self.guard:
                     self.active -= 1
                 return [{"start": 0, "end": len(text), "label": "echo", "text": text}]
 
-        slow_model = SlowModel()
-        PII_SERVER.Handler.model = slow_model
-        answers: list[tuple[int, int, list[str]]] = []
+        held_model = HeldModel()
+        PII_SERVER.Handler.model = held_model
+        answers: list[tuple[int, int, Any]] = []
 
         def ask(index: int) -> None:
             status, payload = self.post_text(f"request {index}")
-            answers.append((index, status, [span["text"] for span in payload["spans"]]))
+            answers.append((index, status, payload))
 
-        callers = [threading.Thread(target=ask, args=(index,)) for index in range(4)]
-        for caller in callers:
+        first = threading.Thread(target=ask, args=(0,))
+        first.start()
+        self.assertTrue(entered.wait(timeout=5), "the first scan never started")
+        rest = [threading.Thread(target=ask, args=(index,)) for index in range(1, 4)]
+        for caller in rest:
             caller.start()
-        for caller in callers:
-            caller.join()
-
-        self.assertEqual(slow_model.peak, 1)
-        self.assertEqual(
-            sorted(answers),
-            [(index, 200, [f"request {index}"]) for index in range(4)],
+        # The two refusals answer without touching the model, so they land while the
+        # holder is still inside predict. The waiter cannot: it waits for the slot.
+        self.assertTrue(
+            wait_until(lambda: len(answers) == 2), "the queue never refused anyone"
         )
+        release.set()
+        for caller in rest:
+            caller.join(timeout=5)
+        first.join(timeout=5)
+
+        self.assertEqual(held_model.peak, 1)
+        served = [item for item in answers if item[1] == 200]
+        refused = [item for item in answers if item[1] == 503]
+        self.assertEqual((len(served), len(refused)), (2, 2))
+        self.assertEqual(
+            sorted(
+                (index, [span["text"] for span in payload["spans"]])
+                for index, _, payload in served
+            ),
+            sorted((item[0], [f"request {item[0]}"]) for item in served),
+        )
+        for _, _, payload in refused:
+            self.assertIn("waits for it", payload["error"])
 
     def test_lock_is_released_when_the_model_raises(self) -> None:
         class ExplodingModel:
@@ -605,7 +797,7 @@ class HandlerRequestTests(TestCase):
 
         PII_SERVER.Handler.model = PII_SERVER.RulesModel()
         self.assertEqual(self.post_text("nothing sensitive here")[0], 200)
-        self.assertFalse(PII_SERVER.Handler.inference_lock.locked())
+        self.assertFalse(PII_SERVER.Handler.scans.busy)
 
     def test_a_model_shape_failure_becomes_internal_server_error(self) -> None:
         shape_error = "model output shape (4, 13) does not match 13 labels"
@@ -740,11 +932,66 @@ class HandlerRequestTests(TestCase):
         finally:
             connection.close()
 
-    def test_hook_refuses_a_text_above_the_cap(self) -> None:
-        with patch.dict(os.environ, {"PII_MAX_BODY_BYTES": "64"}):
+    def test_hook_refuses_a_text_above_the_scan_cap_for_a_model_without_rules(
+        self,
+    ) -> None:
+        """The redact and openai backends carry no cheap layer, so the text is refused."""
+
+        class NoRulesModel:
+            device = "cpu"
+
+            def predict(self, text: str) -> list[dict]:
+                return []
+
+        PII_SERVER.Handler.model = NoRulesModel()
+        with patch.dict(os.environ, {"PII_SCAN_MAX_CHARS": "64"}):
             self.assertEqual(
                 self.post_hook(json.dumps({"prompt": "x" * 100}).encode()), (413, "")
             )
+
+    def test_hook_reports_the_rules_over_a_text_above_the_scan_cap(self) -> None:
+        """The rules cost nothing beside the model, so a long text still gets them."""
+        with patch.dict(os.environ, {"PII_SCAN_MAX_CHARS": "64"}):
+            status, body = self.post_hook(json.dumps({"prompt": "x" * 100}).encode())
+
+        self.assertEqual(status, 200)
+        message = json.loads(body.split("\x1e")[0])["systemMessage"]
+        self.assertIn("no secret or card was found", message)
+        self.assertIn("The deep scan did not run", message)
+        self.assertIn(
+            "the scan cap is 64 characters and this text is 100 characters", message
+        )
+
+    def test_hook_blocks_on_a_rule_hit_inside_a_text_above_the_scan_cap(self) -> None:
+        """A rule hit is complete coverage of its own label, so it can carry a block."""
+        payload = json.dumps({"prompt": "key AKIA" + "Q3EGRZ7MXN2PLW4T " + "x" * 100})
+        with patch.dict(os.environ, {"PII_SCAN_MAX_CHARS": "64"}):
+            status, body = self.post_hook(
+                payload.encode(), **{"X-Pii-Action-Mode": "block"}
+            )
+
+        self.assertEqual(status, 200)
+        decision = json.loads(body.split("\x1e")[0])
+        self.assertIn("secret(critical)", decision["reason"])
+        self.assertIn("The deep scan did not run", decision["reason"])
+
+    def test_hook_refuses_a_clean_text_above_the_scan_cap_in_block_mode(self) -> None:
+        """Block mode needs the whole text, and the deep scan never saw this one."""
+        with patch.dict(os.environ, {"PII_SCAN_MAX_CHARS": "64"}):
+            self.assertEqual(
+                self.post_hook(
+                    json.dumps({"prompt": "x" * 100}).encode(),
+                    **{"X-Pii-Action-Mode": "block"},
+                ),
+                (413, ""),
+            )
+
+    def test_detect_refuses_a_text_above_the_scan_cap(self) -> None:
+        """The plain endpoint drives the same model, so it answers to the same cap."""
+        with patch.dict(os.environ, {"PII_SCAN_MAX_CHARS": "64"}):
+            status, body = self.post_text("x" * 100)
+        self.assertEqual(status, 413)
+        self.assertIn("character scan limit", body["error"])
 
     def test_hook_maps_model_failures_to_statuses(self) -> None:
         class FailingModel:
@@ -854,6 +1101,30 @@ class MainWiringTests(TestCase):
 
         self.assertTrue(stub.serve_forever_called)
         self.assertTrue(stub.closed)
+
+    def test_a_mode_without_the_rules_engine_skips_its_startup_line(self) -> None:
+        """Only a mode that loaded the rules reports which engine matched them."""
+        stub = StubServer()
+        startup_log = io.StringIO()
+        with (
+            patch.object(sys, "argv", ["server.py", "--mode", "openai"]),
+            patch.object(PII_SERVER.signal, "signal"),
+            patch.object(PII_SERVER, "NoLookupHTTPServer", stub.build),
+            patch.object(
+                PII_SERVER,
+                "load_selected_model",
+                lambda mode: types.SimpleNamespace(device="cpu"),
+            ),
+            # None rather than a missing key: that is how sys.modules reports a
+            # module the import system has not loaded.
+            patch.dict(sys.modules, {"rules.engine": None}),
+            contextlib.redirect_stderr(startup_log),
+        ):
+            PII_SERVER.main()
+
+        self.assertTrue(stub.serve_forever_called)
+        self.assertIn("[openai] ready on", startup_log.getvalue())
+        self.assertNotIn("rules engine:", startup_log.getvalue())
 
 
 class ScriptEntryPointTests(TestCase):

@@ -33,6 +33,8 @@ import socketserver
 import sys
 import threading
 import time
+from collections.abc import Iterator
+from contextlib import contextmanager
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
@@ -42,10 +44,14 @@ from answer import HookError, Policy, answer, code_version
 SUPPORTED_MODES = ("redact", "redact-torch", "openai", "rules", "tagger")
 DEFAULT_MODE = "tagger"
 DEFAULT_MAX_BODY_BYTES = 2 * 1024 * 1024
+# The largest text one scan covers. The model runs at about 9 ms per KB on the Neural
+# Engine and the hook waits 5 s for the answer, so 256 KB is the largest text that
+# finishes inside the caller's budget with one scan queued behind it.
+DEFAULT_SCAN_MAX_CHARS = 256 * 1024
 HANDLER_TIMEOUT_SECONDS = 30
-# A hook payload wraps the text in JSON with the tool's other fields, so it may run
-# larger than the text the body limit applies to. The limit itself is checked on the
-# text, as POST / always did.
+# A hook payload wraps the text in JSON with the tool's other fields, so the body may
+# run larger than the text. This guards memory in the handler, before the read. What
+# the scan costs is a separate number, DEFAULT_SCAN_MAX_CHARS, checked on the text.
 HOOK_PAYLOAD_FACTOR = 4
 
 
@@ -66,6 +72,61 @@ def max_body_bytes() -> int:
     except ValueError:
         return DEFAULT_MAX_BODY_BYTES
     return configured if configured > 0 else DEFAULT_MAX_BODY_BYTES
+
+
+def scan_max_chars() -> int:
+    """The largest text one scan covers. A bad setting uses the default."""
+    try:
+        configured = int(os.environ.get("PII_SCAN_MAX_CHARS", DEFAULT_SCAN_MAX_CHARS))
+    except ValueError:
+        return DEFAULT_SCAN_MAX_CHARS
+    return configured if configured > 0 else DEFAULT_SCAN_MAX_CHARS
+
+
+class ScanQueue:
+    """One scan runs, one waits, and anyone past that is refused instead of queued.
+
+    The model saturates the machine on its own: three concurrent 1 MB scans measured
+    slower in total than one, so a scan makes no progress beside another. A queue
+    would only move that wait into the caller, and the hook waits 5 s for its answer.
+    A caller queued behind one full scan already risks reporting a live server as
+    unavailable. Refusing at once keeps every failure of this server honest.
+    """
+
+    def __init__(self, depth: int = 1) -> None:
+        self.free = threading.Condition()
+        self.depth = depth
+        self.active = 0
+        self.waiting = 0
+
+    @property
+    def busy(self) -> bool:
+        """True while a scan runs or a caller waits for one."""
+        with self.free:
+            return self.active > 0 or self.waiting > 0
+
+    @contextmanager
+    def hold(self) -> Iterator[None]:
+        """Hold the scan slot, or raise HookError(503) when the queue is full."""
+        with self.free:
+            if self.active > 0:
+                if self.waiting >= self.depth:
+                    raise HookError(
+                        503,
+                        f"a scan is running and {self.waiting} caller already waits for it",
+                    )
+                self.waiting += 1
+                # No timeout: the caller's own budget ends a request it has given up
+                # on, and the queue cannot grow past depth, so this waits for one scan.
+                self.free.wait_for(lambda: self.active == 0)
+                self.waiting -= 1
+            self.active += 1
+        try:
+            yield
+        finally:
+            with self.free:
+                self.active -= 1
+                self.free.notify()
 
 
 def health_payload(
@@ -123,6 +184,10 @@ class RulesModel:
             return []
         return self.deterministic_spans(text)
 
+    def rules_only(self, text: str) -> list[dict]:
+        """This mode is the rules, so the whole model is the cheap layer."""
+        return self.predict(text)
+
 
 def load_selected_model(mode: str) -> object:
     server_dir = Path(__file__).resolve().parent
@@ -160,7 +225,7 @@ class Handler(BaseHTTPRequestHandler):
     model: Any
     mode: str
     version = ""
-    inference_lock = threading.Lock()
+    scans = ScanQueue()
     timeout = HANDLER_TIMEOUT_SECONDS
 
     def log_message(self, format: str, *args: Any) -> None:
@@ -208,7 +273,7 @@ class Handler(BaseHTTPRequestHandler):
     def _detect(self, text: str) -> tuple[list[dict], int]:
         started_at = time.perf_counter()
         try:
-            with self.inference_lock:
+            with self.scans.hold():
                 spans = self.model.predict(text)
         except ValueError as exc:
             raise HookError(413) from exc
@@ -227,8 +292,13 @@ class Handler(BaseHTTPRequestHandler):
             return
         payload = self.rfile.read(length) if length > 0 else b""
         policy = Policy.from_headers(self.headers, self.mode)
+        # The mode may not have a cheap layer at all: the redact and openai backends
+        # carry no rules, and a text past the cap is refused for them.
+        rules_only = getattr(self.model, "rules_only", None)
         try:
-            body = answer(payload, policy, self.mode, cap, self._detect)
+            body = answer(
+                payload, policy, self.mode, scan_max_chars(), self._detect, rules_only
+            )
         except HookError as error:
             self._send_text(error.status, error.detail)
             return
@@ -256,12 +326,28 @@ class Handler(BaseHTTPRequestHandler):
         if text is None:
             return
 
+        # The same cap as a hook request: this endpoint drives the same model, so an
+        # uncapped text here would hold the scan slot for as long as it takes and
+        # starve every hook waiting behind it.
+        scan_max = scan_max_chars()
+        if len(text) > scan_max:
+            self._send_json(
+                413,
+                {
+                    "error": f"text of {len(text)} characters exceeds the {scan_max} character scan limit"
+                },
+            )
+            return
         started_at = time.perf_counter()
         try:
-            with self.inference_lock:
+            with self.scans.hold():
                 spans = self.model.predict(text)
         except ValueError as exc:
             self._send_json(413, {"error": str(exc)})
+            return
+        except HookError as exc:
+            # A full queue is this request's problem, not the caller's text.
+            self._send_json(exc.status, {"error": exc.detail})
             return
         except RuntimeError as exc:
             # A model that cannot produce the expected output shape is a broken
@@ -280,7 +366,7 @@ class Handler(BaseHTTPRequestHandler):
                 health_payload(
                     self.mode,
                     self.model,
-                    self.inference_lock.locked(),
+                    self.scans.busy,
                     self.version,
                 ),
             )

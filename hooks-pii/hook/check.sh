@@ -24,6 +24,17 @@
 # span; warn mode reports one. A span below the level goes to stderr only.
 # PII_ALLOW_LABELS (default: empty):
 #   comma-separated labels to allow even when included by PII_LEVEL
+#
+# The server holds the rest:
+# PII_SCAN_MAX_CHARS (default: 262144, on the server):
+#   the largest text one scan covers. Above it the server answers 413 and the hook
+#   reports the input as unchecked. The model costs about 9 ms per KB, so this cap is
+#   what keeps a scan inside the 5 s this script waits for an answer.
+# PII_MAX_BODY_BYTES (default: 2097152, on the server):
+#   the largest request body the server reads. It guards memory, not the scan.
+# PII_START_WAIT_SECONDS (default: 40):
+#   how long a cold start may take before the hook calls the server dead. A slower
+#   machine raises it, and it must stay under a minute.
 
 set -euo pipefail
 export PATH="$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"
@@ -49,6 +60,12 @@ HOOK="http://$HOST:$PORT/hook"
 LOCK="${TMPDIR:-/tmp}/pii-server.${EUID}.${PORT}.starting"
 SERVER_LOG="${PII_SERVER_LOG:-$HOME/.cache/pii/server.log}"
 ACTION_MODE="${PII_ACTION_MODE:-warn}"
+# How long a cold start may take before the hook calls the server dead. On an M1 Pro
+# the tagger needs about 24 s, so the default leaves room for a slower machine. Raise it
+# further if your hardware is slower still. Keep it under a minute: a starting lock is
+# reaped after that, and two callers would then both start a server.
+START_WAIT_SECONDS="${PII_START_WAIT_SECONDS:-40}"
+START_WAIT_POLLS=$((START_WAIT_SECONDS * 4))
 # Default 1 keeps the documented one-shot bypass working for existing users. A
 # multi-user deployment sets 0, because anyone who can reach the agent can forge the
 # prefix, and a prefix carried in-band cannot be authenticated.
@@ -282,31 +299,47 @@ block_response() {
     esac
 }
 
-detector_failure() {
-    local detail="$1"
+# The detector did not answer, so nothing was scanned. One shape words every cause,
+# because the agent's next move is the same in all of them: treat the content as
+# unchecked. $1 names the cause, $2 says what the operator can do, $3 is the sentence
+# that says what actually happened.
+unscanned_response() {
+    local cause="$1" advice="$2" detail="$3"
     event_subject
-    # A dead detector leaves the request unscanned exactly as a missing tool does, so
-    # it earns the same host-side line. Without it this branch is invisible: the agent
-    # holds the only copy of the cause, and nothing on the host can tell a recurring
-    # failure from a one-off.
+    # A detector that did not answer leaves the request unscanned exactly as a missing
+    # tool does, so it earns the same host-side line. Without it this branch is
+    # invisible: the agent holds the only copy of the cause, and nothing on the host
+    # can tell a recurring failure from a one-off.
     signal_skip "$detail"
 
     if [ "$ACTION_MODE" = "warn" ]; then
-        # The cause belongs in the message the human reads. All six failure branches
+        # The cause belongs in the message the human reads. All the failure branches
         # share this sentence, so without the detail a restart-the-server fault and a
         # malformed-response fault look identical.
-        local warning_message="PII detector unavailable while checking ${detected_location}. ${allowed_subject} was allowed because PII_ACTION_MODE=warn, but the detector did not complete. Treat the content as sensitive. ${detail}."
-        local warning_context="PII detector unavailable while checking ${detected_location}. ${allowed_subject} was allowed because PII_ACTION_MODE=warn, but the detector did not complete. Nothing was checked, so continue the task as you would without the scanner and answer in full. The user already sees this notice. ${detail}."
+        local warning_message="PII detector ${cause} while checking ${detected_location}. ${allowed_subject} was allowed because PII_ACTION_MODE=warn, but the detector did not complete. Treat the content as sensitive. ${detail}."
+        local warning_context="PII detector ${cause} while checking ${detected_location}. ${allowed_subject} was allowed because PII_ACTION_MODE=warn, but the detector did not complete. Nothing was checked, so continue the task as you would without the scanner and answer in full. The user already sees this notice. ${detail}."
         jq -cn \
             --arg message "$warning_message" \
             --arg context "$warning_context" \
             --arg event "$event_name" \
             '{continue: true, systemMessage: $message, hookSpecificOutput: {hookEventName: $event, additionalContext: $context}}'
     else
-        local reason="PII detector unavailable while checking ${detected_location}. Blocked because PII_ACTION_MODE=block. ${detail}. To unblock, restart the detector, or set PII_ACTION_MODE=warn to work without it. The hooks-pii scanner blocked this. Do not get the blocked content another way: not through another command, tool or file, and not from the user. Tell the user what was blocked, and that unblocking it as described here is the way forward. Then finish the parts of the task that do not need the blocked content."
+        local reason="PII detector ${cause} while checking ${detected_location}. Blocked because PII_ACTION_MODE=block. ${detail}. To unblock, ${advice}. The hooks-pii scanner blocked this. Do not get the blocked content another way: not through another command, tool or file, and not from the user. Tell the user what was blocked, and that unblocking it as described here is the way forward. Then finish the parts of the task that do not need the blocked content."
         block_response "$reason"
     fi
     exit 0
+}
+
+detector_failure() {
+    unscanned_response "unavailable" \
+        "restart the detector, or set PII_ACTION_MODE=warn to work without it" "$1"
+}
+
+# The queue is full and the server refused the request at once, so it is up and
+# healthy. Restarting it would be the wrong advice: the fix is to wait.
+busy_failure() {
+    unscanned_response "busy" \
+        "wait for the running scan to finish and try again, or set PII_ACTION_MODE=warn to work without it" "$1"
 }
 
 # A rejected input is not a broken detector. Both make curl exit non-zero, but the
@@ -315,7 +348,9 @@ detector_failure() {
 oversize_failure() {
     local detail="$1"
     event_subject
-    local advice="Raise the detector's input limit, or lower PII_LEVEL, if this content has to be checked."
+    # A smaller PII_LEVEL does not shorten a scan: the model runs the same text at every
+    # level, and the rules the level selects cost nothing beside it. The limit is the cap.
+    local advice="Raise PII_SCAN_MAX_CHARS in the server's environment and restart the detector, if this content has to be checked. The scan costs the detector about 9 ms per KB, and the hook waits 5 s for the answer."
     signal_skip "$detail"
 
     if [ "$ACTION_MODE" = "warn" ]; then
@@ -377,7 +412,12 @@ start_server() {
         disown
     fi
 
-    for _ in $(seq 1 40); do
+    # The model is slow to arrive, so a cold start waits far longer than a request
+    # does. On an M1 Pro the tagger answers /health about 24 s after the port opens: uv
+    # resolves the script's dependencies, then the model loads and Core ML compiles its
+    # shapes. The old 10 s budget lost that race by more than half, so the first call on
+    # a cold port reported a healthy server as dead and left its content unscanned.
+    for _ in $(seq 1 "$START_WAIT_POLLS"); do
         health_ok && break
         sleep 0.25
     done
@@ -501,15 +541,19 @@ if [ "$curl_exit" -eq 7 ]; then
 fi
 
 # curl exit 28 is its own timeout. No response arrived, so http_code is 000, and that
-# read as a dead server. The server is up but slow: a large input, or other hooks
-# queued on its single inference lock.
+# read as a dead server. The server is up and past the caller's patience: another scan
+# held it, or this machine is slower than the cap assumes. The cap keeps the input
+# itself out of this: anything too long to scan is refused before any work starts.
 if [ "$curl_exit" -eq 28 ]; then
-    detector_failure "the detector request timed out after ${request_timeout_seconds}s; the server is up but did not answer in time, usually because the input is large or other checks are queued ahead of it"
+    detector_failure "the detector request timed out after ${request_timeout_seconds}s; the server is up but did not answer in time, usually because another scan held it or because this machine is slower than the cap assumes"
 fi
 
 # A status the server has no reason to send can come from a server that runs older
-# code. Replace that server once and ask again.
-if ! [[ "$http_status" =~ ^(200|409|413|422|502)$ ]] && stop_stale_server; then
+# code. Replace that server once and ask again. 503 is not one of those: no server
+# older than the scan queue can send it, so a 503 proves the code on the port is the
+# installed code. Left out of this set, a busy server would be read as a stale one and
+# killed, and the caller would wait out the whole replacement.
+if ! [[ "$http_status" =~ ^(200|409|413|422|502|503)$ ]] && stop_stale_server; then
     start_server
     post_hook
 fi
@@ -527,5 +571,6 @@ case "$http_status" in
     413) oversize_failure "The detector answered HTTP 413 for this input" ;;
     422) scanner_skipped "the hook could not parse its own input, so it could not extract any text to scan" "Check that the runtime sends a JSON payload" ;;
     502) detector_failure "the detector response did not have the expected shape" ;;
+    503) busy_failure "the detector refused the request because ${response:-its queue was full}; one scan runs at a time and this one arrived while another held it" ;;
     *)   detector_failure "the detector request failed with HTTP status '${http_status:-none}'" ;;
 esac

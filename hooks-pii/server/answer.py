@@ -18,6 +18,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
@@ -99,11 +100,14 @@ def answer(
     payload: bytes,
     policy: Policy,
     serving_mode: str,
-    max_body: int,
+    scan_max: int,
     detect: Callable[[str], tuple[list[dict], int]],
+    rules_only: Callable[[str], list[dict]] | None = None,
 ) -> str:
     """The script's stdout and stderr for one payload, each closed by SEPARATOR."""
-    stdout, stderr = outputs(payload, policy, serving_mode, max_body, detect)
+    stdout, stderr = outputs(
+        payload, policy, serving_mode, scan_max, detect, rules_only
+    )
     return stdout + SEPARATOR + stderr + SEPARATOR
 
 
@@ -111,8 +115,9 @@ def outputs(
     payload: bytes,
     policy: Policy,
     serving_mode: str,
-    max_body: int,
+    scan_max: int,
     detect: Callable[[str], tuple[list[dict], int]],
+    rules_only: Callable[[str], list[dict]] | None = None,
 ) -> tuple[str, str]:
     document = parse(payload)
     text = hook_text(document, policy.mode)
@@ -127,8 +132,31 @@ def outputs(
         return "", ""
     if serving_mode != policy.server_mode:
         raise HookError(409, serving_mode)
-    if len(request_body(text)) > max_body:
-        raise HookError(413)
+    # The model is the whole cost of a scan, about 9 ms per KB on an M1 Pro, and the
+    # hook waits 5 s for the answer. So the honest limit is a size the model can finish
+    # inside that budget. Past it, the deep scan cannot run at all.
+    if len(text) > scan_max:
+        refused = refused_note(len(text), scan_max)
+        if rules_only is None:
+            raise HookError(413)
+        # The rules cost about 0.04 s per MB, so they cover a text of any size. They
+        # are also the layer that carries secrets and card numbers, which is what a
+        # large dump of logs or code is most likely to leak.
+        started_at = time.perf_counter()
+        spans = rules_only(text)
+        if not well_formed(spans):
+            raise HookError(502)
+        # A block needs the whole text, so a block cannot rest on a partial scan. What
+        # the rules did find is still a reason to block, and it is the better reason.
+        if policy.action_mode == "block" and not selects(policy, spans):
+            raise HookError(413)
+        return render(
+            spans,
+            round((time.perf_counter() - started_at) * 1000),
+            policy,
+            emit_mode,
+            refused,
+        )
     spans, processing_ms = detect(text)
     if not well_formed(spans):
         raise HookError(502)
@@ -275,11 +303,6 @@ def event_mode(document: Any, mode: str) -> str:
     return "claude-pretool"
 
 
-def request_body(text: str) -> bytes:
-    """The body the script sent to POST /, which the size limit was measured on."""
-    return ('{\n  "text": ' + jq_json(text) + "\n}").encode("utf-8")
-
-
 def jq_json(value: Any) -> str:
     """Compact JSON as jq writes it: UTF-8 as is, and DEL escaped like a control."""
     return json.dumps(value, ensure_ascii=False, separators=(",", ":")).replace(
@@ -309,6 +332,31 @@ def selected_labels(level: str, allow_labels: str) -> tuple[str, ...]:
     return tuple(label for label in labels if label not in allowed)
 
 
+def selects(policy: Policy, spans: list[dict]) -> bool:
+    """True when the policy's level selects at least one of these spans."""
+    labels = selected_labels(policy.level, policy.allow_labels)
+    return any(span["label"] in labels for span in spans)
+
+
+def scan_kb(size: int) -> int:
+    """A size in KB, rounded up, so the note never understates what was not checked."""
+    return (size + 1023) // 1024
+
+
+def scan_size(size: int) -> str:
+    """A size as a person reads it: characters below a kilobyte, whole KB above."""
+    return f"{size} characters" if size < 1024 else f"{scan_kb(size)} KB"
+
+
+def refused_note(size: int, scan_max: int) -> str:
+    """Why the deep scan did not run over this text, and what covered it instead."""
+    return (
+        f"The deep scan did not run: the scan cap is {scan_size(scan_max)} and this "
+        f"text is {scan_size(size)}, so names, emails, addresses and dates were not "
+        "checked. Only the secret and card rules covered the whole text."
+    )
+
+
 # What the agent reads after a warning. The detector errs toward flagging, so the
 # agent is the one that tells a real leak from a false positive.
 WARN_GUIDANCE = (
@@ -322,10 +370,19 @@ WARN_GUIDANCE = (
 
 
 def render(
-    spans: list[dict], processing_ms: int, policy: Policy, emit_mode: str
+    spans: list[dict],
+    processing_ms: int,
+    policy: Policy,
+    emit_mode: str,
+    refused: str = "",
 ) -> tuple[str, str]:
-    """stdout and stderr for the detector's spans."""
-    if not spans:
+    """stdout and stderr for the detector's spans.
+
+    `refused` says the deep scan did not run over the whole text, and names what did
+    cover it. Block mode only reaches it holding a rule hit: outputs() refuses a clean
+    oversized text rather than ask for a block over a partial scan.
+    """
+    if not spans and not refused:
         return "", ""
     labels = selected_labels(policy.level, policy.allow_labels)
     marked = [
@@ -338,22 +395,27 @@ def render(
         for label, tier, masked in marked
         if label not in labels
     )
-    if not selected:
+    if not selected and not refused:
         return "", stderr
     listed = ", ".join(
         sorted({f"{label}({tier}): {masked}" for label, tier, masked in selected})
     )
     event, location, subject = WORDING.get(emit_mode, WORDING[""])
     if policy.action_mode == "warn":
-        found = f"PII detector warning: possible sensitive data was identified {location}: {listed}. {subject} was allowed because PII_ACTION_MODE=warn."
-        context = f"{found} {WARN_GUIDANCE}"
+        if selected:
+            found = f"PII detector warning: possible sensitive data was identified {location}: {listed}. {subject} was allowed because PII_ACTION_MODE=warn."
+        else:
+            found = f"PII detector warning: no secret or card was found {location}."
+        # The cause belongs in the message the human reads: a clean result over part of
+        # the text must not read like a clean result over all of it.
+        message = f"{found} {refused}".strip()
         stdout = jq_json(
             {
                 "continue": True,
-                "systemMessage": found,
+                "systemMessage": message,
                 "hookSpecificOutput": {
                     "hookEventName": event,
-                    "additionalContext": context,
+                    "additionalContext": f"{message} {WARN_GUIDANCE}",
                 },
             }
         )
@@ -362,9 +424,10 @@ def render(
         f"PII block: [{label}({tier})] {masked}\n" for label, tier, masked in selected
     )
     stderr += f"pii-check: blocked {len(selected)} span(s) in {processing_ms}ms at level={policy.level}\n"
-    return block_response(
-        block_reason(listed, selected, policy.level, emit_mode), emit_mode
-    ), stderr
+    reason = (
+        f"{block_reason(listed, selected, policy.level, emit_mode)} {refused}".strip()
+    )
+    return block_response(reason, emit_mode), stderr
 
 
 # event name, where the data was found, and what was let through, per event contract
