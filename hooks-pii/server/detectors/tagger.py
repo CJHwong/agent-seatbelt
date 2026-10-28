@@ -29,6 +29,7 @@ import importlib.util
 import json
 import os
 import platform
+import re
 import sys
 import threading
 from concurrent.futures import ThreadPoolExecutor
@@ -73,6 +74,29 @@ THREADS_PER_CALL = 3
 # credential and card findings join the tagger's spans.
 RULE_LABELS = {"secret", "account_number"}
 JOIN_TOUCHING = {"secret"}
+# The tagger's own secret and account_number spans, checked against 83,000 real warnings
+# from coding-agent sessions. Half its secrets were bare runs of letters and digits, mostly
+# base64 file data and generated ids, and a judge found none of about 160 sampled real.
+# Real secrets sat after a key word or carried a provider prefix. Its account numbers were
+# order, run and record ids: none of about 200 sampled was a real account number, and 3
+# were phone numbers. The rules still flag cards, IBANs, keyed bank accounts and keyed
+# secrets, so these drops touch the model only. They run on the tagger's own types, so an
+# identity number (national_id, passport, licence, plate) is never dropped.
+BARE_SECRET = re.compile(r"[A-Za-z0-9+/=]+")
+HEX = re.compile(r"[0-9a-fA-F]+")
+PROVIDER_PREFIX = re.compile(
+    r"(AKIA|ASIA|ghp_|gho_|ghs_|github_pat_|glpat-|xox[abpr]-|sk-|AIza|hf_|npm_|shpat_|SG\.)"
+)
+KEY_BEFORE = re.compile(
+    r"(pass(word|wd)?|pwd|secret|token|api[_-]?key|auth\w*|bearer|credential|private[_-]?key)\W*$"
+)
+PHONE_FORMAT = re.compile(r"\+?\d{1,4}([-. ]\d{2,4}){2,4}")
+ACCOUNT_WORD = re.compile(
+    r"\b(accounts?|acct|iban|routing|aba|bank|swift|bic|sort code|card)\b"
+    r"|帳號|帳戶|账号|账户|卡號|卡号|銀行|银行"
+)
+PHONE_WORD = re.compile(r"\b(phone|tel|mobile|cell|fax|whatsapp)|電話|手機")
+BEFORE_CHARS = 40
 # Eighteen tagger types onto the hook's labels. Every identity number is an
 # account_number, as the Redact map does with passports and tax IDs.
 LABEL_MAP = {
@@ -383,6 +407,46 @@ def load_forward(folder: Path, graph: str) -> OnnxForward | NeuralEngineForward:
     return OnnxForward(folder / graph)
 
 
+def _bare_secret(value: str, before: str) -> bool:
+    """Letters and digits only, no provider prefix, not a hex run, nothing key-like before."""
+    return (
+        BARE_SECRET.fullmatch(value) is not None
+        and any(ch.isdigit() for ch in value)
+        and any(ch.isalpha() for ch in value)
+        and HEX.fullmatch(value) is None
+        and PROVIDER_PREFIX.match(value) is None
+        and KEY_BEFORE.search(before) is None
+    )
+
+
+def _phone_like(value: str, before: str) -> bool:
+    """A phone number the tagger called an account number: a phone word shortly before it,
+    or a separated phone format of 9 to 15 digits (a date has 8)."""
+    if PHONE_WORD.search(before):
+        return True
+    digits = sum(ch.isdigit() for ch in value)
+    return PHONE_FORMAT.fullmatch(value) is not None and 9 <= digits <= 15
+
+
+def drop_model_noise(text: str, spans: list[dict]) -> list[dict]:
+    """The tagger's spans, in its own types, without its bare secrets and its account
+    numbers that nothing marks as one. An account number shaped like a phone number becomes
+    a phone. The identity types (national_id, passport, driver_license and the rest) pass:
+    no rule finds them, and the warnings held too few to judge them."""
+    kept = []
+    for span in spans:
+        value = text[span["start"] : span["end"]]
+        before = text[max(0, span["start"] - BEFORE_CHARS) : span["start"]].lower()
+        if span["label"] == "secret" and _bare_secret(value, before):
+            continue
+        if span["label"] == "account_number" and ACCOUNT_WORD.search(before) is None:
+            if not _phone_like(value, before):
+                continue
+            span = {**span, "label": "phone"}
+        kept.append(span)
+    return kept
+
+
 class TaggerModel:
     """The tagger behind the hook's predict(text) interface, on the Neural Engine or the CPU."""
 
@@ -413,6 +477,7 @@ class TaggerModel:
         tagged = apply_chain(
             self.tag(text), text, self.persons, self.places, self.thresholds
         )
+        tagged = drop_model_noise(text, tagged)
         model_spans = [
             {
                 "start": span["start"],
