@@ -80,6 +80,18 @@ After the tagger, rules drop what it flags by form but the policy excludes:
 - public figures and places, from Wikidata lists
 - names next to a public-office title
 
+Two more drops apply to the tagger's own spans. They come from a review of real warnings
+in coding-agent sessions, where most of the tagger's secrets and account numbers were
+file data and generated ids:
+
+- a secret that is only letters and digits, with no provider prefix, no hex run and no key
+  word such as `token`, `password` or `Bearer` in the 40 characters before it
+- an account number with no account word such as `account`, `routing`, `bank` or `帳號` before it. One shaped
+  like a phone number, or with a phone word before it, becomes a phone.
+
+Identity numbers (national ID, passport, licence, plate) are not dropped. The rules still
+flag cards, IBANs, keyed bank accounts and keyed secrets.
+
 Rules also add a handle found in an `author=`, `reviewer:` or `github:` field. Only the
 `secret` and `account_number` findings of the deterministic rules join the result. The
 other rules flag every URL and email by shape, so they would put back what the tagger's

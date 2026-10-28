@@ -115,6 +115,121 @@ class LabelMapTests(unittest.TestCase):
         self.assertTrue(set(LABEL_MAP.values()) <= set(SPAN_PRIORITY))
 
 
+def model_span(text: str, value: str, label: str) -> dict:
+    start = text.index(value)
+    return {"start": start, "end": start + len(value), "label": label}
+
+
+class ModelNoiseTests(unittest.TestCase):
+    """The tagger's secret and account_number spans that real warnings showed to be noise."""
+
+    def kept(self, text: str, value: str, label: str) -> list[tuple[str, str]]:
+        spans = tagger.drop_model_noise(text, [model_span(text, value, label)])
+        return [(text[s["start"] : s["end"]], s["label"]) for s in spans]
+
+    def test_a_bare_letters_and_digits_secret_is_dropped(self) -> None:
+        # base64 file data and generated ids, with nothing key-like before them
+        self.assertEqual(
+            self.kept(
+                "data: Zm9vYmFyMTIzNDU2Nzg5MA==", "Zm9vYmFyMTIzNDU2Nzg5MA==", "secret"
+            ),
+            [],
+        )
+        self.assertEqual(
+            self.kept('"id": "aB3dE5fG7hJ9kL1m"', "aB3dE5fG7hJ9kL1m", "secret"), []
+        )
+
+    def test_a_secret_after_a_key_word_is_kept(self) -> None:
+        for text in (
+            'api_key = "aB3dE5fG7hJ9kL1m"',
+            "Authorization: Bearer aB3dE5fG7hJ9kL1m",
+            "pwd=aB3dE5fG7hJ9kL1m",
+        ):
+            self.assertEqual(
+                self.kept(text, "aB3dE5fG7hJ9kL1m", "secret"),
+                [("aB3dE5fG7hJ9kL1m", "secret")],
+            )
+
+    def test_a_provider_key_is_kept_without_a_key_word(self) -> None:
+        key = "AKIA" + "Q3EGRZ7MXN2PLW4T"
+        self.assertEqual(
+            self.kept(f"pushed with {key}", key, "secret"), [(key, "secret")]
+        )
+
+    def test_other_secret_shapes_are_kept(self) -> None:
+        for value in (
+            "0123456789abcdef0123456789abcdef",
+            "123456789012",
+            "ab-12-cd-34-ef",
+            "abcdefGHIJ",
+        ):
+            self.assertEqual(
+                self.kept(f"value {value} end", value, "secret"), [(value, "secret")]
+            )
+
+    def test_a_model_account_number_is_dropped(self) -> None:
+        self.assertEqual(
+            self.kept("order 123456789012 shipped", "123456789012", "account_number"),
+            [],
+        )
+
+    def test_a_phone_shaped_account_number_becomes_a_phone(self) -> None:
+        for text, value in (
+            ("call 0900-000-000 now", "0900-000-000"),
+            ("mobile: 000000000000", "000000000000"),
+        ):
+            self.assertEqual(
+                self.kept(text, value, "account_number"), [(value, "phone")]
+            )
+
+    def test_a_date_is_not_read_as_a_phone(self) -> None:
+        self.assertEqual(
+            self.kept("on 2024-01-15 run", "2024-01-15", "account_number"), []
+        )
+
+    def test_an_account_number_after_an_account_word_is_kept(self) -> None:
+        for text in (
+            "account no. 1234-5678-90",
+            "帳號 1234-5678-90",
+            "the routing number is 1234-5678-90",
+            "bank: 1234-5678-90",
+            "SWIFT 1234-5678-90",
+            "sort code 1234-5678-90",
+            "card ending 1234-5678-90",
+            "銀行 1234-5678-90",
+        ):
+            self.assertEqual(
+                self.kept(text, "1234-5678-90", "account_number"),
+                [("1234-5678-90", "account_number")],
+            )
+
+    def test_identity_numbers_and_other_types_pass_untouched(self) -> None:
+        for text, value, label in (
+            ("id A000000000 on file", "A000000000", "national_id"),
+            ("passport 000000000", "000000000", "passport"),
+            ("plate ABC-0000", "ABC-0000", "license_plate"),
+            ("ask Wang Xiaoming", "Wang Xiaoming", "person"),
+        ):
+            self.assertEqual(self.kept(text, value, label), [(value, label)])
+
+    def test_predict_drops_model_noise_but_keeps_rule_spans(self) -> None:
+        model = object.__new__(tagger.TaggerModel)
+        model.tag = MagicMock(return_value=[])
+        model.persons, model.places, model.thresholds = set(), set(), {}
+        text = "data Zm9vYmFyMTIzNDU2Nzg5MA== and 4111 1111 1111 1111"
+        noise = model_span(text, "Zm9vYmFyMTIzNDU2Nzg5MA==", "secret")
+        card = model_span(text, "4111 1111 1111 1111", "account_number")
+        with (
+            patch.object(tagger, "apply_chain", return_value=[noise]),
+            patch.object(tagger, "deterministic_spans", return_value=[card]),
+        ):
+            spans = model.predict(text)
+        self.assertEqual(
+            [(s["start"], s["label"]) for s in spans],
+            [(card["start"], "account_number")],
+        )
+
+
 class AssetDirTests(unittest.TestCase):
     def test_an_unset_folder_downloads_the_pinned_release(self) -> None:
         calls = []
