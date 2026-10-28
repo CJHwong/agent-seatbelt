@@ -19,7 +19,6 @@ import json
 import random
 import string
 import sys
-import urllib.error
 import urllib.request
 from pathlib import Path
 
@@ -87,7 +86,8 @@ def spans(server: str, text: str) -> list[dict]:
     try:
         with urllib.request.urlopen(request, timeout=15) as response:
             payload = json.loads(response.read())
-    except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as exc:
+    # OSError covers URLError, TimeoutError and a connection the server resets.
+    except (OSError, json.JSONDecodeError) as exc:
         raise RuntimeError(f"request to {server} failed: {exc}") from exc
     if not isinstance(payload.get("spans"), list):
         raise TypeError(f"{server} returned no span list")
