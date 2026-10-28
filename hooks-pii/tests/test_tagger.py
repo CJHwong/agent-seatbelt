@@ -207,6 +207,19 @@ class ModelNoiseTests(unittest.TestCase):
                 self.kept(text, value, "account_number"), [(value, "phone")]
             )
 
+    def test_a_phone_key_name_makes_an_account_number_a_phone(self) -> None:
+        for text in ("work_phone: 000000000000", '{"mobilePhone": "000000000000"}'):
+            self.assertEqual(
+                self.kept(text, "000000000000", "account_number"),
+                [("000000000000", "phone")],
+                text,
+            )
+
+    def test_tel_inside_a_longer_word_is_not_a_phone_word(self) -> None:
+        self.assertEqual(
+            self.kept("hotel 000000000000", "000000000000", "account_number"), []
+        )
+
     def test_a_date_is_not_read_as_a_phone(self) -> None:
         self.assertEqual(
             self.kept("on 2024-01-15 run", "2024-01-15", "account_number"), []

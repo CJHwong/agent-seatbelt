@@ -92,14 +92,15 @@ KEY_BEFORE = re.compile(
     r"|private[_-]?key|clé( api)?|passwort|contraseña|金鑰|密鑰|密钥|密碼|密码|令牌|トークン|パスワード)\W*$"
 )
 PHONE_FORMAT = re.compile(r"\+?\d{1,4}([-. ]\d{2,4}){2,4}")
-# Letter boundaries, not \b: "_" is a word character, so \b misses bank_account and acct_no.
+# Letter boundaries, not \b: "_" is a word character, so \b misses bank_account, acct_no
+# and work_phone.
 # German joins konto to the next word (Kontonummer), so it needs no end boundary.
 ACCOUNT_WORD = re.compile(
     r"(?<![a-z])(accounts?|acct|iban|routing|aba|bank|swift|bic|sort code|card|cuenta|compte"
     r"|conta)(?![a-z])|(?<![a-z])konto|帳號|帳戶|账号|账户|卡號|卡号|銀行|银行|口座|계좌"
 )
 CAMEL_BREAK = re.compile(r"(?<=[a-z])(?=[A-Z])")
-PHONE_WORD = re.compile(r"\b(phone|tel|mobile|cell|fax|whatsapp)|電話|手機")
+PHONE_WORD = re.compile(r"(?<![a-z])(phone|tel|mobile|cell|fax|whatsapp)|電話|手機")
 BEFORE_CHARS = 40
 # Eighteen tagger types onto the hook's labels. Every identity number is an
 # account_number, as the Redact map does with passports and tax IDs.
