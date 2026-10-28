@@ -85,8 +85,9 @@ in coding-agent sessions, where most of the tagger's secrets and account numbers
 file data and generated ids:
 
 - a secret that is only letters and digits, with no provider prefix, no hex run and no key
-  word such as `token`, `password` or `Bearer` in the 40 characters before it
-- an account number with no account word such as `account`, `routing`, `bank` or `帳號` before it. One shaped
+  word such as `token`, `password`, `Bearer`, `client_key` or `密鑰` in the 40 characters before it
+- an account number with no account word such as `account`, `acct_no`, `routing`, `bank`, `Kontonummer` or `帳號`
+  before it. A key name counts: `bank_account` and `accountNumber` hold one. One shaped
   like a phone number, or with a phone word before it, becomes a phone.
 
 Identity numbers (national ID, passport, licence, plate) are not dropped. The rules still

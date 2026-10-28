@@ -127,6 +127,31 @@ class ModelNoiseTests(unittest.TestCase):
         spans = tagger.drop_model_noise(text, [model_span(text, value, label)])
         return [(text[s["start"] : s["end"]], s["label"]) for s in spans]
 
+    def test_a_secret_after_a_key_name_or_another_language_is_kept(self) -> None:
+        for text in (
+            "client_key: aB3dE5fG7hJ9kL1m",
+            '{"signing_key": "aB3dE5fG7hJ9kL1m"}',
+            "金鑰：aB3dE5fG7hJ9kL1m",
+            "密钥: aB3dE5fG7hJ9kL1m",
+            "密碼：aB3dE5fG7hJ9kL1m",
+            "令牌 aB3dE5fG7hJ9kL1m",
+            "トークン: aB3dE5fG7hJ9kL1m",
+            "パスワード: aB3dE5fG7hJ9kL1m",
+            "clé API : aB3dE5fG7hJ9kL1m",
+            "Passwort: aB3dE5fG7hJ9kL1m",
+            "contraseña: aB3dE5fG7hJ9kL1m",
+        ):
+            self.assertEqual(
+                self.kept(text, "aB3dE5fG7hJ9kL1m", "secret"),
+                [("aB3dE5fG7hJ9kL1m", "secret")],
+                text,
+            )
+
+    def test_key_inside_a_longer_word_is_not_a_key_word(self) -> None:
+        self.assertEqual(
+            self.kept("monkey: aB3dE5fG7hJ9kL1m", "aB3dE5fG7hJ9kL1m", "secret"), []
+        )
+
     def test_a_bare_letters_and_digits_secret_is_dropped(self) -> None:
         # base64 file data and generated ids, with nothing key-like before them
         self.assertEqual(
@@ -201,6 +226,38 @@ class ModelNoiseTests(unittest.TestCase):
             self.assertEqual(
                 self.kept(text, "1234-5678-90", "account_number"),
                 [("1234-5678-90", "account_number")],
+            )
+
+    def test_an_account_number_after_a_key_name_or_another_language_is_kept(
+        self,
+    ) -> None:
+        for text in (
+            '{"account_no": "123456789012"}',
+            '{"bank_account": "123456789012"}',
+            "accountNumber=123456789012",
+            "acct_no: 123456789012",
+            "número de cuenta: 123456789012",
+            "Kontonummer: 123456789012",
+            "numéro de compte 123456789012",
+            "conta 123456789012",
+            "口座番号: 123456789012",
+            "계좌번호: 123456789012",
+        ):
+            self.assertEqual(
+                self.kept(text, "123456789012", "account_number"),
+                [("123456789012", "account_number")],
+                text,
+            )
+
+    def test_an_account_word_inside_a_longer_word_does_not_count(self) -> None:
+        for text in (
+            "database 123456789012",
+            "discard 123456789012",
+            "wildcard 123456789012",
+            "cubic 123456789012",
+        ):
+            self.assertEqual(
+                self.kept(text, "123456789012", "account_number"), [], text
             )
 
     def test_identity_numbers_and_other_types_pass_untouched(self) -> None:
