@@ -88,13 +88,17 @@ PROVIDER_PREFIX = re.compile(
     r"(AKIA|ASIA|ghp_|gho_|ghs_|github_pat_|glpat-|xox[abpr]-|sk-|AIza|hf_|npm_|shpat_|SG\.)"
 )
 KEY_BEFORE = re.compile(
-    r"(pass(word|wd)?|pwd|secret|token|api[_-]?key|auth\w*|bearer|credential|private[_-]?key)\W*$"
+    r"(pass(word|wd)?|pwd|secret|token|api[_-]?key|(?<![a-z])key|auth\w*|bearer|credential"
+    r"|private[_-]?key|clé( api)?|passwort|contraseña|金鑰|密鑰|密钥|密碼|密码|令牌|トークン|パスワード)\W*$"
 )
 PHONE_FORMAT = re.compile(r"\+?\d{1,4}([-. ]\d{2,4}){2,4}")
+# Letter boundaries, not \b: "_" is a word character, so \b misses bank_account and acct_no.
+# German joins konto to the next word (Kontonummer), so it needs no end boundary.
 ACCOUNT_WORD = re.compile(
-    r"\b(accounts?|acct|iban|routing|aba|bank|swift|bic|sort code|card)\b"
-    r"|帳號|帳戶|账号|账户|卡號|卡号|銀行|银行"
+    r"(?<![a-z])(accounts?|acct|iban|routing|aba|bank|swift|bic|sort code|card|cuenta|compte"
+    r"|conta)(?![a-z])|(?<![a-z])konto|帳號|帳戶|账号|账户|卡號|卡号|銀行|银行|口座|계좌"
 )
+CAMEL_BREAK = re.compile(r"(?<=[a-z])(?=[A-Z])")
 PHONE_WORD = re.compile(r"\b(phone|tel|mobile|cell|fax|whatsapp)|電話|手機")
 BEFORE_CHARS = 40
 # Eighteen tagger types onto the hook's labels. Every identity number is an
@@ -436,7 +440,9 @@ def drop_model_noise(text: str, spans: list[dict]) -> list[dict]:
     kept = []
     for span in spans:
         value = text[span["start"] : span["end"]]
-        before = text[max(0, span["start"] - BEFORE_CHARS) : span["start"]].lower()
+        before = text[max(0, span["start"] - BEFORE_CHARS) : span["start"]]
+        # Split camelCase before lowercasing, so accountNumber reads as account number.
+        before = CAMEL_BREAK.sub(" ", before).lower()
         if span["label"] == "secret" and _bare_secret(value, before):
             continue
         if span["label"] == "account_number" and ACCOUNT_WORD.search(before) is None:
