@@ -1,0 +1,29 @@
+{"id": "secret-key-name-1", "template": "aws_secret_access_key = {v}", "value": "secret", "expected": "secret", "gated": true, "note": "key name"}
+{"id": "secret-key-name-2", "template": "{{\"signing_key\": \"{v}\", \"region\": \"us-east-1\"}}", "value": "secret", "expected": "secret", "gated": true, "note": "key name"}
+{"id": "secret-key-name-3", "template": "client_key: {v}", "value": "secret", "expected": "secret", "gated": true, "note": "key name"}
+{"id": "secret-key-word-1", "template": "api_key = {v}", "value": "secret", "expected": "secret", "gated": true, "note": "key word"}
+{"id": "secret-key-word-2", "template": "Authorization: Bearer {v}", "value": "secret", "expected": "secret", "gated": true, "note": "key word"}
+{"id": "secret-other-lang-1", "template": "金鑰：{v}", "value": "secret", "expected": "secret", "gated": true, "note": "key word in Chinese"}
+{"id": "secret-other-lang-2", "template": "密钥: {v}", "value": "secret", "expected": "secret", "gated": true, "note": "key word in Chinese"}
+{"id": "secret-other-lang-3", "template": "トークン: {v}", "value": "secret", "expected": "secret", "gated": true, "note": "key word in Japanese"}
+{"id": "secret-other-lang-4", "template": "clé API : {v}", "value": "secret", "expected": "secret", "gated": true, "note": "key word in French"}
+{"id": "secret-other-lang-5", "template": "Passwort: {v}", "value": "secret", "expected": "secret", "gated": true, "note": "key word in German"}
+{"id": "account-key-name-1", "template": "{{\"account_no\": \"{v}\", \"status\": \"active\"}}", "value": "digits", "expected": "account_number", "gated": true, "note": "key name"}
+{"id": "account-key-name-2", "template": "{{\"bank_account\": \"{v}\"}}", "value": "digits", "expected": "account_number", "gated": true, "note": "key name"}
+{"id": "account-key-name-3", "template": "accountNumber={v}", "value": "digits", "expected": "account_number", "gated": true, "note": "camelCase key name"}
+{"id": "account-key-name-4", "template": "acct_no: {v}", "value": "digits", "expected": "account_number", "gated": true, "note": "key name"}
+{"id": "account-word-1", "template": "the account number is {v}", "value": "digits", "expected": "account_number", "gated": true, "note": "account word"}
+{"id": "account-word-2", "template": "銀行帳號 {v}", "value": "digits", "expected": "account_number", "gated": true, "note": "account word in Chinese"}
+{"id": "account-other-lang-1", "template": "número de cuenta: {v}", "value": "digits", "expected": "account_number", "gated": true, "note": "account word in Spanish"}
+{"id": "account-other-lang-2", "template": "Kontonummer: {v}", "value": "digits", "expected": "account_number", "gated": true, "note": "account word in German"}
+{"id": "account-other-lang-3", "template": "口座番号: {v}", "value": "digits", "expected": "account_number", "gated": true, "note": "account word in Japanese"}
+{"id": "account-other-lang-4", "template": "계좌번호: {v}", "value": "digits", "expected": "account_number", "gated": true, "note": "account word in Korean"}
+{"id": "account-other-lang-5", "template": "numéro de compte {v}", "value": "digits", "expected": "account_number", "gated": true, "note": "account word in French"}
+{"id": "secret-bare-1", "template": "here is the value you asked for:\n{v}", "value": "secret", "expected": "secret", "gated": false, "note": "no key word; dropped by design"}
+{"id": "secret-key-far-1", "template": "API key for the staging deploy pipeline in the eu region, copy it now:\n{v}", "value": "secret", "expected": "secret", "gated": false, "note": "key word not right before the value; dropped by design"}
+{"id": "secret-no-key-word-1", "template": "SLACK_SIGNING={v}", "value": "secret", "expected": "secret", "gated": false, "note": "no key word; dropped by design"}
+{"id": "account-far-header-1", "template": "Name,City,Joined,Account Number\nA. Client,Springfield,2021,{v}", "value": "digits", "expected": "account_number", "gated": false, "note": "header far above the value; dropped by design"}
+{"id": "control-order-1", "template": "order {v} shipped yesterday", "value": "digits", "expected": null, "gated": false, "note": "business number; should not warn"}
+{"id": "control-tracking-1", "template": "Tracking number: {v}", "value": "digits", "expected": null, "gated": false, "note": "business number; should not warn"}
+{"id": "control-run-id-1", "template": "$ gh run view {v} --log-failed", "value": "digits", "expected": null, "gated": false, "note": "run id; should not warn"}
+{"id": "control-invoice-1", "template": "invoice_id={v} status=paid", "value": "digits", "expected": null, "gated": false, "note": "business number; should not warn"}

@@ -74,3 +74,13 @@ Exclude labels that a model documents as unsupported. For example, Rampart does 
 ```bash
 --unsupported rampart=private_date,secret
 ```
+
+## Planted shapes for the noise filter
+
+In tagger mode, the hook drops the model's bare secrets and its account numbers with no account word before them (see [detectors](detectors.md)). A word list can miss a shape that real warnings never showed. The [planted cases](../tests/planted-cases.jsonl) fill a template such as `acct_no: {v}` or `Kontonummer: {v}` with random fake values from a fixed seed, so every server sees the same texts:
+
+```bash
+./evals/run-planted.py --server main=http://127.0.0.1:9123 --server branch=http://127.0.0.1:9130
+```
+
+A gated case must find every plant with its expected label, or the run exits 1. The other cases are reported only: the shapes the filter drops by design, and business numbers that should not warn. Add a gated case for each key word or key name the filter learns.
